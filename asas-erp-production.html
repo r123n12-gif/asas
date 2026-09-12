@@ -209,7 +209,13 @@ const T = {
     printReport:'🖨️ طباعة / حفظ تقرير', modalPrintReport:'طباعة تقرير المبيعات', fieldDateFrom:'من تاريخ', fieldDateTo:'إلى تاريخ',
     printNow:'طباعة / حفظ PDF', reportTitle:'تقرير المبيعات', reportBranchLabel:'الفرع', reportPeriodLabel:'الفترة',
     reportGenOn:'تاريخ إصدار التقرير', reportAllPeriod:'كل الفترة المتوفرة', reportTotalsTitle:'الملخص',
-    reportBookingsTitle:'تفاصيل الحجوزات'
+    reportBookingsTitle:'تفاصيل الحجوزات', fieldReportBranch:'الفرع', fieldEmployeeFilter:'الموظف',
+    allEmployeesOpt:'كل الموظفين', colEmployee:'الموظف', reportEmployeeLabel:'الموظف', branchSectionTotal:'إجمالي الفرع',
+    grandTotalTitle:'الإجمالي العام لكل الفروع',
+    myAccountBtn:'👤 حسابي', modalMyAccount:'إعدادات حسابي', fieldCurrentPassword:'كلمة المرور الحالية',
+    fieldNewUsername:'اسم المستخدم', fieldNewPassword:'كلمة المرور الجديدة', fieldConfirmPassword:'تأكيد كلمة المرور الجديدة',
+    saveAccount:'حفظ التغييرات', accountUpdated:'تم تحديث بيانات حسابك بنجاح.', wrongCurrentPassword:'كلمة المرور الحالية غير صحيحة.',
+    passwordMismatch:'كلمة المرور الجديدة وتأكيدها غير متطابقين.', leaveBlankNote:'اترك كلمة المرور الجديدة فاضية إذا ما تبي تغيّرها.'
   },
   en: {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
@@ -283,7 +289,13 @@ const T = {
     printReport:'🖨️ Print / save report', modalPrintReport:'Print sales report', fieldDateFrom:'From date', fieldDateTo:'To date',
     printNow:'Print / Save PDF', reportTitle:'Sales report', reportBranchLabel:'Branch', reportPeriodLabel:'Period',
     reportGenOn:'Report generated on', reportAllPeriod:'Entire available period', reportTotalsTitle:'Summary',
-    reportBookingsTitle:'Booking details'
+    reportBookingsTitle:'Booking details', fieldReportBranch:'Branch', fieldEmployeeFilter:'Employee',
+    allEmployeesOpt:'All employees', colEmployee:'Employee', reportEmployeeLabel:'Employee', branchSectionTotal:'Branch total',
+    grandTotalTitle:'Grand total — all branches',
+    myAccountBtn:'👤 My account', modalMyAccount:'My account settings', fieldCurrentPassword:'Current password',
+    fieldNewUsername:'Username', fieldNewPassword:'New password', fieldConfirmPassword:'Confirm new password',
+    saveAccount:'Save changes', accountUpdated:'Your account was updated successfully.', wrongCurrentPassword:'Current password is incorrect.',
+    passwordMismatch:'New password and confirmation do not match.', leaveBlankNote:'Leave the new password blank to keep it unchanged.'
   }
 };
 let lang = localStorage.getItem('asas_lang') || 'ar';
@@ -526,6 +538,7 @@ function render(){
               ${branches.map(b=>`<option value="${b.id}" ${branchFilter===b.id?'selected':''}>${b.name}</option>`).join('')}
             </select>` : `<span class="tag employee">${branchName(u.branch_id)}</span>`}
             <span style="font-size:12px;color:var(--ink-soft)">${t('loggedInAs')} <b style="color:var(--ink)">${u.name}</b></span>
+            <button class="btn btn-ghost btn-sm" id="myAccountBtn">${t('myAccountBtn')}</button>
             <button class="btn btn-ghost btn-sm" id="langBtn">${t('langBtn')}</button>
             <button class="btn btn-ghost btn-sm" id="logoutBtn">${t('logout')}</button>
           </div>
@@ -539,6 +552,7 @@ function render(){
   if(bfSel) bfSel.onchange = (e)=>{ branchFilter = e.target.value; render(); };
   document.getElementById('logoutBtn').onclick = ()=>{ clearSession(); render(); };
   document.getElementById('langBtn').onclick = ()=>{ setLang(lang==='ar'?'en':'ar'); render(); };
+  document.getElementById('myAccountBtn').onclick = openMyAccountModal;
 
   const routes = { dashboard:renderDashboard, bookings:renderBookings, ledger:renderLedger,
     reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits };
@@ -651,14 +665,25 @@ function renderBookings(){
   document.getElementById('printReportBtn').onclick = openPrintReportModal;
 }
 function openPrintReportModal(){
+  const u = currentUser();
+  const canManage = canSeeAllBranches();
+  const branchOptions = canManage ? branches : branches.filter(b=>b.id===u.branch_id);
+  const employeeOptions = canManage ? users : users.filter(x=>x.id===u.id);
   showModal(`
     <div class="modal-head"><h3>${t('modalPrintReport')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="printReportForm">
+      ${canManage ? `<div class="field"><label>${t('fieldReportBranch')}</label><select name="branchId">
+          <option value="all">${t('allBranches')}</option>${branchOptions.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}
+        </select></div>` : `<input type="hidden" name="branchId" value="${u.branch_id||'all'}">`}
+      <div class="field"><label>${t('fieldEmployeeFilter')}</label><select name="employeeId" ${canManage?'':'disabled'}>
+        ${canManage?`<option value="all">${t('allEmployeesOpt')}</option>`:''}
+        ${employeeOptions.map(x=>`<option value="${x.id}" ${!canManage?'selected':''}>${x.name}</option>`).join('')}
+      </select></div>
       <div class="grid-2">
         <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" name="dateFrom"></div>
         <div class="field"><label>${t('fieldDateTo')}</label><input type="date" name="dateTo" value="${todayStr()}"></div>
       </div>
-      <div class="note">اتركهم فاضيين لطباعة تقرير كل الفترة المتوفرة (حتى لو سنة كاملة أو أكثر).
+      <div class="note">اتركهم فاضيين لطباعة تقرير كل الفترة المتوفرة (حتى لو سنة كاملة أو أكثر). اختيار "${t('allBranches')}" مع فرع "الكل" يطبع تقرير مستقل بالتفصيل لكل فرع + إجمالي عام.</div>
       <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
         <button type="submit" class="btn btn-primary" id="printReportSaveBtn">${t('printNow')}</button>
         <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
@@ -667,27 +692,62 @@ function openPrintReportModal(){
   document.getElementById('printReportForm').onsubmit = (e)=>{
     e.preventDefault();
     const f = new FormData(e.target);
-    generateBranchReport(f.get('dateFrom')||null, f.get('dateTo')||null);
+    generateBranchReport(f.get('branchId')||'all', f.get('employeeId')||'all', f.get('dateFrom')||null, f.get('dateTo')||null);
     closeModal();
   };
 }
-function generateBranchReport(dateFrom, dateTo){
-  const bf = effectiveBranchFilter();
-  const list = filteredBookings().filter(b=> (!dateFrom || b.date>=dateFrom) && (!dateTo || b.date<=dateTo))
-    .sort((a,b)=> (a.date||'').localeCompare(b.date||''));
-  const exp = expensesForFilter().filter(e=> (!dateFrom || e.date>=dateFrom) && (!dateTo || e.date<=dateTo));
-  const tt = computeTotals(list, exp);
-  const branchTitle = bf==='all' ? t('allBranches') : branchName(bf);
-  const periodLabel = (dateFrom||dateTo) ? `${dateFrom||'…'} → ${dateTo||'…'}` : t('reportAllPeriod');
-  const rowsHtml = list.map(b=>`<tr>
-      <td>${b.booking_no}</td><td>${b.date}</td><td>${branchName(b.branch_id)}</td><td>${b.airline||'—'}</td><td>${b.customer}</td>
+function userName(id){ const x = users.find(u=>u.id===id); return x ? x.name : '—'; }
+function bookingRowHTML(b){
+  return `<tr>
+      <td>${b.booking_no}</td><td>${b.date}</td><td>${branchName(b.branch_id)}</td><td>${userName(b.created_by)}</td><td>${b.airline||'—'}</td><td>${b.customer}</td>
       <td>${b.ticket_no||'—'}</td><td>${b.supplier||'—'}</td>
       <td style="text-align:end">${money(b.cost)}</td><td style="text-align:end">${money(b.profit_amount)}</td><td style="text-align:end;font-weight:600">${money(b.sell)}</td>
       <td>${b.payment_method==='transfer'?t('payTransfer'):t('payCash')}</td>
       <td>${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</td>
-    </tr>`).join('');
+    </tr>`;
+}
+function bookingsTableHTML(list){
+  return `<table><thead><tr><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colBranch')}</th><th>${t('colEmployee')}</th><th>${t('colAirline')}</th><th>${t('colCustomer')}</th>
+      <th>${t('colTicketNo')}</th><th>${t('colSupplier')}</th><th>${t('colNet')}</th><th>${t('colProfit')}</th><th>${t('colSell')}</th><th>${t('colPaymentMethod')}</th><th>${t('colPayStatus')}</th></tr></thead>
+      <tbody>${list.map(bookingRowHTML).join('') || `<tr><td colspan="13" style="text-align:center;padding:16px;">${t('emptyBookings')}</td></tr>`}</tbody></table>`;
+}
+function totalsKpisHTML(tt){
+  return `<div class="kpis">
+      <div class="kpi"><div>${t('kpiSales')}</div><div>${money(tt.sales)}</div></div>
+      <div class="kpi"><div>${t('kpiProfit')}</div><div>${money(tt.netProfit)}</div></div>
+      <div class="kpi"><div>${t('kpiCount')}</div><div>${tt.count}</div></div>
+      <div class="kpi"><div>${t('expenseOp')}</div><div>${money(tt.expenses)}</div></div>
+    </div>`;
+}
+function generateBranchReport(branchId, employeeId, dateFrom, dateTo){
+  const inRange = (d)=> (!dateFrom || d>=dateFrom) && (!dateTo || d<=dateTo);
+  const baseBookings = bookings.filter(b=> (employeeId==='all'||b.created_by===employeeId) && inRange(b.date||''));
+  const periodLabel = (dateFrom||dateTo) ? `${dateFrom||'…'} → ${dateTo||'…'}` : t('reportAllPeriod');
+  const employeeLabel = employeeId==='all' ? t('allEmployeesOpt') : userName(employeeId);
+  let bodyHtml = '';
+  let docTitleScope = '';
+  if(branchId==='all'){
+    docTitleScope = t('allBranches');
+    const grandList = baseBookings.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+    const grandExp = manualExpenses.filter(e=>inRange(e.date||''));
+    branches.forEach(br=>{
+      const list = baseBookings.filter(b=>b.branch_id===br.id).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+      const exp = manualExpenses.filter(e=>e.branch_id===br.id && inRange(e.date||''));
+      if(list.length===0 && exp.length===0) return;
+      const tt = computeTotals(list, exp);
+      bodyHtml += `<h2 style="border-bottom:2px solid #0F2A3D;padding-bottom:4px;">${br.name}</h2>${totalsKpisHTML(tt)}${bookingsTableHTML(list)}<div style="height:14px;"></div>`;
+    });
+    const grandTt = computeTotals(grandList, grandExp);
+    bodyHtml += `<h2 style="margin-top:26px;">${t('grandTotalTitle')}</h2>${totalsKpisHTML(grandTt)}`;
+  }else{
+    docTitleScope = branchName(branchId);
+    const list = baseBookings.filter(b=>b.branch_id===branchId).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+    const exp = manualExpenses.filter(e=>e.branch_id===branchId && inRange(e.date||''));
+    const tt = computeTotals(list, exp);
+    bodyHtml = `<h2>${t('reportTotalsTitle')}</h2>${totalsKpisHTML(tt)}<h2>${t('reportBookingsTitle')}</h2>${bookingsTableHTML(list)}`;
+  }
   const html = `<!DOCTYPE html><html lang="${lang}" dir="${lang==='ar'?'rtl':'ltr'}"><head><meta charset="UTF-8">
-    <title>${t('reportTitle')} — ${branchTitle}</title>
+    <title>${t('reportTitle')} — ${docTitleScope}</title>
     <style>
       body{font-family:'IBM Plex Sans Arabic',system-ui,sans-serif;color:#1C1C1C;padding:24px;}
       h1{font-size:19px;margin:0 0 2px;} .sub{color:#5B6570;font-size:12px;margin-bottom:18px;}
@@ -701,26 +761,17 @@ function generateBranchReport(dateFrom, dateTo){
       th{background:#0F2A3D;color:#fff;padding:7px 6px;text-align:${lang==='ar'?'right':'left'};white-space:nowrap;}
       td{padding:6px;border-bottom:1px solid #E4DECB;}
       h2{font-size:14px;margin:22px 0 8px;}
-      @media print{ body{padding:6px;} }
+      @media print{ body{padding:6px;} h2{page-break-after:avoid;} table{page-break-inside:auto;} tr{page-break-inside:avoid;} }
     </style></head><body>
     <h1>${t('agencyAr')} — ${t('reportTitle')}</h1>
     <div class="sub">${t('agencyEn')}</div>
     <div class="meta">
-      <div><b>${t('reportBranchLabel')}</b>${branchTitle}</div>
+      <div><b>${t('reportBranchLabel')}</b>${docTitleScope}</div>
+      <div><b>${t('reportEmployeeLabel')}</b>${employeeLabel}</div>
       <div><b>${t('reportPeriodLabel')}</b>${periodLabel}</div>
       <div><b>${t('reportGenOn')}</b>${new Date().toLocaleString(lang==='ar'?'ar-SA':'en-US')}</div>
     </div>
-    <h2>${t('reportTotalsTitle')}</h2>
-    <div class="kpis">
-      <div class="kpi"><div>${t('kpiSales')}</div><div>${money(tt.sales)}</div></div>
-      <div class="kpi"><div>${t('kpiProfit')}</div><div>${money(tt.netProfit)}</div></div>
-      <div class="kpi"><div>${t('kpiCount')}</div><div>${tt.count}</div></div>
-      <div class="kpi"><div>${t('expenseOp')}</div><div>${money(tt.expenses)}</div></div>
-    </div>
-    <h2>${t('reportBookingsTitle')}</h2>
-    <table><thead><tr><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colBranch')}</th><th>${t('colAirline')}</th><th>${t('colCustomer')}</th>
-      <th>${t('colTicketNo')}</th><th>${t('colSupplier')}</th><th>${t('colNet')}</th><th>${t('colProfit')}</th><th>${t('colSell')}</th><th>${t('colPaymentMethod')}</th><th>${t('colPayStatus')}</th></tr></thead>
-      <tbody>${rowsHtml || `<tr><td colspan="12" style="text-align:center;padding:16px;">${t('emptyBookings')}</td></tr>`}</tbody></table>
+    ${bodyHtml}
     </body></html>`;
   const w = window.open('', '_blank');
   if(!w){ alert(t('connError')); return; }
@@ -1087,6 +1138,56 @@ window.uiRemoveBranch = async function(id){
 };
 
 /* ===================== MODAL ===================== */
+function openMyAccountModal(){
+  const u = currentUser();
+  showModal(`
+    <div class="modal-head"><h3>${t('modalMyAccount')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="myAccountForm">
+      <div class="field"><label>${t('fieldNewUsername')}</label><input name="newUsername" value="${u.username}" required></div>
+      <div class="field"><label>${t('fieldCurrentPassword')}</label><input type="password" name="currentPassword" required></div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldNewPassword')}</label><input type="password" name="newPassword"></div>
+        <div class="field"><label>${t('fieldConfirmPassword')}</label><input type="password" name="confirmPassword"></div>
+      </div>
+      <div class="note">${t('leaveBlankNote')}</div>
+      <div id="myAccountErrorBox"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
+        <button type="submit" class="btn btn-primary" id="myAccountSaveBtn">${t('saveAccount')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  document.getElementById('myAccountForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('myAccountSaveBtn');
+    const f = new FormData(e.target);
+    const newPassword = f.get('newPassword')||'';
+    const confirmPassword = f.get('confirmPassword')||'';
+    if(newPassword !== confirmPassword){
+      document.getElementById('myAccountErrorBox').innerHTML = `<div class="login-error">${t('passwordMismatch')}</div>`;
+      return;
+    }
+    btn.disabled=true; btn.textContent=t('saving');
+    try{
+      const {data:ok, error} = await sb.rpc('update_own_account', {
+        p_user_id: u.id, p_current_password: f.get('currentPassword'),
+        p_new_username: f.get('newUsername'), p_new_password: newPassword
+      });
+      if(error){
+        if(String(error.message||'').toLowerCase().includes('duplicate')){ document.getElementById('myAccountErrorBox').innerHTML = `<div class="login-error">${t('usernameTaken')}</div>`; btn.disabled=false; btn.textContent=t('saveAccount'); return; }
+        throw error;
+      }
+      if(!ok){ document.getElementById('myAccountErrorBox').innerHTML = `<div class="login-error">${t('wrongCurrentPassword')}</div>`; btn.disabled=false; btn.textContent=t('saveAccount'); return; }
+      const updatedUser = { ...u, username: f.get('newUsername') };
+      setSession(updatedUser);
+      const localUser = users.find(x=>x.id===u.id); if(localUser) localUser.username = f.get('newUsername');
+      closeModal(); alert(t('accountUpdated')); render();
+    }catch(err){
+      console.error(err);
+      document.getElementById('myAccountErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      btn.disabled=false; btn.textContent=t('saveAccount');
+    }
+  };
+}
 function showModal(html){ document.getElementById('modalBody').innerHTML = html; document.getElementById('overlay').classList.add('show'); }
 function closeModal(){ document.getElementById('overlay').classList.remove('show'); }
 window.closeModal = closeModal;
