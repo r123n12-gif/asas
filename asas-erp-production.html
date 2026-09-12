@@ -157,7 +157,7 @@ const T = {
     modalNewBooking:'إضافة حجز جديد', fieldServiceType:'نوع الخدمة', fieldBranch:'الفرع', fieldCustomer:'اسم العميل',
     fieldSupplier:'المصدر / المورد', fieldDate:'التاريخ', fieldSell:'سعر البيع للعميل (ر.س)',
     fieldCost:'التكلفة الصافية (ر.س)', fieldCommRate:'نسبة العمولة من المورد %', fieldPayStatus:'حالة تحصيل الدفع من العميل',
-    payPending:'قيد التحصيل', payPaid:'مدفوع فورًا', journalNote:'سيتم إنشاء قيود دفتر الأستاذ تلقائيًا.',
+    payPending:'قيد التحصيل', payPaid:'مدفوع فورًا', journalNote:'سيتم إنشاء قيود دفتر الأستاذ تلقائيًا، والربح يُحسب تلقائيًا (سعر البيع − التكلفة).',
     save:'حفظ', saveBooking:'حفظ الحجز', cancel:'إلغاء', saving:'جاري الحفظ...',
     svcTicket:'تذكرة طيران', svcVisa:'فيزا', svcPackage:'باقة سياحية', svcInsurance:'تأمين سفر', svcHotel:'حجز فندق', svcOther:'خدمة أخرى',
     incomeStatement:'قائمة الدخل (ربح وخسارة)', incomeSales:'إيرادات المبيعات', incomeComm:'إيرادات العمولات',
@@ -191,7 +191,7 @@ const T = {
     setupTitle:'الإعداد غير مكتمل', setupBody:'لازم تعدّل مفاتيح Supabase أولًا داخل ملف الكود قبل استخدام البرنامج.',
     setupStep:'افتح الملف بمحرر نصوص، وابحث عن السطرين اللي فيهم YOUR_SUPABASE_URL و YOUR_SUPABASE_ANON_KEY في أول الكود، واستبدلهم بمفاتيح مشروعك من Project Settings → API في Supabase.',
     roleAccountant:'محاسب', fieldAirline:'شركة الطيران', fieldTicketNo:'رقم التذكرة', fieldInvoiceNo:'رقم الفاتورة',
-    fieldNet:'الصافي (ر.س)', fieldProfit:'الربح (ر.س)', fieldOpenTicket:'تذكرة مفتوحة', tagOpen:'تذكرة مفتوحة',
+    fieldNet:'الصافي / التكلفة من المورد (ر.س)', fieldSellPrice:'سعر البيع المحصّل من العميل (ر.س)', fieldOpenTicket:'تذكرة مفتوحة', tagOpen:'تذكرة مفتوحة',
     colAirline:'شركة الطيران', colTicketNo:'رقم التذكرة', colInvoiceNo:'رقم الفاتورة', colNet:'الصافي', colProfit:'الربح',
     navDeposits:'الإيداعات النقدية', subDeposits:'تسجيل واعتماد إيداعات الكاش وتأكيد التحويلات البنكية',
     fieldPaymentMethod:'طريقة الدفع من العميل', payCash:'كاش', payTransfer:'تحويل بنكي',
@@ -229,7 +229,11 @@ const T = {
     manualJournalNote:'استخدم هذا لأي عملية غير مغطاة تلقائيًا بالنظام (رأس مال، قرض، تسوية، تصحيح خطأ سابق...). تأكد من اختيار الحسابين الصحيحين لأن هذا يؤثر مباشرة على دفتر الحسابات.',
     sameAccountError:'لا يمكن اختيار نفس الحساب للمدين والدائن.',
     supplierSettledTag:'تم الدفع للمورد', supplierUnsettledTag:'مستحق للمورد', settleSupplierBtn:'تسوية المورد',
-    supplierBalancesTitle:'أرصدة الموردين', colSupplier:'المورد', colOwed:'مستحق (غير مدفوع)', colSettled:'مدفوع'
+    supplierBalancesTitle:'أرصدة الموردين', colSupplier:'المورد', colOwed:'مستحق (غير مدفوع)', colSettled:'مدفوع',
+    costReviewPlaceholder:'يعبّئه المحاسب لاحقًا', employeeCostNote:'سجّل سعر التذكرة المحصّل من العميل فقط — المحاسب يدخل التكلفة الحقيقية لاحقًا ويُحسب الربح تلقائيًا.',
+    costReviewNote:'⚠️ هذا الحجز بانتظار تدقيق التكلفة من المحاسب — الربح غير معروف بعد.',
+    pendingReviewTag:'قيد المراجعة', reviewCostBtn:'تدقيق التكلفة', reviewCostPrompt:'أدخل التكلفة الحقيقية (التحويل للمورد):',
+    invalidNumber:'رقم غير صحيح.'
   },
   en: {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
@@ -251,7 +255,7 @@ const T = {
     modalNewBooking:'Add new booking', fieldServiceType:'Service type', fieldBranch:'Branch', fieldCustomer:'Customer name',
     fieldSupplier:'Supplier / source', fieldDate:'Date', fieldSell:'Sell price to customer (SAR)',
     fieldCost:'Net cost (SAR)', fieldCommRate:'Supplier commission rate %', fieldPayStatus:'Customer payment status',
-    payPending:'Pending', payPaid:'Paid immediately', journalNote:'Ledger entries will be created automatically.',
+    payPending:'Pending', payPaid:'Paid immediately', journalNote:'Ledger entries are created automatically, and profit is auto-calculated (sell price − cost).',
     save:'Save', saveBooking:'Save booking', cancel:'Cancel', saving:'Saving...',
     svcTicket:'Flight ticket', svcVisa:'Visa', svcPackage:'Tour package', svcInsurance:'Travel insurance', svcHotel:'Hotel booking', svcOther:'Other service',
     incomeStatement:'Income statement (P&L)', incomeSales:'Sales revenue', incomeComm:'Commission revenue',
@@ -285,7 +289,7 @@ const T = {
     setupTitle:'Setup incomplete', setupBody:'You need to configure your Supabase keys inside the code file before using the app.',
     setupStep:'Open the file in a text editor, find the two lines with YOUR_SUPABASE_URL and YOUR_SUPABASE_ANON_KEY near the top of the script, and replace them with your project keys from Project Settings → API in Supabase.',
     roleAccountant:'Accountant', fieldAirline:'Airline', fieldTicketNo:'Ticket number', fieldInvoiceNo:'Invoice number',
-    fieldNet:'Net (SAR)', fieldProfit:'Profit (SAR)', fieldOpenTicket:'Open ticket', tagOpen:'Open ticket',
+    fieldNet:'Net / cost from supplier (SAR)', fieldSellPrice:'Sell price charged to customer (SAR)', fieldOpenTicket:'Open ticket', tagOpen:'Open ticket',
     colAirline:'Airline', colTicketNo:'Ticket No.', colInvoiceNo:'Invoice No.', colNet:'Net', colProfit:'Profit',
     navDeposits:'Cash Deposits', subDeposits:'Record and approve cash deposits, confirm bank transfers',
     fieldPaymentMethod:'Customer payment method', payCash:'Cash', payTransfer:'Bank transfer',
@@ -323,7 +327,11 @@ const T = {
     manualJournalNote:"Use this for anything not automatically covered by the system (capital, loan, adjustment, correcting a past error...). Make sure you pick the correct two accounts since this directly affects the ledger.",
     sameAccountError:'You cannot pick the same account for both debit and credit.',
     supplierSettledTag:'Paid to supplier', supplierUnsettledTag:'Owed to supplier', settleSupplierBtn:'Settle supplier',
-    supplierBalancesTitle:'Supplier balances', colSupplier:'Supplier', colOwed:'Owed (unpaid)', colSettled:'Paid'
+    supplierBalancesTitle:'Supplier balances', colSupplier:'Supplier', colOwed:'Owed (unpaid)', colSettled:'Paid',
+    costReviewPlaceholder:'Filled in later by the accountant', employeeCostNote:'Only record the ticket price charged to the customer — the accountant will enter the real cost later and profit is calculated automatically.',
+    costReviewNote:'⚠️ This booking is awaiting cost review by the accountant — profit is not known yet.',
+    pendingReviewTag:'Pending review', reviewCostBtn:'Review cost', reviewCostPrompt:'Enter the real cost (amount transferred to supplier):',
+    invalidNumber:'Invalid number.'
   }
 };
 let lang = localStorage.getItem('asas_lang') || 'ar';
@@ -408,6 +416,29 @@ async function verifyPaymentReceived(bookingId){
   if(jErr) throw jErr;
   journal.unshift(...jIns.reverse());
 }
+async function reviewBookingCost(bookingId, netCost){
+  const b = bookings.find(x=>x.id===bookingId);
+  if(!b) return;
+  const net = Number(netCost)||0;
+  const sell = Number(b.sell)||0;
+  const profit = +(sell-net).toFixed(2);
+  const {data:updated, error} = await sb.from('bookings').update({cost:net, profit_amount:profit, margin:profit, net_profit:profit, cost_reviewed:true}).eq('id', bookingId).select().single();
+  if(error) throw error;
+  const idx = bookings.findIndex(x=>x.id===bookingId); if(idx>-1) bookings[idx]=updated;
+  const existingCost = journal.find(j=>j.booking_id===bookingId && j.desc_key==='jCost');
+  if(net>0){
+    if(existingCost){
+      const {data:u2, error:e2} = await sb.from('journal').update({amount:net}).eq('id', existingCost.id).select().single();
+      if(e2) throw e2;
+      const jIdx = journal.findIndex(j=>j.id===existingCost.id); if(jIdx>-1) journal[jIdx]=u2;
+    }else{
+      const {data:ins, error:e3} = await sb.from('journal').insert({ date:b.date, branch_id:b.branch_id, booking_id:bookingId,
+        desc_key:'jCost', desc_args:[b.booking_no, b.airline||'-'], debit_key:'accCogs', credit_key:'accSuppliers', amount:net }).select().single();
+      if(e3) throw e3;
+      journal.unshift(ins);
+    }
+  }
+}
 async function settleSupplierPayment(bookingId){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b || b.supplier_settled || !(Number(b.cost)>0)) return;
@@ -460,14 +491,14 @@ function bankLabel(b){ return b==='RAJHI'?t('bankRajhi'):b==='AHLI'?t('bankAhli'
 
 /* ===================== ACCOUNTING ENGINE (Supabase-backed) ===================== */
 async function addBooking(data){
-  const net = Number(data.net)||0, profit = Number(data.profit)||0;
-  const sell = +(net+profit).toFixed(2);
+  const net = Number(data.net)||0, sell = Number(data.sell)||0;
+  const profit = +(sell-net).toFixed(2);
   const row = {
     date: data.date||todayStr(), customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null,
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, commission_rate: 0, commission: 0, profit_amount: profit,
-    margin: profit, net_profit: profit, payment_status:'pending',
+    margin: profit, net_profit: profit, payment_status:'pending', cost_reviewed: net>0,
     payment_method: data.paymentMethod||'cash', bank_name: data.paymentMethod==='transfer' ? (data.bankName||null) : null,
     transfer_verified: false,
     commission_status:'pending', created_by: currentUser()?.id||null
@@ -485,13 +516,13 @@ async function addBooking(data){
   journal.unshift(...jIns.reverse());
 }
 async function updateBooking(id, data){
-  const net = Number(data.net)||0, profit = Number(data.profit)||0;
-  const sell = +(net+profit).toFixed(2);
+  const net = Number(data.net)||0, sell = Number(data.sell)||0;
+  const profit = +(sell-net).toFixed(2);
   const row = {
     date: data.date, customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null,
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
-    sell, cost: net, profit_amount: profit, margin: profit, net_profit: profit,
+    sell, cost: net, profit_amount: profit, margin: profit, net_profit: profit, cost_reviewed: net>0,
     payment_method: data.paymentMethod,
     bank_name: data.paymentMethod==='transfer' ? (data.bankName||null) : null,
     edit_requested:false, edit_note:null
@@ -598,13 +629,17 @@ async function addManualJournalEntry(data){
 }
 function computeTotals(bookingsList, expensesList){
   const sales = bookingsList.reduce((s,b)=>s+Number(b.sell),0);
-  const cost = bookingsList.reduce((s,b)=>s+Number(b.cost),0);
+  const reviewed = bookingsList.filter(b=>b.cost_reviewed);
+  const pendingReview = bookingsList.filter(b=>!b.cost_reviewed);
+  const cost = reviewed.reduce((s,b)=>s+Number(b.cost),0);
   const commission = bookingsList.reduce((s,b)=>s+Number(b.commission),0);
   const expenses = expensesList.reduce((s,e)=>s+Number(e.amount),0);
   const revenue = sales+commission;
-  const netProfit = sales-cost+commission-expenses;
+  const reviewedProfit = reviewed.reduce((s,b)=>s+Number(b.profit_amount||0),0);
+  const netProfit = reviewedProfit+commission-expenses;
+  const pendingReviewSales = pendingReview.reduce((s,b)=>s+Number(b.sell),0);
   const pendingCommission = bookingsList.filter(b=>b.commission_status==='pending').reduce((s,b)=>s+Number(b.commission),0);
-  return {sales,cost,commission,expenses,revenue,netProfit,pendingCommission,count:bookingsList.length};
+  return {sales,cost,commission,expenses,revenue,netProfit,pendingCommission,pendingReviewCount:pendingReview.length,pendingReviewSales,count:bookingsList.length};
 }
 function expensesForFilter(){
   const bf = effectiveBranchFilter();
@@ -778,7 +813,7 @@ function bookingsTable(list, mode){
         <tr><td class="num">${b.booking_no}</td><td><b>${b.airline||'—'}</b></td><td>${b.customer}</td>
           <td>${b.is_open_ticket?`<span class="tag pending">${t('tagOpen')}</span>`:(b.ticket_no||'—')}</td>
           <td>${branchName(b.branch_id)}</td>
-          <td class="num">${money(b.cost)}</td><td class="num">${money(b.profit_amount)}</td>
+          <td class="num">${b.cost_reviewed?money(b.cost):`<span class="tag pending">${t('pendingReviewTag')}</span>`}</td><td class="num">${b.cost_reviewed?money(b.profit_amount):`<span class="tag pending">${t('pendingReviewTag')}</span>`}</td>
           <td class="num" style="font-weight:600">${money(b.sell)}</td>
           <td>${b.supplier||'—'}${(Number(b.cost)>0)?`<br><span class="tag ${b.supplier_settled?'collected':'pending'}">${b.supplier_settled?t('supplierSettledTag'):t('supplierUnsettledTag')}</span>`:''}</td><td>${b.invoice_no||'—'}</td>
           <td><span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span></td>
@@ -786,6 +821,7 @@ function bookingsTable(list, mode){
             :b.payment_method==='span'?`${t('paySpan')}<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
             :t('payCash')}</td>
           ${showActions?`<td style="display:flex;gap:5px;flex-wrap:wrap;">
+            ${mode==='manage' && !b.cost_reviewed?`<button class="btn btn-gold btn-sm" onclick="uiReviewCost('${b.id}')">${t('reviewCostBtn')}</button>`:''}
             ${mode==='manage' && b.payment_method==='cash' && b.payment_status!=='paid'?`<button class="btn btn-ghost btn-sm" onclick="uiMarkPaid('${b.id}')">${t('collectPayment')}</button>`:''}
             ${mode==='manage' && Number(b.cost)>0 && !b.supplier_settled?`<button class="btn btn-gold btn-sm" onclick="uiSettleSupplier('${b.id}')">${t('settleSupplierBtn')}</button>`:''}
             ${mode==='manage'?`<button class="btn btn-ghost btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>
@@ -962,9 +998,10 @@ function openBookingModal(existing){
         <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${v.date||todayStr()}"></div>
       </div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldNet')}</label><input type="number" step="0.01" name="net" required value="${v.cost??''}"></div>
-        <div class="field"><label>${t('fieldProfit')}</label><input type="number" step="0.01" name="profit" required value="${v.profit_amount??''}"></div>
+        <div class="field"><label>${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell" required value="${v.sell??''}"></div>
+        ${canSeeAllBranches()?`<div class="field"><label>${t('fieldNet')}</label><input type="number" step="0.01" name="net" value="${v.cost??''}" placeholder="${t('costReviewPlaceholder')}"></div>`:''}
       </div>
+      ${!canSeeAllBranches()?`<div class="note">${t('employeeCostNote')}</div>`:(isEdit && !v.cost_reviewed?`<div class="note" style="color:#A8722C;">${t('costReviewNote')}</div>`:'')}
       <div class="field" style="display:flex;align-items:center;gap:8px;">
         <input type="checkbox" name="isOpenTicket" id="isOpenTicket" style="width:auto;" ${v.is_open_ticket?'checked':''}>
         <label for="isOpenTicket" style="margin:0;">${t('fieldOpenTicket')}</label>
@@ -993,7 +1030,7 @@ function openBookingModal(existing){
     const f = new FormData(e.target);
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
       ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), source:f.get('source'), date:f.get('date'),
-      net:f.get('net'), profit:f.get('profit'), isOpenTicket: f.get('isOpenTicket')==='on',
+      net:f.get('net'), sell:f.get('sell'), isOpenTicket: f.get('isOpenTicket')==='on',
       paymentMethod:f.get('paymentMethod'), bankName:f.get('bankName') };
     if(isEdit && !existing.id){
       console.error('Missing booking id on edit. existing =', existing);
@@ -1052,6 +1089,7 @@ function renderLedger(){
           <tr><td>${t('expenseOp')}</td><td class="num neg">${money(tt.expenses)}</td></tr>
           <tr style="border-top:2px solid var(--navy);font-weight:700;"><td>${t('netProfit')}</td><td class="num ${tt.netProfit>=0?'pos':'neg'}">${money(tt.netProfit)}</td></tr>
         </tbody></table>
+        ${tt.pendingReviewCount>0?`<div class="note" style="color:#A8722C;">⚠️ ${tt.pendingReviewCount} ${t('pendingReviewTag')} (${money(tt.pendingReviewSales)}) — ${t('reviewCostBtn')}</div>`:''}
       </div>
       <div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('chartOfAccounts')}</h3></div>
         <table><thead><tr><th>${t('jDesc')}</th><th>${t('colAmount')}</th></tr></thead><tbody>${['accCashOnHand','accBank','accCustomers','accCommRec','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'].map(k=>`<tr><td>${t(k)}</td><td class="num" style="font-weight:600">${money(accountBalance(k, jrnl))}</td></tr>`).join('')}</tbody></table>
@@ -1306,6 +1344,15 @@ window.uiRejectDeposit = async function(id){
 };
 window.uiVerifyTransfer = async function(id){ try{ await verifyPaymentReceived(id); render(); }catch(e){ console.error(e); alert(t('connError')); } };
 window.uiSettleSupplier = async function(id){ try{ await settleSupplierPayment(id); render(); }catch(e){ console.error(e); alert(t('connError')); } };
+window.uiReviewCost = function(id){
+  const b = bookings.find(x=>x.id===id);
+  if(!b) return;
+  const val = prompt(`${t('reviewCostPrompt')} (${t('fieldSellPrice')}: ${money(b.sell)})`, '');
+  if(val===null) return;
+  const net = Number(val);
+  if(isNaN(net) || net<0){ alert(t('invalidNumber')); return; }
+  reviewBookingCost(id, net).then(render).catch(e=>{ console.error(e); alert(t('connError')); });
+};
 
 /* ===================== USERS ===================== */
 function renderUsers(){
