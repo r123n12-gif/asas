@@ -337,7 +337,9 @@ function branchCashOnHand(branchId){
   return +(collectedCash-approvedDeposits).toFixed(2);
 }
 async function uploadReceiptFile(file){
-  const path = `${Date.now()}_${Math.random().toString(36).slice(2)}_${file.name}`;
+  const extMatch = /\.([a-zA-Z0-9]+)$/.exec(file.name||'');
+  const ext = extMatch ? extMatch[1].toLowerCase() : 'jpg';
+  const path = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
   const {error} = await sb.storage.from(RECEIPTS_BUCKET).upload(path, file);
   if(error) throw error;
   const {data} = sb.storage.from(RECEIPTS_BUCKET).getPublicUrl(path);
