@@ -218,7 +218,8 @@ const T = {
     passwordMismatch:'كلمة المرور الجديدة وتأكيدها غير متطابقين.', leaveBlankNote:'اترك كلمة المرور الجديدة فاضية إذا ما تبي تغيّرها.',
     edit:'تعديل', modalEditBooking:'تعديل الحجز', saveChanges:'حفظ التعديلات', returnedTag:'مُرجَع للموظف',
     returnToEmployee:'إرجاع للموظف للتعديل', confirmDeleteBooking:'هل أنت متأكد من حذف هذا الحجز؟ لا يمكن التراجع عن هذا الإجراء.',
-    editNotePrompt:'وضّح للموظف ما المطلوب تعديله (اختياري):', editNoteLabel:'ملاحظة المحاسب'
+    editNotePrompt:'وضّح للموظف ما المطلوب تعديله (اختياري):', editNoteLabel:'ملاحظة المحاسب',
+    groupByBranch:'تصنيف حسب: الفرع', groupByEmployee:'تصنيف حسب: الموظف', searchPlaceholder:'بحث بالاسم...'
   },
   en: {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
@@ -301,7 +302,8 @@ const T = {
     passwordMismatch:'New password and confirmation do not match.', leaveBlankNote:'Leave the new password blank to keep it unchanged.',
     edit:'Edit', modalEditBooking:'Edit booking', saveChanges:'Save changes', returnedTag:'Returned to employee',
     returnToEmployee:'Return to employee for edit', confirmDeleteBooking:'Are you sure you want to delete this booking? This cannot be undone.',
-    editNotePrompt:"Explain to the employee what needs to be fixed (optional):", editNoteLabel:"Accountant's note"
+    editNotePrompt:"Explain to the employee what needs to be fixed (optional):", editNoteLabel:"Accountant's note",
+    groupByBranch:'Group by: Branch', groupByEmployee:'Group by: Employee', searchPlaceholder:'Search by name...'
   }
 };
 let lang = localStorage.getItem('asas_lang') || 'ar';
@@ -439,6 +441,36 @@ async function updateBooking(id, data){
   if(error) throw error;
   const idx = bookings.findIndex(b=>b.id===id);
   if(idx>-1) bookings[idx] = updated;
+  // keep the journal (ledger) in sync with the edited booking
+  const existingRows = journal.filter(j=>j.booking_id===id);
+  const existingSale = existingRows.find(j=>j.desc_key==='jSale');
+  const existingCost = existingRows.find(j=>j.desc_key==='jCost');
+  const saleArgs = [updated.booking_no, updated.airline||'-', updated.customer];
+  const costArgs = [updated.booking_no, updated.airline||'-'];
+  if(existingSale){
+    const {data:u1, error:e1} = await sb.from('journal').update({date:updated.date, branch_id:updated.branch_id, desc_args:saleArgs, amount:sell}).eq('id', existingSale.id).select().single();
+    if(e1) throw e1;
+    const jIdx = journal.findIndex(j=>j.id===existingSale.id); if(jIdx>-1) journal[jIdx]=u1;
+  }else{
+    const {data:insS, error:eS} = await sb.from('journal').insert({date:updated.date, branch_id:updated.branch_id, booking_id:id, desc_key:'jSale', desc_args:saleArgs, debit_key:'accCustomers', credit_key:'accSalesRev', amount:sell}).select().single();
+    if(eS) throw eS;
+    journal.unshift(insS);
+  }
+  if(net>0){
+    if(existingCost){
+      const {data:u2, error:e2} = await sb.from('journal').update({date:updated.date, branch_id:updated.branch_id, desc_args:costArgs, amount:net}).eq('id', existingCost.id).select().single();
+      if(e2) throw e2;
+      const jIdx2 = journal.findIndex(j=>j.id===existingCost.id); if(jIdx2>-1) journal[jIdx2]=u2;
+    }else{
+      const {data:insC, error:eC} = await sb.from('journal').insert({date:updated.date, branch_id:updated.branch_id, booking_id:id, desc_key:'jCost', desc_args:costArgs, debit_key:'accCogs', credit_key:'accSuppliers', amount:net}).select().single();
+      if(eC) throw eC;
+      journal.unshift(insC);
+    }
+  }else if(existingCost){
+    const {error:e4} = await sb.from('journal').delete().eq('id', existingCost.id);
+    if(e4) throw e4;
+    journal = journal.filter(j=>j.id!==existingCost.id);
+  }
 }
 async function deleteBooking(id){
   const {error} = await sb.from('bookings').delete().eq('id', id);
@@ -988,23 +1020,52 @@ function renderCommissions(){
 }
 
 /* ===================== REPORTS ===================== */
+let reportGroupBy = 'branch';
+let reportSearchTerm = '';
 function renderReports(){
   document.getElementById('pageSub').textContent = t('subReports');
-  const rows = branches.map(b=>{
-    const bl = bookings.filter(x=>x.branch_id===b.id);
-    const tt = computeTotals(bl, manualExpenses.filter(e=>e.branch_id===b.id));
-    const margin = tt.revenue>0 ? (tt.netProfit/tt.revenue*100) : 0;
-    return {name:b.name, ...tt, margin};
-  });
+  const groupBy = reportGroupBy;
+  let rows = [];
+  if(groupBy==='employee'){
+    rows = users.map(u=>{
+      const bl = bookings.filter(x=>x.created_by===u.id);
+      const tt = computeTotals(bl, []);
+      const margin = tt.sales>0 ? (tt.netProfit/tt.sales*100) : 0;
+      return {name:u.name, sub:branchName(u.branch_id), ...tt, margin};
+    }).filter(r=>r.count>0 || !reportSearchTerm);
+  }else{
+    rows = branches.map(b=>{
+      const bl = bookings.filter(x=>x.branch_id===b.id);
+      const tt = computeTotals(bl, manualExpenses.filter(e=>e.branch_id===b.id));
+      const margin = tt.revenue>0 ? (tt.netProfit/tt.revenue*100) : 0;
+      return {name:b.name, sub:null, ...tt, margin};
+    });
+  }
+  if(reportSearchTerm){
+    const term = reportSearchTerm.toLowerCase();
+    rows = rows.filter(r=> r.name.toLowerCase().includes(term) || (r.sub||'').toLowerCase().includes(term));
+  }
+  const nameHeader = groupBy==='employee' ? t('colUserName') : t('colBranchName');
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales')}</div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit')}</div>
-    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('branchTable')}</h3></div>
-      ${rows.length===0?`<div class="empty">${t('emptyBranches')}</div>`:`<div style="overflow-x:auto;">
-      <table><thead><tr><th>${t('colBranchName')}</th><th>${t('colBookCount')}</th><th>${t('colSalesTotal')}</th><th>${t('colCostTotal')}</th><th>${t('colCommTotal')}</th><th>${t('colExpTotal')}</th><th>${t('colNetProfitCol')}</th><th>${t('colMargin')}</th></tr></thead>
-        <tbody>${rows.map(r=>`<tr><td>${r.name}</td><td class="num">${r.count}</td><td class="num">${money(r.sales)}</td><td class="num">${money(r.cost)}</td>
-          <td class="num">${money(r.commission)}</td><td class="num">${money(r.expenses)}</td><td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${money(r.netProfit)}</td><td class="num">${r.margin.toFixed(1)}%</td></tr>`).join('')}</tbody></table></div>`}
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('branchTable')}</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <select class="select-ctrl" id="reportGroupBySel">
+            <option value="branch" ${groupBy==='branch'?'selected':''}>${t('groupByBranch')}</option>
+            <option value="employee" ${groupBy==='employee'?'selected':''}>${t('groupByEmployee')}</option>
+          </select>
+          <input class="select-ctrl" id="reportSearchInput" type="text" placeholder="${t('searchPlaceholder')}" value="${reportSearchTerm}">
+        </div>
+      </div>
+      ${rows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;">
+      <table><thead><tr><th>${nameHeader}</th>${groupBy==='employee'?`<th>${t('colUserBranch')}</th>`:''}<th>${t('colBookCount')}</th><th>${t('colSalesTotal')}</th><th>${t('colCostTotal')}</th><th>${t('colCommTotal')}</th>${groupBy==='branch'?`<th>${t('colExpTotal')}</th>`:''}<th>${t('colNetProfitCol')}</th><th>${t('colMargin')}</th></tr></thead>
+        <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td class="num">${r.count}</td><td class="num">${money(r.sales)}</td><td class="num">${money(r.cost)}</td>
+          <td class="num">${money(r.commission)}</td>${groupBy==='branch'?`<td class="num">${money(r.expenses)}</td>`:''}<td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${money(r.netProfit)}</td><td class="num">${r.margin.toFixed(1)}%</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
+  document.getElementById('reportGroupBySel').onchange = (e)=>{ reportGroupBy = e.target.value; renderReports(); };
+  document.getElementById('reportSearchInput').oninput = (e)=>{ reportSearchTerm = e.target.value; renderReports(); };
 }
 
 /* ===================== CASH DEPOSITS PAGE ===================== */
