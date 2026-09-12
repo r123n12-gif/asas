@@ -165,7 +165,7 @@ const T = {
     chartOfAccounts:'دليل الحسابات', journalTitle:'القيود اليومية (تلقائية + يدوية)', addExpense:'+ إضافة مصروف يدوي',
     jDate:'التاريخ', jBranch:'الفرع', jDesc:'البيان', jDebit:'من حساب (مدين)', jCredit:'إلى حساب (دائن)', jAmount:'المبلغ',
     journalEmpty:'لا توجد قيود بعد.', journalShowing:'عرض آخر 40 قيدًا من',
-    accCash:'الصندوق والبنك', accCustomers:'حسابات العملاء', accCommRec:'مستحقات عمولات من الموردين',
+    accCashOnHand:'الخزينة النقدية (الصندوق)', accBank:'الخزينة البنكية (البنك)', accCustomers:'حسابات العملاء', accCommRec:'مستحقات عمولات من الموردين',
     accSuppliers:'حسابات الموردين (شركات الطيران / GDS)', accSalesRev:'إيرادات المبيعات', accCommRev:'إيرادات العمولات',
     accCogs:'تكلفة الخدمات المباعة', accExpenses:'المصروفات التشغيلية',
     modalExpense:'إضافة مصروف تشغيلي', fieldExpenseDesc:'البيان (مثال: إيجار، رواتب، اتصالات)', fieldAmount:'المبلغ (ر.س)',
@@ -219,7 +219,10 @@ const T = {
     edit:'تعديل', modalEditBooking:'تعديل الحجز', saveChanges:'حفظ التعديلات', returnedTag:'مُرجَع للموظف',
     returnToEmployee:'إرجاع للموظف للتعديل', confirmDeleteBooking:'هل أنت متأكد من حذف هذا الحجز؟ لا يمكن التراجع عن هذا الإجراء.',
     editNotePrompt:'وضّح للموظف ما المطلوب تعديله (اختياري):', editNoteLabel:'ملاحظة المحاسب',
-    groupByBranch:'تصنيف حسب: الفرع', groupByEmployee:'تصنيف حسب: الموظف', searchPlaceholder:'بحث بالاسم...'
+    groupByBranch:'تصنيف حسب: الفرع', groupByEmployee:'تصنيف حسب: الموظف', searchPlaceholder:'بحث بالاسم...',
+    paySpan:'شبكة/سبان (بطاقة)', spanFeeNote:'يُخصم 8% رسوم شبكة تلقائيًا من المبلغ عند اعتماد المحاسب.',
+    pendingVerifyTitle:'تحويلات وشبكة بانتظار التأكيد', colFee:'رسوم الشبكة', employeeMustHaveBranch:'يجب اختيار فرع للموظف.',
+    verifiedTag:'تم التأكيد', bankTag:'البنك', paymentPendingNote:'كل حجز يبدأ بحالة "قيد التحصيل" ولا يتحول لـ"مدفوع" إلا بعد اعتماد/تأكيد المحاسب أو المدير — لمنع أي تلاعب.'
   },
   en: {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
@@ -249,7 +252,7 @@ const T = {
     chartOfAccounts:'Chart of accounts', journalTitle:'Daily journal (auto + manual)', addExpense:'+ Add manual expense',
     jDate:'Date', jBranch:'Branch', jDesc:'Description', jDebit:'Debit account', jCredit:'Credit account', jAmount:'Amount',
     journalEmpty:'No entries yet.', journalShowing:'Showing last 40 entries of',
-    accCash:'Cash & bank', accCustomers:'Accounts receivable (customers)', accCommRec:'Commissions receivable from suppliers',
+    accCashOnHand:'Cash on hand (till)', accBank:'Bank (treasury)', accCustomers:'Accounts receivable (customers)', accCommRec:'Commissions receivable from suppliers',
     accSuppliers:'Accounts payable (airlines / GDS)', accSalesRev:'Sales revenue', accCommRev:'Commission revenue',
     accCogs:'Cost of services sold', accExpenses:'Operating expenses',
     modalExpense:'Add operating expense', fieldExpenseDesc:'Description (e.g. rent, salaries, phone)', fieldAmount:'Amount (SAR)',
@@ -303,7 +306,10 @@ const T = {
     edit:'Edit', modalEditBooking:'Edit booking', saveChanges:'Save changes', returnedTag:'Returned to employee',
     returnToEmployee:'Return to employee for edit', confirmDeleteBooking:'Are you sure you want to delete this booking? This cannot be undone.',
     editNotePrompt:"Explain to the employee what needs to be fixed (optional):", editNoteLabel:"Accountant's note",
-    groupByBranch:'Group by: Branch', groupByEmployee:'Group by: Employee', searchPlaceholder:'Search by name...'
+    groupByBranch:'Group by: Branch', groupByEmployee:'Group by: Employee', searchPlaceholder:'Search by name...',
+    paySpan:'Card / network (SPAN)', spanFeeNote:'An 8% network fee is deducted automatically once the accountant approves.',
+    pendingVerifyTitle:'Transfers & card payments awaiting confirmation', colFee:'Network fee', employeeMustHaveBranch:'A branch must be selected for the employee.',
+    verifiedTag:'Confirmed', bankTag:'Bank', paymentPendingNote:'Every booking starts as "pending" and only becomes "paid" once the accountant or admin confirms/approves it — to prevent manipulation.'
   }
 };
 let lang = localStorage.getItem('asas_lang') || 'ar';
@@ -356,19 +362,37 @@ async function submitDeposit(data){
   deposits.unshift(ins);
 }
 async function approveDeposit(id){
+  const d0 = deposits.find(x=>x.id===id);
   const {error} = await sb.from('cash_deposits').update({status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
   if(error) throw error;
   const d = deposits.find(x=>x.id===id); if(d){ d.status='approved'; }
+  const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:d0.branch_id, deposit_id:id,
+    desc_key:'jDeposit', desc_args:[destLabel(d0.destination)], debit_key:'accBank', credit_key:'accCashOnHand', amount:d0.amount }).select().single();
+  if(jErr) throw jErr;
+  journal.unshift(jIns);
 }
 async function rejectDeposit(id, notes){
   const {error} = await sb.from('cash_deposits').update({status:'rejected', notes:notes||null, reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
   if(error) throw error;
   const d = deposits.find(x=>x.id===id); if(d){ d.status='rejected'; d.notes=notes||null; }
 }
-async function verifyTransfer(bookingId){
-  const {error} = await sb.from('bookings').update({transfer_verified:true, transfer_verified_by:currentUser()?.id||null, transfer_verified_at:new Date().toISOString()}).eq('id', bookingId);
+async function verifyPaymentReceived(bookingId){
+  const b = bookings.find(x=>x.id===bookingId);
+  if(!b) return;
+  const sell = Number(b.sell)||0;
+  const isSpan = b.payment_method==='span';
+  const feeAmount = isSpan ? +(sell*0.08).toFixed(2) : 0;
+  const netToBank = +(sell-feeAmount).toFixed(2);
+  const {error} = await sb.from('bookings').update({transfer_verified:true, transfer_verified_by:currentUser()?.id||null, transfer_verified_at:new Date().toISOString(), payment_status:'paid'}).eq('id', bookingId);
   if(error) throw error;
-  const b = bookings.find(x=>x.id===bookingId); if(b){ b.transfer_verified = true; }
+  b.transfer_verified = true; b.payment_status='paid';
+  const jRows = [{ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
+    desc_key:'jBankReceipt', desc_args:[b.booking_no, b.customer], debit_key:'accBank', credit_key:'accCustomers', amount:netToBank }];
+  if(feeAmount>0) jRows.push({ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
+    desc_key:'jCardFee', desc_args:[b.booking_no], debit_key:'accExpenses', credit_key:'accCustomers', amount:feeAmount });
+  const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
+  if(jErr) throw jErr;
+  journal.unshift(...jIns.reverse());
 }
 
 /* ===================== HELPERS ===================== */
@@ -408,7 +432,7 @@ async function addBooking(data){
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null,
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, commission_rate: 0, commission: 0, profit_amount: profit,
-    margin: profit, net_profit: profit, payment_status: data.paymentStatus||'pending',
+    margin: profit, net_profit: profit, payment_status:'pending',
     payment_method: data.paymentMethod||'cash', bank_name: data.paymentMethod==='transfer' ? (data.bankName||null) : null,
     transfer_verified: false,
     commission_status:'pending', created_by: currentUser()?.id||null
@@ -433,7 +457,7 @@ async function updateBooking(id, data){
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null,
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, profit_amount: profit, margin: profit, net_profit: profit,
-    payment_status: data.paymentStatus, payment_method: data.paymentMethod,
+    payment_method: data.paymentMethod,
     bank_name: data.paymentMethod==='transfer' ? (data.bankName||null) : null,
     edit_requested:false, edit_note:null
   };
@@ -488,7 +512,11 @@ function journalDesc(j){
     jCost:{ar:(a)=>`تكلفة حجز #${a[0]} مستحقة لـ ${a[1]}`, en:(a)=>`Cost of booking #${a[0]} payable to ${a[1]}`},
     jComm:{ar:(a)=>`عمولة مستحقة من ${a[0]} - حجز #${a[1]}`, en:(a)=>`Commission receivable from ${a[0]} - booking #${a[1]}`},
     jExpense:{ar:(a)=>`مصروف: ${a[0]}`, en:(a)=>`Expense: ${a[0]}`},
-    jCollectComm:{ar:(a)=>`تحصيل عمولة حجز #${a[0]} من ${a[1]}`, en:(a)=>`Collected commission for booking #${a[0]} from ${a[1]}`} };
+    jCollectComm:{ar:(a)=>`تحصيل عمولة حجز #${a[0]} من ${a[1]}`, en:(a)=>`Collected commission for booking #${a[0]} from ${a[1]}`},
+    jCollectCash:{ar:(a)=>`تحصيل كاش حجز #${a[0]} - ${a[1]}`, en:(a)=>`Cash collected for booking #${a[0]} - ${a[1]}`},
+    jBankReceipt:{ar:(a)=>`استلام دفعة بنكية حجز #${a[0]} - ${a[1]}`, en:(a)=>`Bank payment received for booking #${a[0]} - ${a[1]}`},
+    jCardFee:{ar:(a)=>`رسوم شبكة (سبان) حجز #${a[0]}`, en:(a)=>`Card/network fee for booking #${a[0]}`},
+    jDeposit:{ar:(a)=>`إيداع كاش الفرع لحساب ${a[0]}`, en:(a)=>`Branch cash deposit to ${a[0]} account`} };
   const tpl = templates[j.desc_key];
   return tpl ? tpl[lang](j.desc_args||[]) : '';
 }
@@ -498,15 +526,21 @@ async function collectCommission(bookingId){
   const {error} = await sb.from('bookings').update({commission_status:'collected'}).eq('id', bookingId);
   if(error) throw error;
   b.commission_status = 'collected';
-  const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:b.branch_id,
-    desc_key:'jCollectComm', desc_args:[b.booking_no, b.supplier], debit_key:'accCash', credit_key:'accCommRec', amount:b.commission }).select().single();
+  const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
+    desc_key:'jCollectComm', desc_args:[b.booking_no, b.supplier], debit_key:'accCashOnHand', credit_key:'accCommRec', amount:b.commission }).select().single();
   if(jErr) throw jErr;
   journal.unshift(jIns);
 }
 async function markPaid(bookingId){
+  const b = bookings.find(x=>x.id===bookingId);
+  if(!b || b.payment_method!=='cash' || b.payment_status==='paid') return;
   const {error} = await sb.from('bookings').update({payment_status:'paid'}).eq('id', bookingId);
   if(error) throw error;
-  const b = bookings.find(x=>x.id===bookingId); if(b) b.payment_status='paid';
+  b.payment_status='paid';
+  const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
+    desc_key:'jCollectCash', desc_args:[b.booking_no, b.customer], debit_key:'accCashOnHand', credit_key:'accCustomers', amount:b.sell }).select().single();
+  if(jErr) throw jErr;
+  journal.unshift(jIns);
 }
 async function addManualExpense(data){
   const amount = Number(data.amount)||0;
@@ -514,7 +548,7 @@ async function addManualExpense(data){
   if(error) throw error;
   manualExpenses.unshift(ins);
   const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:ins.date, branch_id:ins.branch_id,
-    desc_key:'jExpense', desc_args:[data.desc], debit_key:'accExpenses', credit_key:'accCash', amount }).select().single();
+    desc_key:'jExpense', desc_args:[data.desc], debit_key:'accExpenses', credit_key:'accCashOnHand', amount }).select().single();
   if(jErr) throw jErr;
   journal.unshift(jIns);
 }
@@ -704,9 +738,11 @@ function bookingsTable(list, mode){
           <td class="num" style="font-weight:600">${money(b.sell)}</td>
           <td>${b.supplier||'—'}</td><td>${b.invoice_no||'—'}</td>
           <td><span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span></td>
-          <td>${b.payment_method==='transfer'?`${t('payTransfer')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('transferVerified'):t('transferPending')}</span>`:t('payCash')}</td>
+          <td>${b.payment_method==='transfer'?`${t('payTransfer')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
+            :b.payment_method==='span'?`${t('paySpan')}<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
+            :t('payCash')}</td>
           ${showActions?`<td style="display:flex;gap:5px;flex-wrap:wrap;">
-            ${b.payment_status!=='paid'?`<button class="btn btn-ghost btn-sm" onclick="uiMarkPaid('${b.id}')">${t('collectPayment')}</button>`:''}
+            ${mode==='manage' && b.payment_method==='cash' && b.payment_status!=='paid'?`<button class="btn btn-ghost btn-sm" onclick="uiMarkPaid('${b.id}')">${t('collectPayment')}</button>`:''}
             ${mode==='manage'?`<button class="btn btn-ghost btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>
               <button class="btn btn-danger btn-sm" onclick="uiDeleteBooking('${b.id}')">${t('delete')}</button>
               ${b.edit_requested?`<span class="tag pending">${t('returnedTag')}</span>`:`<button class="btn btn-ghost btn-sm" onclick="uiRequestEdit('${b.id}')">${t('returnToEmployee')}</button>`}`:''}
@@ -780,7 +816,7 @@ function bookingRowHTML(b){
       <td>${b.booking_no}</td><td>${b.date}</td><td>${branchName(b.branch_id)}</td><td>${userName(b.created_by)}</td><td>${b.airline||'—'}</td><td>${b.customer}</td>
       <td>${b.ticket_no||'—'}</td><td>${b.supplier||'—'}</td>
       <td style="text-align:end">${money(b.cost)}</td><td style="text-align:end">${money(b.profit_amount)}</td><td style="text-align:end;font-weight:600">${money(b.sell)}</td>
-      <td>${b.payment_method==='transfer'?t('payTransfer'):t('payCash')}</td>
+      <td>${b.payment_method==='transfer'?t('payTransfer'):b.payment_method==='span'?t('paySpan'):t('payCash')}</td>
       <td>${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</td>
     </tr>`;
 }
@@ -888,14 +924,14 @@ function openBookingModal(existing){
         <input type="checkbox" name="isOpenTicket" id="isOpenTicket" style="width:auto;" ${v.is_open_ticket?'checked':''}>
         <label for="isOpenTicket" style="margin:0;">${t('fieldOpenTicket')}</label>
       </div>
-      <div class="field"><label>${t('fieldPayStatus')}</label><select name="paymentStatus"><option value="pending" ${v.payment_status==='pending'?'selected':''}>${t('payPending')}</option><option value="paid" ${v.payment_status==='paid'?'selected':''}>${t('payPaid')}</option></select></div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="paymentMethod" id="paymentMethodSel"><option value="cash" ${v.payment_method==='cash'?'selected':''}>${t('payCash')}</option><option value="transfer" ${v.payment_method==='transfer'?'selected':''}>${t('payTransfer')}</option></select></div>
+        <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="paymentMethod" id="paymentMethodSel"><option value="cash" ${v.payment_method==='cash'?'selected':''}>${t('payCash')}</option><option value="transfer" ${v.payment_method==='transfer'?'selected':''}>${t('payTransfer')}</option><option value="span" ${v.payment_method==='span'?'selected':''}>${t('paySpan')}</option></select></div>
         <div class="field" id="bankNameField" style="display:${v.payment_method==='transfer'?'':'none'};"><label>${t('fieldBankName')}</label><select name="bankName">
           <option value="RAJHI" ${v.bank_name==='RAJHI'?'selected':''}>${t('bankRajhi')}</option><option value="AHLI" ${v.bank_name==='AHLI'?'selected':''}>${t('bankAhli')}</option><option value="OTHER" ${v.bank_name==='OTHER'?'selected':''}>${t('bankOther')}</option>
         </select></div>
       </div>
-      <div class="note">${t('journalNote')}</div>
+      <div id="spanNoteBox" class="note" style="display:${v.payment_method==='span'?'':'none'};color:#A8722C;">${t('spanFeeNote')}</div>
+      <div class="note">${t('journalNote')} — ${t('paymentPendingNote')}</div>
       <div id="bookingErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
         <button type="submit" class="btn btn-primary" id="bookingSaveBtn">${isEdit?t('saveChanges'):t('saveBooking')}</button>
@@ -904,6 +940,7 @@ function openBookingModal(existing){
     </form>`);
   document.getElementById('paymentMethodSel').onchange = (e)=>{
     document.getElementById('bankNameField').style.display = e.target.value==='transfer' ? '' : 'none';
+    document.getElementById('spanNoteBox').style.display = e.target.value==='span' ? '' : 'none';
   };
   document.getElementById('bookingForm').onsubmit = async (e)=>{
     e.preventDefault();
@@ -912,7 +949,7 @@ function openBookingModal(existing){
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
       ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), source:f.get('source'), date:f.get('date'),
       net:f.get('net'), profit:f.get('profit'), isOpenTicket: f.get('isOpenTicket')==='on',
-      paymentStatus:f.get('paymentStatus'), paymentMethod:f.get('paymentMethod'), bankName:f.get('bankName') };
+      paymentMethod:f.get('paymentMethod'), bankName:f.get('bankName') };
     if(isEdit && !existing.id){
       console.error('Missing booking id on edit. existing =', existing);
       document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">خطأ داخلي: لم يتم العثور على رقم الحجز. أعد فتح صفحة الحجوزات وحاول تعديل الحجز من جديد (وأرسل صورة من هذه الرسالة لو تكررت).</div>`;
@@ -946,6 +983,13 @@ window.uiRequestEdit = async function(id){
 };
 
 /* ===================== LEDGER ===================== */
+const ACCOUNT_NORMAL_SIDE = { accCashOnHand:'debit', accBank:'debit', accCustomers:'debit', accCommRec:'debit',
+  accSuppliers:'credit', accSalesRev:'credit', accCommRev:'credit', accCogs:'debit', accExpenses:'debit' };
+function accountBalance(key, jrnl){
+  let debit=0, credit=0;
+  jrnl.forEach(j=>{ if(j.debit_key===key) debit+=Number(j.amount)||0; if(j.credit_key===key) credit+=Number(j.amount)||0; });
+  return ACCOUNT_NORMAL_SIDE[key]==='credit' ? +(credit-debit).toFixed(2) : +(debit-credit).toFixed(2);
+}
 function renderLedger(){
   document.getElementById('pageSub').textContent = t('subLedger');
   const list = filteredBookings();
@@ -965,7 +1009,7 @@ function renderLedger(){
         </tbody></table>
       </div>
       <div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('chartOfAccounts')}</h3></div>
-        <table><tbody>${['accCash','accCustomers','accCommRec','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'].map(k=>`<tr><td>${t(k)}</td></tr>`).join('')}</tbody></table>
+        <table><thead><tr><th>${t('jDesc')}</th><th>${t('colAmount')}</th></tr></thead><tbody>${['accCashOnHand','accBank','accCustomers','accCommRec','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'].map(k=>`<tr><td>${t(k)}</td><td class="num" style="font-weight:600">${money(accountBalance(k, jrnl))}</td></tr>`).join('')}</tbody></table>
       </div>
     </div>
     <div class="panel">
@@ -1094,10 +1138,12 @@ function renderDeposits(){
       ${rows.length===0?`<div class="empty">${t('emptyBranches')}</div>`:`<table><thead><tr><th>${t('colBranchName')}</th><th>${t('colAmount')}</th></tr></thead>
       <tbody>${rows.map(r=>`<tr><td>${r.name}</td><td class="num" style="font-weight:600">${money(r.bal)}</td></tr>`).join('')}</tbody></table>`}
     </div>`;
-    const pendingTransfers = bookings.filter(b=>b.payment_method==='transfer' && !b.transfer_verified);
-    html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingTransfersTitle')}</h3></div>
-      ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th></th></tr></thead>
-      <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td><td>${bankLabel(b.bank_name)}</td><td class="num">${money(b.sell)}</td>
+    const pendingTransfers = bookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span') && !b.transfer_verified);
+    html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingVerifyTitle')}</h3></div>
+      ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('colAmount')}</th><th>${t('colFee')}</th><th></th></tr></thead>
+      <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td>
+        <td>${b.payment_method==='span'?t('paySpan'):`${t('payTransfer')} (${bankLabel(b.bank_name)})`}</td><td class="num">${money(b.sell)}</td>
+        <td class="num">${b.payment_method==='span'?money(+(Number(b.sell)*0.08).toFixed(2)):'—'}</td>
         <td><button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
   }
@@ -1165,7 +1211,7 @@ window.uiRejectDeposit = async function(id){
   const reason = prompt(t('rejectReason'))||'';
   try{ await rejectDeposit(id, reason); render(); }catch(e){ alert(t('connError')); }
 };
-window.uiVerifyTransfer = async function(id){ try{ await verifyTransfer(id); render(); }catch(e){ alert(t('connError')); } };
+window.uiVerifyTransfer = async function(id){ try{ await verifyPaymentReceived(id); render(); }catch(e){ console.error(e); alert(t('connError')); } };
 
 /* ===================== USERS ===================== */
 function renderUsers(){
@@ -1206,6 +1252,10 @@ function openUserModal(){
     const username = (f.get('username')||'').trim();
     const role = f.get('role');
     const branchId = f.get('branchId')||null;
+    if(role==='employee' && !branchId){
+      document.getElementById('userErrorBox').innerHTML = `<div class="login-error">${t('employeeMustHaveBranch')}</div>`;
+      btn.disabled=false; btn.textContent=t('add'); return;
+    }
     try{
       const {data:newId, error} = await sb.rpc('create_app_user', { p_name:f.get('name'), p_username:username, p_password:f.get('password'), p_role:role, p_branch_id: role==='employee'?branchId:null });
       if(error){
