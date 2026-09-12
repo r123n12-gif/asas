@@ -222,7 +222,14 @@ const T = {
     groupByBranch:'تصنيف حسب: الفرع', groupByEmployee:'تصنيف حسب: الموظف', searchPlaceholder:'بحث بالاسم...',
     paySpan:'شبكة/سبان (بطاقة)', spanFeeNote:'يُخصم 8% رسوم شبكة تلقائيًا من المبلغ عند اعتماد المحاسب.',
     pendingVerifyTitle:'تحويلات وشبكة بانتظار التأكيد', colFee:'رسوم الشبكة', employeeMustHaveBranch:'يجب اختيار فرع للموظف.',
-    verifiedTag:'تم التأكيد', bankTag:'البنك', paymentPendingNote:'كل حجز يبدأ بحالة "قيد التحصيل" ولا يتحول لـ"مدفوع" إلا بعد اعتماد/تأكيد المحاسب أو المدير — لمنع أي تلاعب.'
+    verifiedTag:'تم التأكيد', bankTag:'البنك', paymentPendingNote:'كل حجز يبدأ بحالة "قيد التحصيل" ولا يتحول لـ"مدفوع" إلا بعد اعتماد/تأكيد المحاسب أو المدير — لمنع أي تلاعب.',
+    backupTitle:'نسخة احتياطية للبيانات', backupNote:'يصدّر هذا الزر كل بيانات النظام (الفروع، المستخدمين، الحجوزات، القيود، الإيداعات) كملف JSON تقدر تحفظه على جهازك. يُنصح بعمل هذا أسبوعيًا على الأقل.',
+    exportBackupBtn:'⬇️ تصدير نسخة احتياطية كاملة',
+    addManualJournal:'+ قيد يدوي', modalManualJournal:'إضافة قيد يدوي', manualDescPlaceholder:'مثلاً: إيداع رأس مال من المالك',
+    manualJournalNote:'استخدم هذا لأي عملية غير مغطاة تلقائيًا بالنظام (رأس مال، قرض، تسوية، تصحيح خطأ سابق...). تأكد من اختيار الحسابين الصحيحين لأن هذا يؤثر مباشرة على دفتر الحسابات.',
+    sameAccountError:'لا يمكن اختيار نفس الحساب للمدين والدائن.',
+    supplierSettledTag:'تم الدفع للمورد', supplierUnsettledTag:'مستحق للمورد', settleSupplierBtn:'تسوية المورد',
+    supplierBalancesTitle:'أرصدة الموردين', colSupplier:'المورد', colOwed:'مستحق (غير مدفوع)', colSettled:'مدفوع'
   },
   en: {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
@@ -309,7 +316,14 @@ const T = {
     groupByBranch:'Group by: Branch', groupByEmployee:'Group by: Employee', searchPlaceholder:'Search by name...',
     paySpan:'Card / network (SPAN)', spanFeeNote:'An 8% network fee is deducted automatically once the accountant approves.',
     pendingVerifyTitle:'Transfers & card payments awaiting confirmation', colFee:'Network fee', employeeMustHaveBranch:'A branch must be selected for the employee.',
-    verifiedTag:'Confirmed', bankTag:'Bank', paymentPendingNote:'Every booking starts as "pending" and only becomes "paid" once the accountant or admin confirms/approves it — to prevent manipulation.'
+    verifiedTag:'Confirmed', bankTag:'Bank', paymentPendingNote:'Every booking starts as "pending" and only becomes "paid" once the accountant or admin confirms/approves it — to prevent manipulation.',
+    backupTitle:'Data backup', backupNote:'This exports all system data (branches, users, bookings, journal, deposits) as a JSON file you can save on your device. Recommended at least weekly.',
+    exportBackupBtn:'⬇️ Export full backup',
+    addManualJournal:'+ Manual entry', modalManualJournal:'Add manual journal entry', manualDescPlaceholder:'e.g. Capital deposit from owner',
+    manualJournalNote:"Use this for anything not automatically covered by the system (capital, loan, adjustment, correcting a past error...). Make sure you pick the correct two accounts since this directly affects the ledger.",
+    sameAccountError:'You cannot pick the same account for both debit and credit.',
+    supplierSettledTag:'Paid to supplier', supplierUnsettledTag:'Owed to supplier', settleSupplierBtn:'Settle supplier',
+    supplierBalancesTitle:'Supplier balances', colSupplier:'Supplier', colOwed:'Owed (unpaid)', colSettled:'Paid'
   }
 };
 let lang = localStorage.getItem('asas_lang') || 'ar';
@@ -393,6 +407,27 @@ async function verifyPaymentReceived(bookingId){
   const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
   if(jErr) throw jErr;
   journal.unshift(...jIns.reverse());
+}
+async function settleSupplierPayment(bookingId){
+  const b = bookings.find(x=>x.id===bookingId);
+  if(!b || b.supplier_settled || !(Number(b.cost)>0)) return;
+  const {error} = await sb.from('bookings').update({supplier_settled:true, supplier_settled_by:currentUser()?.id||null, supplier_settled_at:new Date().toISOString()}).eq('id', bookingId);
+  if(error) throw error;
+  b.supplier_settled = true;
+  const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
+    desc_key:'jSupplierPay', desc_args:[b.supplier||'-', b.booking_no], debit_key:'accSuppliers', credit_key:'accBank', amount:Number(b.cost)||0 }).select().single();
+  if(jErr) throw jErr;
+  journal.unshift(jIns);
+}
+function supplierBalances(list){
+  const map = {};
+  list.forEach(b=>{
+    if(!b.supplier || !(Number(b.cost)>0)) return;
+    if(!map[b.supplier]) map[b.supplier] = {owed:0, settled:0};
+    if(b.supplier_settled) map[b.supplier].settled += Number(b.cost)||0;
+    else map[b.supplier].owed += Number(b.cost)||0;
+  });
+  return map;
 }
 
 /* ===================== HELPERS ===================== */
@@ -516,7 +551,9 @@ function journalDesc(j){
     jCollectCash:{ar:(a)=>`تحصيل كاش حجز #${a[0]} - ${a[1]}`, en:(a)=>`Cash collected for booking #${a[0]} - ${a[1]}`},
     jBankReceipt:{ar:(a)=>`استلام دفعة بنكية حجز #${a[0]} - ${a[1]}`, en:(a)=>`Bank payment received for booking #${a[0]} - ${a[1]}`},
     jCardFee:{ar:(a)=>`رسوم شبكة (سبان) حجز #${a[0]}`, en:(a)=>`Card/network fee for booking #${a[0]}`},
-    jDeposit:{ar:(a)=>`إيداع كاش الفرع لحساب ${a[0]}`, en:(a)=>`Branch cash deposit to ${a[0]} account`} };
+    jDeposit:{ar:(a)=>`إيداع كاش الفرع لحساب ${a[0]}`, en:(a)=>`Branch cash deposit to ${a[0]} account`},
+    jManual:{ar:(a)=>`قيد يدوي: ${a[0]}`, en:(a)=>`Manual entry: ${a[0]}`},
+    jSupplierPay:{ar:(a)=>`دفعة لمورد ${a[0]} - حجز #${a[1]}`, en:(a)=>`Payment to supplier ${a[0]} - booking #${a[1]}`} };
   const tpl = templates[j.desc_key];
   return tpl ? tpl[lang](j.desc_args||[]) : '';
 }
@@ -550,6 +587,13 @@ async function addManualExpense(data){
   const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:ins.date, branch_id:ins.branch_id,
     desc_key:'jExpense', desc_args:[data.desc], debit_key:'accExpenses', credit_key:'accCashOnHand', amount }).select().single();
   if(jErr) throw jErr;
+  journal.unshift(jIns);
+}
+async function addManualJournalEntry(data){
+  const amount = Number(data.amount)||0;
+  const {data:jIns, error} = await sb.from('journal').insert({ date:data.date||todayStr(), branch_id:data.branchId,
+    desc_key:'jManual', desc_args:[data.desc], debit_key:data.debitKey, credit_key:data.creditKey, amount }).select().single();
+  if(error) throw error;
   journal.unshift(jIns);
 }
 function computeTotals(bookingsList, expensesList){
@@ -736,13 +780,14 @@ function bookingsTable(list, mode){
           <td>${branchName(b.branch_id)}</td>
           <td class="num">${money(b.cost)}</td><td class="num">${money(b.profit_amount)}</td>
           <td class="num" style="font-weight:600">${money(b.sell)}</td>
-          <td>${b.supplier||'—'}</td><td>${b.invoice_no||'—'}</td>
+          <td>${b.supplier||'—'}${(Number(b.cost)>0)?`<br><span class="tag ${b.supplier_settled?'collected':'pending'}">${b.supplier_settled?t('supplierSettledTag'):t('supplierUnsettledTag')}</span>`:''}</td><td>${b.invoice_no||'—'}</td>
           <td><span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span></td>
           <td>${b.payment_method==='transfer'?`${t('payTransfer')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
             :b.payment_method==='span'?`${t('paySpan')}<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
             :t('payCash')}</td>
           ${showActions?`<td style="display:flex;gap:5px;flex-wrap:wrap;">
             ${mode==='manage' && b.payment_method==='cash' && b.payment_status!=='paid'?`<button class="btn btn-ghost btn-sm" onclick="uiMarkPaid('${b.id}')">${t('collectPayment')}</button>`:''}
+            ${mode==='manage' && Number(b.cost)>0 && !b.supplier_settled?`<button class="btn btn-gold btn-sm" onclick="uiSettleSupplier('${b.id}')">${t('settleSupplierBtn')}</button>`:''}
             ${mode==='manage'?`<button class="btn btn-ghost btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>
               <button class="btn btn-danger btn-sm" onclick="uiDeleteBooking('${b.id}')">${t('delete')}</button>
               ${b.edit_requested?`<span class="tag pending">${t('returnedTag')}</span>`:`<button class="btn btn-ghost btn-sm" onclick="uiRequestEdit('${b.id}')">${t('returnToEmployee')}</button>`}`:''}
@@ -1013,7 +1058,16 @@ function renderLedger(){
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3 class="panel-title">${t('journalTitle')}</h3><button class="btn btn-ghost btn-sm" id="addExpenseBtn">${t('addExpense')}</button></div>
+      <div class="panel-head"><h3 class="panel-title">${t('supplierBalancesTitle')}</h3></div>
+      ${(()=>{ const map = supplierBalances(list); const names = Object.keys(map); return names.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colSupplier')}</th><th>${t('colOwed')}</th><th>${t('colSettled')}</th></tr></thead>
+      <tbody>${names.map(n=>`<tr><td>${n}</td><td class="num neg" style="font-weight:600">${money(map[n].owed)}</td><td class="num">${money(map[n].settled)}</td></tr>`).join('')}</tbody></table></div>`; })()}
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('journalTitle')}</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" id="addExpenseBtn">${t('addExpense')}</button>
+          <button class="btn btn-primary btn-sm" id="addManualJournalBtn">${t('addManualJournal')}</button>
+        </div></div>
       ${jrnl.length===0?`<div class="empty">${t('journalEmpty')}</div>`:`<div style="overflow-x:auto;"><table>
         <thead><tr><th>${t('jDate')}</th><th>${t('jBranch')}</th><th>${t('jDesc')}</th><th>${t('jDebit')}</th><th>${t('jCredit')}</th><th>${t('jAmount')}</th></tr></thead>
         <tbody>${jrnl.slice(0,40).map(j=>`<tr><td class="num">${j.date}</td><td>${branchName(j.branch_id)}</td><td>${journalDesc(j)}</td>
@@ -1022,6 +1076,45 @@ function renderLedger(){
       ${jrnl.length>40?`<div class="note">${t('journalShowing')} ${jrnl.length}</div>`:''}
     </div>`;
   document.getElementById('addExpenseBtn').onclick = openExpenseModal;
+  document.getElementById('addManualJournalBtn').onclick = openManualJournalModal;
+}
+function openManualJournalModal(){
+  const u = currentUser();
+  const branchOptions = (u.role==='employee') ? branches.filter(b=>b.id===u.branch_id) : branches;
+  const accountKeys = ['accCashOnHand','accBank','accCustomers','accCommRec','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'];
+  showModal(`
+    <div class="modal-head"><h3>${t('modalManualJournal')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="manualJournalForm">
+      <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>
+      <div class="field"><label>${t('fieldExpenseDesc')}</label><input name="desc" required placeholder="${t('manualDescPlaceholder')}"></div>
+      <div class="grid-2">
+        <div class="field"><label>${t('jDebit')}</label><select name="debitKey">${accountKeys.map(k=>`<option value="${k}">${t(k)}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('jCredit')}</label><select name="creditKey">${accountKeys.map(k=>`<option value="${k}">${t(k)}</option>`).join('')}</select></div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldAmount')}</label><input type="number" step="0.01" name="amount" required></div>
+        <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${todayStr()}"></div>
+      </div>
+      <div class="note">${t('manualJournalNote')}</div>
+      <div id="manualJournalErrorBox"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
+        <button type="submit" class="btn btn-primary" id="manualJournalSaveBtn">${t('save')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  document.getElementById('manualJournalForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('manualJournalSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
+    const f = new FormData(e.target);
+    if(f.get('debitKey')===f.get('creditKey')){
+      document.getElementById('manualJournalErrorBox').innerHTML = `<div class="login-error">${t('sameAccountError')}</div>`;
+      btn.disabled=false; btn.textContent=t('save'); return;
+    }
+    try{
+      await addManualJournalEntry({branchId:f.get('branchId'), desc:f.get('desc'), debitKey:f.get('debitKey'), creditKey:f.get('creditKey'), amount:f.get('amount'), date:f.get('date')});
+      closeModal(); render();
+    }catch(err){ console.error(err); document.getElementById('manualJournalErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`; btn.disabled=false; btn.textContent=t('save'); }
+  };
 }
 function openExpenseModal(){
   const u = currentUser();
@@ -1212,6 +1305,7 @@ window.uiRejectDeposit = async function(id){
   try{ await rejectDeposit(id, reason); render(); }catch(e){ alert(t('connError')); }
 };
 window.uiVerifyTransfer = async function(id){ try{ await verifyPaymentReceived(id); render(); }catch(e){ console.error(e); alert(t('connError')); } };
+window.uiSettleSupplier = async function(id){ try{ await settleSupplierPayment(id); render(); }catch(e){ console.error(e); alert(t('connError')); } };
 
 /* ===================== USERS ===================== */
 function renderUsers(){
@@ -1282,7 +1376,12 @@ function renderSettings(){
         <tbody>${branches.map(b=>`<tr><td>${b.name}</td><td><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
       <div class="note">${t('branchDeleteNote')}</div>
     </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('backupTitle')}</h3></div>
+      <p class="note">${t('backupNote')}</p>
+      <button class="btn btn-primary btn-sm" id="exportBackupBtn">${t('exportBackupBtn')}</button>
+    </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('resetTitle')}</h3></div><p class="note">${t('resetNote')}</p></div>`;
+  document.getElementById('exportBackupBtn').onclick = exportFullBackup;
   document.getElementById('addBranchBtn').onclick = ()=>{
     showModal(`
       <div class="modal-head"><h3>${t('modalNewBranch')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
@@ -1315,6 +1414,25 @@ window.uiRemoveBranch = async function(id){
     render();
   }catch(e){ alert(t('branchDeleteError')); }
 };
+async function exportFullBackup(){
+  const btn = document.getElementById('exportBackupBtn');
+  btn.disabled = true; btn.textContent = t('saving');
+  try{
+    const payload = {
+      exported_at: new Date().toISOString(),
+      agency: 'ASAS Travel & Tourism - أساس للسفر والسياحة',
+      branches, users, bookings, journal, manual_expenses: manualExpenses, cash_deposits: deposits
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0,10);
+    a.href = url; a.download = `asas-backup-${stamp}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }catch(err){ console.error(err); alert(t('connError')); }
+  finally{ btn.disabled=false; btn.textContent=t('exportBackupBtn'); }
+}
 
 /* ===================== MODAL ===================== */
 function openMyAccountModal(){
