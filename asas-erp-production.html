@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASAS Travel &amp; Tourism — أساس للسفر والسياحة</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Cormorant+Garamond:wght@600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root{
+    --navy:#0F2A3D; --navy-2:#153A50; --teal:#1A6E7E; --gold:#D9A544; --gold-2:#C98A2E;
+    --paper:#FBF7EE; --panel:#FFFFFF; --ink:#1C1C1C; --ink-soft:#5B6570;
+    --line:#E4DECB; --red:#B4402F; --green:#2F7A52;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{font-family:'IBM Plex Sans Arabic', system-ui, sans-serif;background:var(--paper);color:var(--ink);min-height:100vh;}
+  .app{display:flex;min-height:100vh;}
+
+  .sidebar{width:235px;flex-shrink:0;background:var(--navy);color:#EDE7D6;padding:22px 16px;display:flex;flex-direction:column;gap:4px;}
+  .brand{display:flex;align-items:center;gap:10px;padding:0 6px 18px 6px;border-bottom:1px solid rgba(255,255,255,.12);margin-bottom:14px;}
+  .brand-mark{width:36px;height:36px;border-radius:50%;border:1.5px solid var(--gold);flex-shrink:0;
+    display:flex;align-items:center;justify-content:center;font-family:'Cormorant Garamond',serif;font-weight:700;color:var(--gold);font-size:16px;}
+  .brand-name{font-weight:600;font-size:14.5px;line-height:1.3;}
+  .brand-sub{font-size:10.5px;color:#9FB0B9;letter-spacing:.5px;}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;font-size:13.5px;color:#D9E1E6;
+    transition:background .15s;border:none;background:none;text-align:start;width:100%;font-family:inherit;}
+  .nav-item:hover{background:rgba(255,255,255,.06);}
+  .nav-item.active{background:var(--gold);color:var(--navy);font-weight:600;}
+  .nav-icon{width:18px;text-align:center;font-size:14px;}
+  .sidebar-footer{margin-top:auto;padding-top:14px;border-top:1px solid rgba(255,255,255,.12);font-size:10.5px;color:#8FA0AA;}
+
+  .main{flex:1;min-width:0;display:flex;flex-direction:column;}
+  .topbar{background:var(--panel);border-bottom:1px solid var(--line);padding:14px 26px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;}
+  .page-title{font-size:18px;font-weight:600;margin:0;}
+  .page-sub{font-size:12px;color:var(--ink-soft);margin-top:2px;}
+  .topbar-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .select-ctrl{font-family:inherit;font-size:13px;padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:var(--paper);color:var(--ink);}
+  .content{padding:22px 26px;overflow-y:auto;}
+
+  .kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px;}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;position:relative;overflow:hidden;}
+  .kpi::before{content:"";position:absolute;top:0;inset-inline-end:0;width:4px;height:100%;background:var(--accent,var(--teal));}
+  .kpi-label{font-size:11.5px;color:var(--ink-soft);margin-bottom:8px;}
+  .kpi-value{font-size:21px;font-weight:700;letter-spacing:-.2px;}
+  .kpi-value.pos{color:var(--green);} .kpi-value.neg{color:var(--red);}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:20px;}
+  .panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;}
+  .panel-title{font-size:14.5px;font-weight:600;margin:0;}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  th{text-align:start;padding:9px 8px;color:var(--ink-soft);font-weight:500;border-bottom:1.5px solid var(--line);font-size:11.5px;white-space:nowrap;}
+  td{padding:9px 8px;border-bottom:1px solid var(--line);}
+  tr:last-child td{border-bottom:none;}
+  tbody tr:hover{background:#FAF8F0;}
+  .num{font-variant-numeric:tabular-nums;}
+  .tag{display:inline-block;padding:3px 9px;border-radius:20px;font-size:10.5px;font-weight:600;}
+  .tag.paid{background:#E4F1E8;color:var(--green);}
+  .tag.pending{background:#FBEFE0;color:#A8722C;}
+  .tag.collected{background:#E4F1E8;color:var(--green);}
+  .tag.admin{background:#E6E0F5;color:#5B3FA0;}
+  .tag.employee{background:#E6F0F5;color:var(--teal);}
+  .tag.accountant{background:#FFF1DE;color:#A8722C;}
+
+  .btn{font-family:inherit;font-size:13px;font-weight:600;padding:9px 16px;border-radius:8px;border:none;cursor:pointer;transition:opacity .15s;}
+  .btn:hover{opacity:.88;} .btn:disabled{opacity:.5;cursor:default;}
+  .btn-primary{background:var(--navy);color:#fff;}
+  .btn-gold{background:var(--gold);color:var(--navy);}
+  .btn-ghost{background:transparent;color:var(--navy);border:1px solid var(--line);}
+  .btn-sm{padding:5px 11px;font-size:12px;}
+  .btn-danger{background:#F7E7E4;color:var(--red);}
+
+  .field{margin-bottom:12px;}
+  .field label{display:block;font-size:12px;color:var(--ink-soft);margin-bottom:5px;}
+  .field input, .field select{width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line);font-family:inherit;font-size:13.5px;background:var(--paper);}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+
+  .overlay{position:fixed;inset:0;background:rgba(15,42,61,.45);display:none;align-items:center;justify-content:center;z-index:50;}
+  .overlay.show{display:flex;}
+  .modal{background:var(--panel);border-radius:12px;padding:22px 24px;width:520px;max-width:92vw;max-height:88vh;overflow-y:auto;}
+  .modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;}
+  .modal-head h3{margin:0;font-size:16px;}
+  .close-x{cursor:pointer;font-size:18px;color:var(--ink-soft);background:none;border:none;}
+
+  .bar-row{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+  .bar-label{width:130px;font-size:12.5px;flex-shrink:0;}
+  .bar-track{flex:1;height:20px;background:#F1EBDB;border-radius:5px;overflow:hidden;}
+  .bar-fill{height:100%;background:linear-gradient(90deg,var(--teal),var(--navy));border-radius:5px;}
+  .bar-val{width:110px;text-align:end;font-size:12px;flex-shrink:0;}
+  .empty{text-align:center;color:var(--ink-soft);font-size:13px;padding:26px 0;}
+  .note{font-size:11.5px;color:var(--ink-soft);margin-top:6px;}
+  .section-flex{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;}
+
+  .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 30% 20%,rgba(217,165,68,.08),transparent 60%),var(--navy);}
+  .login-card{background:var(--panel);border-radius:16px;padding:34px 32px;width:380px;max-width:90vw;box-shadow:0 20px 60px rgba(0,0,0,.35);}
+  .login-mark{width:56px;height:56px;border-radius:50%;border:1.5px solid var(--gold);margin:0 auto 12px;
+    display:flex;align-items:center;justify-content:center;font-family:'Cormorant Garamond',serif;font-weight:700;color:var(--gold-2);font-size:24px;background:var(--navy);}
+  .login-agency-ar{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:700;text-align:center;}
+  .login-agency-en{font-size:10.5px;letter-spacing:1.4px;color:var(--ink-soft);text-align:center;margin-bottom:20px;}
+  .login-error{background:#F7E7E4;color:var(--red);font-size:12.5px;padding:9px 12px;border-radius:8px;margin-bottom:12px;}
+  .login-demo{font-size:11px;color:var(--ink-soft);margin-top:14px;text-align:center;line-height:1.6;}
+
+  .setup-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--paper);padding:20px;}
+  .setup-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:30px;max-width:560px;}
+  .setup-card h2{margin-top:0;color:var(--navy);}
+  .setup-card code{background:var(--paper);padding:2px 6px;border-radius:4px;font-size:12.5px;}
+  .setup-card pre{background:var(--navy);color:#EDE7D6;padding:14px;border-radius:8px;font-size:12px;overflow-x:auto;direction:ltr;text-align:left;}
+
+  @media (max-width:980px){
+    .kpi-row{grid-template-columns:repeat(2,1fr);}
+    .grid-2,.grid-3{grid-template-columns:1fr;}
+    .sidebar{width:180px;}
+    .section-flex{flex-direction:column;}
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
+
+<script>
+/* =================================================================
+   ⚠️ الإعدادات المطلوبة منك — عدّل السطرين التاليين بمفاتيحك من Supabase
+   Project Settings → API → Project URL / anon public key
+================================================================= */
+const SUPABASE_URL = 'https://jrcrkhcphptmdoklqcqh.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpyY3JraGNwaHB0bWRva2xxY3FoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkxNjE1NzIsImV4cCI6MjEwNDczNzU3Mn0.-LLzUzuGGulMIyKad1ULWVW3ARCPdRbdazOxWlUHHhU';
+/* ================================================================= */
+
+let sb = null;
+const isConfigured = !SUPABASE_URL.includes('YOUR_SUPABASE_URL') && !SUPABASE_ANON_KEY.includes('YOUR_SUPABASE_ANON_KEY');
+if(isConfigured){ sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY); }
+
+/* ===================== I18N ===================== */
+const T = {
+  ar: {
+    agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
+    sidebarSub:'نظام محاسبي', savedNote:'البيانات محفوظة بشكل دائم على قاعدة بياناتك الحقيقية.',
+    navDashboard:'لوحة التحكم', navBookings:'الحجوزات والفواتير', navLedger:'دفتر الحسابات',
+    navCommissions:'العمولات', navReports:'تقارير الفروع', navUsers:'المستخدمون', navSettings:'الإعدادات',
+    subDashboard:'نظرة عامة على أداء الوكالة والفروع', subBookings:'التذاكر، الفيزا، الباقات وكل خدمة تبيعها الوكالة',
+    subLedger:'دليل الحسابات، القيود اليومية، وقائمة الدخل', subCommissions:'عمولات شركات الطيران وأنظمة الحجز',
+    subReports:'مقارنة أداء الفروع مع بعضها', subUsers:'إدارة حسابات الموظفين وصلاحياتهم', subSettings:'إدارة الفروع والبيانات',
+    allBranches:'كل الفروع', logout:'تسجيل الخروج', loggedInAs:'مسجّل الدخول:',
+    kpiSales:'إجمالي المبيعات', kpiProfit:'صافي الربح (مبيعات + عمولات − تكلفة − مصروفات)',
+    kpiCount:'عدد الحجوزات', kpiPendingComm:'عمولات مستحقة (غير محصّلة)',
+    recentBookings:'آخر الحجوزات', addBooking:'+ حجز جديد', branchCompareSales:'مقارنة الفروع — المبيعات',
+    colNo:'#', colType:'النوع', colCustomer:'العميل', colBranch:'الفرع', colSupplier:'المصدر',
+    colSell:'البيع', colNetProfit:'الربح الصافي', colPayStatus:'حالة الدفع', colCommission:'العمولة', colActions:'',
+    statusPaid:'مدفوع', statusPending:'قيد التحصيل', statusCollected:'محصّلة', collectPayment:'تحصيل الدفع',
+    emptyBookings:'لا توجد حجوزات بعد.', emptyBranches:'لا توجد فروع.', emptyData:'لا توجد بيانات.',
+    bookingsLog:'سجل الحجوزات والفواتير', addBookingFull:'+ إضافة حجز / فاتورة',
+    modalNewBooking:'إضافة حجز جديد', fieldServiceType:'نوع الخدمة', fieldBranch:'الفرع', fieldCustomer:'اسم العميل',
+    fieldSupplier:'المصدر / المورد', fieldDate:'التاريخ', fieldSell:'سعر البيع للعميل (ر.س)',
+    fieldCost:'التكلفة الصافية (ر.س)', fieldCommRate:'نسبة العمولة من المورد %', fieldPayStatus:'حالة تحصيل الدفع من العميل',
+    payPending:'قيد التحصيل', payPaid:'مدفوع فورًا', journalNote:'سيتم إنشاء قيود دفتر الأستاذ تلقائيًا.',
+    save:'حفظ', saveBooking:'حفظ الحجز', cancel:'إلغاء', saving:'جاري الحفظ...',
+    svcTicket:'تذكرة طيران', svcVisa:'فيزا', svcPackage:'باقة سياحية', svcInsurance:'تأمين سفر', svcHotel:'حجز فندق', svcOther:'خدمة أخرى',
+    incomeStatement:'قائمة الدخل (ربح وخسارة)', incomeSales:'إيرادات المبيعات', incomeComm:'إيرادات العمولات',
+    expenseCost:'(−) تكلفة الخدمات المباعة', expenseOp:'(−) المصروفات التشغيلية', netProfit:'صافي الربح',
+    chartOfAccounts:'دليل الحسابات', journalTitle:'القيود اليومية (تلقائية + يدوية)', addExpense:'+ إضافة مصروف يدوي',
+    jDate:'التاريخ', jBranch:'الفرع', jDesc:'البيان', jDebit:'من حساب (مدين)', jCredit:'إلى حساب (دائن)', jAmount:'المبلغ',
+    journalEmpty:'لا توجد قيود بعد.', journalShowing:'عرض آخر 40 قيدًا من',
+    accCash:'الصندوق والبنك', accCustomers:'حسابات العملاء', accCommRec:'مستحقات عمولات من الموردين',
+    accSuppliers:'حسابات الموردين (شركات الطيران / GDS)', accSalesRev:'إيرادات المبيعات', accCommRev:'إيرادات العمولات',
+    accCogs:'تكلفة الخدمات المباعة', accExpenses:'المصروفات التشغيلية',
+    modalExpense:'إضافة مصروف تشغيلي', fieldExpenseDesc:'البيان (مثال: إيجار، رواتب، اتصالات)', fieldAmount:'المبلغ (ر.س)',
+    commBySupplier:'إجمالي العمولات حسب المورد', colSupplierName:'المورد / الجهة', colCount:'عدد الحجوزات',
+    colPending:'معلّقة', colCollected:'محصّلة', colTotal:'الإجمالي',
+    commDetails:'تفاصيل العمولات لكل حجز', colBookingNo:'#', colCommAmount:'مبلغ العمولة', colStatus:'الحالة', collectComm:'تحصيل العمولة',
+    salesByBranch:'المبيعات حسب الفرع', profitByBranch:'صافي الربح حسب الفرع', branchTable:'جدول مقارنة الفروع',
+    colBranchName:'الفرع', colBookCount:'عدد الحجوزات', colSalesTotal:'المبيعات', colCostTotal:'التكلفة',
+    colCommTotal:'العمولات', colExpTotal:'المصروفات', colNetProfitCol:'صافي الربح', colMargin:'هامش الربح',
+    branchesTitle:'الفروع', addBranch:'+ إضافة فرع', colBranchOnly:'اسم الفرع', delete:'حذف',
+    branchDeleteNote:'لا يمكن حذف فرع مرتبط بحجوزات أو قيود سابقة.', branchDeleteError:'تعذر حذف الفرع لوجود بيانات مرتبطة به.',
+    resetTitle:'ملاحظة', resetNote:'حذف البيانات هنا نهائي ويتم مباشرة على قاعدة البيانات الحقيقية — تصرف بحذر.',
+    modalNewBranch:'إضافة فرع جديد', fieldBranchName:'اسم الفرع', add:'إضافة',
+    usersTitle:'المستخدمون', addUser:'+ إضافة مستخدم', colUserName:'الاسم', colUsername:'اسم المستخدم',
+    colRole:'الصلاحية', colUserBranch:'الفرع', roleAdmin:'مدير', roleEmployee:'موظف مبيعات',
+    modalNewUser:'إضافة مستخدم جديد', fieldFullName:'الاسم الكامل', fieldUsername:'اسم المستخدم (تسجيل الدخول)',
+    fieldPassword:'كلمة المرور', fieldRole:'الصلاحية', fieldUserBranch:'الفرع (لموظف المبيعات)', noBranch:'— بدون —',
+    usernameTaken:'اسم المستخدم مستخدم بالفعل، اختر اسمًا آخر.', cannotDeleteSelf:'لا يمكنك حذف حسابك الحالي.',
+    loginTitle:'تسجيل الدخول', loginSubtitle:'أدخل بيانات حسابك للمتابعة', fieldUsernameLogin:'اسم المستخدم',
+    fieldPasswordLogin:'كلمة المرور', loginBtn:'دخول', loginError:'اسم المستخدم أو كلمة المرور غير صحيحة.',
+    loginDemo:'حساب المدير التجريبي: admin / admin123', langBtn:'English',
+    connError:'تعذر الاتصال بقاعدة البيانات. تأكد من صحة مفاتيح Supabase وأن الجداول تم إنشاؤها.',
+    setupTitle:'الإعداد غير مكتمل', setupBody:'لازم تعدّل مفاتيح Supabase أولًا داخل ملف الكود قبل استخدام البرنامج.',
+    setupStep:'افتح الملف بمحرر نصوص، وابحث عن السطرين اللي فيهم YOUR_SUPABASE_URL و YOUR_SUPABASE_ANON_KEY في أول الكود، واستبدلهم بمفاتيح مشروعك من Project Settings → API في Supabase.',
+    roleAccountant:'محاسب', fieldAirline:'شركة الطيران', fieldTicketNo:'رقم التذكرة', fieldInvoiceNo:'رقم الفاتورة',
+    fieldNet:'الصافي (ر.س)', fieldProfit:'الربح (ر.س)', fieldOpenTicket:'تذكرة مفتوحة', tagOpen:'تذكرة مفتوحة',
+    colAirline:'شركة الطيران', colTicketNo:'رقم التذكرة', colInvoiceNo:'رقم الفاتورة', colNet:'الصافي', colProfit:'الربح'
+  },
+  en: {
+    agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
+    sidebarSub:'Accounting System', savedNote:'Data is stored permanently in your real database.',
+    navDashboard:'Dashboard', navBookings:'Bookings & Invoices', navLedger:'General Ledger',
+    navCommissions:'Commissions', navReports:'Branch Reports', navUsers:'Users', navSettings:'Settings',
+    subDashboard:'Overview of agency and branch performance', subBookings:'Tickets, visas, packages and every service the agency sells',
+    subLedger:'Chart of accounts, daily journal, and income statement', subCommissions:'Airline and GDS commissions',
+    subReports:'Compare performance across branches', subUsers:'Manage employee accounts and permissions', subSettings:'Manage branches and data',
+    allBranches:'All branches', logout:'Log out', loggedInAs:'Logged in as:',
+    kpiSales:'Total sales', kpiProfit:'Net profit (sales + commission − cost − expenses)',
+    kpiCount:'Number of bookings', kpiPendingComm:'Pending commissions (uncollected)',
+    recentBookings:'Recent bookings', addBooking:'+ New booking', branchCompareSales:'Branch comparison — Sales',
+    colNo:'#', colType:'Type', colCustomer:'Customer', colBranch:'Branch', colSupplier:'Supplier',
+    colSell:'Sell price', colNetProfit:'Net profit', colPayStatus:'Payment', colCommission:'Commission', colActions:'',
+    statusPaid:'Paid', statusPending:'Pending', statusCollected:'Collected', collectPayment:'Mark paid',
+    emptyBookings:'No bookings yet.', emptyBranches:'No branches yet.', emptyData:'No data yet.',
+    bookingsLog:'Bookings & invoices log', addBookingFull:'+ Add booking / invoice',
+    modalNewBooking:'Add new booking', fieldServiceType:'Service type', fieldBranch:'Branch', fieldCustomer:'Customer name',
+    fieldSupplier:'Supplier / source', fieldDate:'Date', fieldSell:'Sell price to customer (SAR)',
+    fieldCost:'Net cost (SAR)', fieldCommRate:'Supplier commission rate %', fieldPayStatus:'Customer payment status',
+    payPending:'Pending', payPaid:'Paid immediately', journalNote:'Ledger entries will be created automatically.',
+    save:'Save', saveBooking:'Save booking', cancel:'Cancel', saving:'Saving...',
+    svcTicket:'Flight ticket', svcVisa:'Visa', svcPackage:'Tour package', svcInsurance:'Travel insurance', svcHotel:'Hotel booking', svcOther:'Other service',
+    incomeStatement:'Income statement (P&L)', incomeSales:'Sales revenue', incomeComm:'Commission revenue',
+    expenseCost:'(−) Cost of services sold', expenseOp:'(−) Operating expenses', netProfit:'Net profit',
+    chartOfAccounts:'Chart of accounts', journalTitle:'Daily journal (auto + manual)', addExpense:'+ Add manual expense',
+    jDate:'Date', jBranch:'Branch', jDesc:'Description', jDebit:'Debit account', jCredit:'Credit account', jAmount:'Amount',
+    journalEmpty:'No entries yet.', journalShowing:'Showing last 40 entries of',
+    accCash:'Cash & bank', accCustomers:'Accounts receivable (customers)', accCommRec:'Commissions receivable from suppliers',
+    accSuppliers:'Accounts payable (airlines / GDS)', accSalesRev:'Sales revenue', accCommRev:'Commission revenue',
+    accCogs:'Cost of services sold', accExpenses:'Operating expenses',
+    modalExpense:'Add operating expense', fieldExpenseDesc:'Description (e.g. rent, salaries, phone)', fieldAmount:'Amount (SAR)',
+    commBySupplier:'Total commissions by supplier', colSupplierName:'Supplier', colCount:'Bookings',
+    colPending:'Pending', colCollected:'Collected', colTotal:'Total',
+    commDetails:'Commission details per booking', colBookingNo:'#', colCommAmount:'Commission amount', colStatus:'Status', collectComm:'Collect commission',
+    salesByBranch:'Sales by branch', profitByBranch:'Net profit by branch', branchTable:'Branch comparison table',
+    colBranchName:'Branch', colBookCount:'Bookings', colSalesTotal:'Sales', colCostTotal:'Cost',
+    colCommTotal:'Commission', colExpTotal:'Expenses', colNetProfitCol:'Net profit', colMargin:'Margin',
+    branchesTitle:'Branches', addBranch:'+ Add branch', colBranchOnly:'Branch name', delete:'Delete',
+    branchDeleteNote:'A branch with existing bookings or entries cannot be deleted.', branchDeleteError:'Could not delete: this branch has linked records.',
+    resetTitle:'Note', resetNote:'Deletions here are permanent and happen directly on your real database — proceed carefully.',
+    modalNewBranch:'Add new branch', fieldBranchName:'Branch name', add:'Add',
+    usersTitle:'Users', addUser:'+ Add user', colUserName:'Name', colUsername:'Username',
+    colRole:'Role', colUserBranch:'Branch', roleAdmin:'Admin', roleEmployee:'Sales employee',
+    modalNewUser:'Add new user', fieldFullName:'Full name', fieldUsername:'Username (login)',
+    fieldPassword:'Password', fieldRole:'Role', fieldUserBranch:'Branch (for sales employee)', noBranch:'— none —',
+    usernameTaken:'This username is already taken, please choose another.', cannotDeleteSelf:'You cannot delete your own account.',
+    loginTitle:'Sign in', loginSubtitle:'Enter your account details to continue', fieldUsernameLogin:'Username',
+    fieldPasswordLogin:'Password', loginBtn:'Sign in', loginError:'Incorrect username or password.',
+    loginDemo:'Demo admin account: admin / admin123', langBtn:'العربية',
+    connError:'Could not connect to the database. Check your Supabase keys and that the tables were created.',
+    setupTitle:'Setup incomplete', setupBody:'You need to configure your Supabase keys inside the code file before using the app.',
+    setupStep:'Open the file in a text editor, find the two lines with YOUR_SUPABASE_URL and YOUR_SUPABASE_ANON_KEY near the top of the script, and replace them with your project keys from Project Settings → API in Supabase.',
+    roleAccountant:'Accountant', fieldAirline:'Airline', fieldTicketNo:'Ticket number', fieldInvoiceNo:'Invoice number',
+    fieldNet:'Net (SAR)', fieldProfit:'Profit (SAR)', fieldOpenTicket:'Open ticket', tagOpen:'Open ticket',
+    colAirline:'Airline', colTicketNo:'Ticket No.', colInvoiceNo:'Invoice No.', colNet:'Net', colProfit:'Profit'
+  }
+};
+let lang = localStorage.getItem('asas_lang') || 'ar';
+function t(k){ return (T[lang] && T[lang][k]!==undefined) ? T[lang][k] : k; }
+function setLang(l){ lang = l; localStorage.setItem('asas_lang', l); }
+
+/* ===================== SESSION (localStorage) ===================== */
+function getSession(){ try{ return JSON.parse(localStorage.getItem('asas_session')||'null'); }catch(e){ return null; } }
+function setSession(u){ localStorage.setItem('asas_session', JSON.stringify(u)); }
+function clearSession(){ localStorage.removeItem('asas_session'); }
+
+/* ===================== LOCAL CACHE ===================== */
+let branches = [], users = [], bookings = [], journal = [], manualExpenses = [];
+let route = 'dashboard';
+let branchFilter = 'all';
+
+async function fetchAll(){
+  const [b, u, bk, jr, ex] = await Promise.all([
+    sb.from('branches').select('*').order('created_at'),
+    sb.from('app_users').select('id,name,username,role,branch_id').order('created_at'),
+    sb.from('bookings').select('*').order('created_at', {ascending:false}),
+    sb.from('journal').select('*').order('created_at', {ascending:false}),
+    sb.from('manual_expenses').select('*').order('created_at', {ascending:false})
+  ]);
+  if(b.error||u.error||bk.error||jr.error||ex.error) throw (b.error||u.error||bk.error||jr.error||ex.error);
+  branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[];
+}
+
+/* ===================== HELPERS ===================== */
+function money(n){ const v=Number(n)||0; return v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) + ' SAR'; }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function branchName(id){ const b = branches.find(x=>x.id===id); return b ? b.name : '—'; }
+function currentUser(){ return getSession(); }
+function isAdmin(){ const u = currentUser(); return u && u.role==='admin'; }
+function isAccountant(){ const u = currentUser(); return u && u.role==='accountant'; }
+function canSeeAllBranches(){ return isAdmin() || isAccountant(); }
+function effectiveBranchFilter(){
+  const u = currentUser();
+  if(u && u.role==='employee') return u.branch_id || 'all';
+  return branchFilter;
+}
+function filteredBookings(){
+  const bf = effectiveBranchFilter();
+  if(bf==='all') return bookings;
+  return bookings.filter(b=>b.branch_id===bf);
+}
+const SOURCE_PRESETS = ['AKBAR','NDC','PORTAL','GALILEO','مباشر'];
+const AIRLINE_HINTS = ['SV','EY','EK','G9','FZ','GF','QR','6E','XY'];
+
+/* ===================== ACCOUNTING ENGINE (Supabase-backed) ===================== */
+async function addBooking(data){
+  const net = Number(data.net)||0, profit = Number(data.profit)||0;
+  const sell = +(net+profit).toFixed(2);
+  const row = {
+    date: data.date||todayStr(), customer: data.customer, branch_id: data.branchId,
+    airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null,
+    is_open_ticket: !!data.isOpenTicket, supplier: data.source,
+    sell, cost: net, commission_rate: 0, commission: 0, profit_amount: profit,
+    margin: profit, net_profit: profit, payment_status: data.paymentStatus||'pending',
+    commission_status:'pending', created_by: currentUser()?.id||null
+  };
+  const {data:inserted, error} = await sb.from('bookings').insert(row).select().single();
+  if(error) throw error;
+  bookings.unshift(inserted);
+  const jRows = [{ date:inserted.date, branch_id:inserted.branch_id, desc_key:'jSale',
+    desc_args:[inserted.booking_no, inserted.airline||'-', inserted.customer],
+    debit_key:'accCustomers', credit_key:'accSalesRev', amount: sell }];
+  if(net>0) jRows.push({ date:inserted.date, branch_id:inserted.branch_id, desc_key:'jCost',
+    desc_args:[inserted.booking_no, inserted.airline||'-'], debit_key:'accCogs', credit_key:'accSuppliers', amount: net });
+  const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
+  if(jErr) throw jErr;
+  journal.unshift(...jIns.reverse());
+}
+function journalDesc(j){
+  const templates = { jSale:{ar:(a)=>`مبيعات حجز #${a[0]} - ${a[1]} - ${a[2]}`, en:(a)=>`Sale booking #${a[0]} - ${a[1]} - ${a[2]}`},
+    jCost:{ar:(a)=>`تكلفة حجز #${a[0]} مستحقة لـ ${a[1]}`, en:(a)=>`Cost of booking #${a[0]} payable to ${a[1]}`},
+    jComm:{ar:(a)=>`عمولة مستحقة من ${a[0]} - حجز #${a[1]}`, en:(a)=>`Commission receivable from ${a[0]} - booking #${a[1]}`},
+    jExpense:{ar:(a)=>`مصروف: ${a[0]}`, en:(a)=>`Expense: ${a[0]}`},
+    jCollectComm:{ar:(a)=>`تحصيل عمولة حجز #${a[0]} من ${a[1]}`, en:(a)=>`Collected commission for booking #${a[0]} from ${a[1]}`} };
+  const tpl = templates[j.desc_key];
+  return tpl ? tpl[lang](j.desc_args||[]) : '';
+}
+async function collectCommission(bookingId){
+  const b = bookings.find(x=>x.id===bookingId);
+  if(!b || b.commission_status==='collected') return;
+  const {error} = await sb.from('bookings').update({commission_status:'collected'}).eq('id', bookingId);
+  if(error) throw error;
+  b.commission_status = 'collected';
+  const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:b.branch_id,
+    desc_key:'jCollectComm', desc_args:[b.booking_no, b.supplier], debit_key:'accCash', credit_key:'accCommRec', amount:b.commission }).select().single();
+  if(jErr) throw jErr;
+  journal.unshift(jIns);
+}
+async function markPaid(bookingId){
+  const {error} = await sb.from('bookings').update({payment_status:'paid'}).eq('id', bookingId);
+  if(error) throw error;
+  const b = bookings.find(x=>x.id===bookingId); if(b) b.payment_status='paid';
+}
+async function addManualExpense(data){
+  const amount = Number(data.amount)||0;
+  const {data:ins, error} = await sb.from('manual_expenses').insert({ date:data.date||todayStr(), branch_id:data.branchId, description:data.desc, amount }).select().single();
+  if(error) throw error;
+  manualExpenses.unshift(ins);
+  const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:ins.date, branch_id:ins.branch_id,
+    desc_key:'jExpense', desc_args:[data.desc], debit_key:'accExpenses', credit_key:'accCash', amount }).select().single();
+  if(jErr) throw jErr;
+  journal.unshift(jIns);
+}
+function computeTotals(bookingsList, expensesList){
+  const sales = bookingsList.reduce((s,b)=>s+Number(b.sell),0);
+  const cost = bookingsList.reduce((s,b)=>s+Number(b.cost),0);
+  const commission = bookingsList.reduce((s,b)=>s+Number(b.commission),0);
+  const expenses = expensesList.reduce((s,e)=>s+Number(e.amount),0);
+  const revenue = sales+commission;
+  const netProfit = sales-cost+commission-expenses;
+  const pendingCommission = bookingsList.filter(b=>b.commission_status==='pending').reduce((s,b)=>s+Number(b.commission),0);
+  return {sales,cost,commission,expenses,revenue,netProfit,pendingCommission,count:bookingsList.length};
+}
+function expensesForFilter(){
+  const bf = effectiveBranchFilter();
+  return bf==='all' ? manualExpenses : manualExpenses.filter(e=>e.branch_id===bf);
+}
+
+/* ===================== NAV ===================== */
+function navItems(){
+  const items = [ {route:'dashboard', label:t('navDashboard'), icon:'◆'}, {route:'bookings', label:t('navBookings'), icon:'🎫'} ];
+  if(canSeeAllBranches()){
+    items.push({route:'ledger', label:t('navLedger'), icon:'≡'});
+    items.push({route:'reports', label:t('navReports'), icon:'▤'});
+  }
+  if(isAdmin()){
+    items.push({route:'users', label:t('navUsers'), icon:'👤'});
+    items.push({route:'settings', label:t('navSettings'), icon:'⚙'});
+  }
+  return items;
+}
+
+/* ===================== ROOT RENDER ===================== */
+function applyDir(){ document.documentElement.dir = lang==='ar'?'rtl':'ltr'; document.documentElement.lang = lang; }
+
+async function boot(){
+  applyDir();
+  const app = document.getElementById('app');
+  if(!isConfigured){ renderSetupScreen(app); return; }
+  const session = getSession();
+  if(!session){ renderLogin(app); return; }
+  app.innerHTML = `<div class="login-wrap" style="color:#EDE7D6;">Loading... / جاري التحميل...</div>`;
+  try{
+    await fetchAll();
+    render();
+  }catch(e){
+    console.error(e);
+    app.innerHTML = `<div class="login-wrap"><div class="login-card"><div class="login-error">${t('connError')}</div>
+      <button class="btn btn-ghost" style="width:100%" onclick="location.reload()">Retry / إعادة المحاولة</button></div></div>`;
+  }
+}
+
+function renderSetupScreen(app){
+  app.innerHTML = `
+    <div class="setup-wrap"><div class="setup-card">
+      <h2>${t('setupTitle')}</h2>
+      <p>${t('setupBody')}</p>
+      <p>${t('setupStep')}</p>
+      <pre>const SUPABASE_URL = 'YOUR_SUPABASE_URL';
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';</pre>
+    </div></div>
+  `;
+}
+
+function render(){
+  applyDir();
+  const app = document.getElementById('app');
+  const items = navItems();
+  if(!items.find(i=>i.route===route)) route = 'dashboard';
+  const u = currentUser();
+  if(!u){ renderLogin(app); return; }
+
+  app.innerHTML = `
+    <div class="app">
+      <div class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">أ</div>
+          <div><div class="brand-name">${t('agencyAr')}</div><div class="brand-sub">${t('sidebarSub')}</div></div>
+        </div>
+        ${items.map(n=>`<button class="nav-item ${route===n.route?'active':''}" data-route="${n.route}">
+          <span class="nav-icon">${n.icon}</span><span>${n.label}</span></button>`).join('')}
+        <div class="sidebar-footer">${t('savedNote')}</div>
+      </div>
+      <div class="main">
+        <div class="topbar">
+          <div><h1 class="page-title">${navItems().find(n=>n.route===route)?.label||''}</h1><div class="page-sub" id="pageSub"></div></div>
+          <div class="topbar-right">
+            ${canSeeAllBranches() ? `<select class="select-ctrl" id="branchFilterSel">
+              <option value="all" ${branchFilter==='all'?'selected':''}>${t('allBranches')}</option>
+              ${branches.map(b=>`<option value="${b.id}" ${branchFilter===b.id?'selected':''}>${b.name}</option>`).join('')}
+            </select>` : `<span class="tag employee">${branchName(u.branch_id)}</span>`}
+            <span style="font-size:12px;color:var(--ink-soft)">${t('loggedInAs')} <b style="color:var(--ink)">${u.name}</b></span>
+            <button class="btn btn-ghost btn-sm" id="langBtn">${t('langBtn')}</button>
+            <button class="btn btn-ghost btn-sm" id="logoutBtn">${t('logout')}</button>
+          </div>
+        </div>
+        <div class="content" id="content"></div>
+      </div>
+    </div>
+  `;
+  document.querySelectorAll('.nav-item').forEach(el=>{ el.onclick = ()=>{ route = el.dataset.route; render(); }; });
+  const bfSel = document.getElementById('branchFilterSel');
+  if(bfSel) bfSel.onchange = (e)=>{ branchFilter = e.target.value; render(); };
+  document.getElementById('logoutBtn').onclick = ()=>{ clearSession(); render(); };
+  document.getElementById('langBtn').onclick = ()=>{ setLang(lang==='ar'?'en':'ar'); render(); };
+
+  const routes = { dashboard:renderDashboard, bookings:renderBookings, ledger:renderLedger,
+    reports:renderReports, users:renderUsers, settings:renderSettings };
+  (routes[route]||renderDashboard)();
+}
+
+/* ===================== LOGIN ===================== */
+function renderLogin(app){
+  applyDir();
+  app.innerHTML = `
+    <div class="login-wrap"><div class="login-card">
+      <div class="login-mark">أ</div>
+      <div class="login-agency-ar">${t('agencyAr')}</div>
+      <div class="login-agency-en">${t('agencyEn')}</div>
+      <div id="loginErrorBox"></div>
+      <form id="loginForm">
+        <div class="field"><label>${t('fieldUsernameLogin')}</label><input name="username" required autocomplete="username"></div>
+        <div class="field"><label>${t('fieldPasswordLogin')}</label><input type="password" name="password" required autocomplete="current-password"></div>
+        <button type="submit" class="btn btn-primary" style="width:100%;" id="loginSubmitBtn">${t('loginBtn')}</button>
+      </form>
+      <div style="text-align:center;margin-top:14px;"><button class="btn btn-ghost btn-sm" id="loginLangBtn">${t('langBtn')}</button></div>
+      <div class="login-demo">${t('loginDemo')}</div>
+    </div></div>
+  `;
+  document.getElementById('loginLangBtn').onclick = ()=>{ setLang(lang==='ar'?'en':'ar'); renderLogin(app); };
+  document.getElementById('loginForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('loginSubmitBtn'); btn.disabled = true; btn.textContent = t('saving');
+    const f = new FormData(e.target);
+    const uname = (f.get('username')||'').trim();
+    const pwd = f.get('password')||'';
+    try{
+      const {data, error} = await sb.rpc('verify_login', {p_username: uname, p_password: pwd});
+      if(error) throw error;
+      if(data && data.length>0){ setSession(data[0]); boot(); }
+      else{ document.getElementById('loginErrorBox').innerHTML = `<div class="login-error">${t('loginError')}</div>`; btn.disabled=false; btn.textContent=t('loginBtn'); }
+    }catch(err){
+      console.error(err);
+      document.getElementById('loginErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      btn.disabled=false; btn.textContent=t('loginBtn');
+    }
+  };
+}
+
+/* ===================== DASHBOARD ===================== */
+function renderDashboard(){
+  document.getElementById('pageSub').textContent = t('subDashboard');
+  const list = filteredBookings();
+  const tt = computeTotals(list, expensesForFilter());
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="kpi-row">
+      <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${money(tt.sales)}</div></div>
+      <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${tt.netProfit>=0?'pos':'neg'}">${money(tt.netProfit)}</div></div>
+      <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${t('kpiCount')}</div><div class="kpi-value">${tt.count}</div></div>
+      <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('kpiPendingComm')}</div><div class="kpi-value">${money(tt.pendingCommission)}</div></div>
+    </div>
+    <div class="section-flex">
+      <div class="panel" style="flex:1.3">
+        <div class="panel-head"><h3 class="panel-title">${t('recentBookings')}</h3><button class="btn btn-gold btn-sm" id="quickAddBtn">${t('addBooking')}</button></div>
+        ${bookingsTable(list.slice(0,6), false)}
+      </div>
+      ${canSeeAllBranches() ? `<div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('branchCompareSales')}</h3></div>${branchBarsHTML('sales')}</div>` : ''}
+    </div>
+  `;
+  document.getElementById('quickAddBtn').onclick = openBookingModal;
+}
+function bookingsTable(list, showActions){
+  if(list.length===0) return `<div class="empty">${t('emptyBookings')}</div>`;
+  return `<div style="overflow-x:auto;"><table>
+      <thead><tr><th>${t('colNo')}</th><th>${t('colAirline')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colBranch')}</th>
+        <th>${t('colNet')}</th><th>${t('colProfit')}</th><th>${t('colSell')}</th><th>${t('colSupplier')}</th><th>${t('colInvoiceNo')}</th><th>${t('colPayStatus')}</th>${showActions?'<th></th>':''}</tr></thead>
+      <tbody>${list.map(b=>`
+        <tr><td class="num">${b.booking_no}</td><td><b>${b.airline||'—'}</b></td><td>${b.customer}</td>
+          <td>${b.is_open_ticket?`<span class="tag pending">${t('tagOpen')}</span>`:(b.ticket_no||'—')}</td>
+          <td>${branchName(b.branch_id)}</td>
+          <td class="num">${money(b.cost)}</td><td class="num">${money(b.profit_amount)}</td>
+          <td class="num" style="font-weight:600">${money(b.sell)}</td>
+          <td>${b.supplier||'—'}</td><td>${b.invoice_no||'—'}</td>
+          <td><span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span></td>
+          ${showActions?`<td>${b.payment_status!=='paid'?`<button class="btn btn-ghost btn-sm" onclick="uiMarkPaid('${b.id}')">${t('collectPayment')}</button>`:''}</td>`:''}
+        </tr>`).join('')}</tbody></table></div>`;
+}
+function branchBarsHTML(metric){
+  const rows = branches.map(b=>{
+    const bl = bookings.filter(x=>x.branch_id===b.id);
+    const tt = computeTotals(bl, manualExpenses.filter(e=>e.branch_id===b.id));
+    return {name:b.name, val: metric==='sales'?tt.sales:tt.netProfit};
+  });
+  const max = Math.max(1, ...rows.map(r=>r.val));
+  if(rows.length===0) return `<div class="empty">${t('emptyBranches')}</div>`;
+  return rows.map(r=>`<div class="bar-row"><div class="bar-label">${r.name}</div>
+    <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2,(r.val/max*100))}%"></div></div>
+    <div class="bar-val num">${money(r.val)}</div></div>`).join('');
+}
+
+/* ===================== BOOKINGS ===================== */
+function renderBookings(){
+  document.getElementById('pageSub').textContent = t('subBookings');
+  document.getElementById('content').innerHTML = `
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('bookingsLog')}</h3>
+      <button class="btn btn-primary btn-sm" id="addBookingBtn">${t('addBookingFull')}</button></div>
+      ${bookingsTable(filteredBookings(), true)}
+    </div>`;
+  document.getElementById('addBookingBtn').onclick = openBookingModal;
+}
+function openBookingModal(){
+  const u = currentUser();
+  const branchOptions = (u.role==='employee') ? branches.filter(b=>b.id===u.branch_id) : branches;
+  showModal(`
+    <div class="modal-head"><h3>${t('modalNewBooking')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="bookingForm">
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldAirline')}</label><input name="airline" list="airlineHints" required>
+          <datalist id="airlineHints">${AIRLINE_HINTS.map(a=>`<option value="${a}">`).join('')}</datalist>
+        </div>
+        <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>
+      </div>
+      <div class="field"><label>${t('fieldCustomer')}</label><input name="customer" required></div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldTicketNo')}</label><input name="ticketNo"></div>
+        <div class="field"><label>${t('fieldInvoiceNo')}</label><input name="invoiceNo"></div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldSupplier')}</label><select name="source">${SOURCE_PRESETS.map(s=>`<option>${s}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${todayStr()}"></div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldNet')}</label><input type="number" step="0.01" name="net" required></div>
+        <div class="field"><label>${t('fieldProfit')}</label><input type="number" step="0.01" name="profit" required></div>
+      </div>
+      <div class="field" style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" name="isOpenTicket" id="isOpenTicket" style="width:auto;">
+        <label for="isOpenTicket" style="margin:0;">${t('fieldOpenTicket')}</label>
+      </div>
+      <div class="field"><label>${t('fieldPayStatus')}</label><select name="paymentStatus"><option value="pending">${t('payPending')}</option><option value="paid">${t('payPaid')}</option></select></div>
+      <div class="note">${t('journalNote')}</div>
+      <div id="bookingErrorBox"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
+        <button type="submit" class="btn btn-primary" id="bookingSaveBtn">${t('saveBooking')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  document.getElementById('bookingForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('bookingSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
+    const f = new FormData(e.target);
+    try{
+      await addBooking({ airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
+        ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), source:f.get('source'), date:f.get('date'),
+        net:f.get('net'), profit:f.get('profit'), isOpenTicket: f.get('isOpenTicket')==='on',
+        paymentStatus:f.get('paymentStatus') });
+      closeModal(); render();
+    }catch(err){
+      console.error(err);
+      document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      btn.disabled=false; btn.textContent=t('saveBooking');
+    }
+  };
+}
+window.uiMarkPaid = async function(id){ try{ await markPaid(id); render(); }catch(e){ alert(t('connError')); } };
+window.uiCollectCommission = async function(id){ try{ await collectCommission(id); render(); }catch(e){ alert(t('connError')); } };
+
+/* ===================== LEDGER ===================== */
+function renderLedger(){
+  document.getElementById('pageSub').textContent = t('subLedger');
+  const list = filteredBookings();
+  const expList = expensesForFilter();
+  const tt = computeTotals(list, expList);
+  const bf = effectiveBranchFilter();
+  const jrnl = bf==='all' ? journal : journal.filter(j=>j.branch_id===bf);
+  document.getElementById('content').innerHTML = `
+    <div class="section-flex">
+      <div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('incomeStatement')}</h3></div>
+        <table><tbody>
+          <tr><td>${t('incomeSales')}</td><td class="num">${money(tt.sales)}</td></tr>
+          <tr><td>${t('incomeComm')}</td><td class="num">${money(tt.commission)}</td></tr>
+          <tr><td>${t('expenseCost')}</td><td class="num neg">${money(tt.cost)}</td></tr>
+          <tr><td>${t('expenseOp')}</td><td class="num neg">${money(tt.expenses)}</td></tr>
+          <tr style="border-top:2px solid var(--navy);font-weight:700;"><td>${t('netProfit')}</td><td class="num ${tt.netProfit>=0?'pos':'neg'}">${money(tt.netProfit)}</td></tr>
+        </tbody></table>
+      </div>
+      <div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('chartOfAccounts')}</h3></div>
+        <table><tbody>${['accCash','accCustomers','accCommRec','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'].map(k=>`<tr><td>${t(k)}</td></tr>`).join('')}</tbody></table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('journalTitle')}</h3><button class="btn btn-ghost btn-sm" id="addExpenseBtn">${t('addExpense')}</button></div>
+      ${jrnl.length===0?`<div class="empty">${t('journalEmpty')}</div>`:`<div style="overflow-x:auto;"><table>
+        <thead><tr><th>${t('jDate')}</th><th>${t('jBranch')}</th><th>${t('jDesc')}</th><th>${t('jDebit')}</th><th>${t('jCredit')}</th><th>${t('jAmount')}</th></tr></thead>
+        <tbody>${jrnl.slice(0,40).map(j=>`<tr><td class="num">${j.date}</td><td>${branchName(j.branch_id)}</td><td>${journalDesc(j)}</td>
+          <td>${t(j.debit_key||'')}</td><td>${t(j.credit_key||'')}</td><td class="num">${money(j.amount)}</td></tr>`).join('')}</tbody>
+      </table></div>`}
+      ${jrnl.length>40?`<div class="note">${t('journalShowing')} ${jrnl.length}</div>`:''}
+    </div>`;
+  document.getElementById('addExpenseBtn').onclick = openExpenseModal;
+}
+function openExpenseModal(){
+  const u = currentUser();
+  const branchOptions = (u.role==='employee') ? branches.filter(b=>b.id===u.branch_id) : branches;
+  showModal(`
+    <div class="modal-head"><h3>${t('modalExpense')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="expenseForm">
+      <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>
+      <div class="field"><label>${t('fieldExpenseDesc')}</label><input name="desc" required></div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldAmount')}</label><input type="number" step="0.01" name="amount" required></div>
+        <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${todayStr()}"></div>
+      </div>
+      <div id="expenseErrorBox"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
+        <button type="submit" class="btn btn-primary" id="expenseSaveBtn">${t('save')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  document.getElementById('expenseForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('expenseSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
+    const f = new FormData(e.target);
+    try{
+      await addManualExpense({branchId:f.get('branchId'), desc:f.get('desc'), amount:f.get('amount'), date:f.get('date')});
+      closeModal(); render();
+    }catch(err){ document.getElementById('expenseErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`; btn.disabled=false; btn.textContent=t('save'); }
+  };
+}
+
+/* ===================== COMMISSIONS ===================== */
+function renderCommissions(){
+  document.getElementById('pageSub').textContent = t('subCommissions');
+  const list = filteredBookings().filter(b=>b.commission>0);
+  const bySupplier = {};
+  list.forEach(b=>{ bySupplier[b.supplier] = bySupplier[b.supplier] || {pending:0,collected:0,count:0}; bySupplier[b.supplier][b.commission_status]+=Number(b.commission); bySupplier[b.supplier].count++; });
+  document.getElementById('content').innerHTML = `
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('commBySupplier')}</h3></div>
+      ${Object.keys(bySupplier).length===0?`<div class="empty">${t('emptyData')}</div>`:`
+      <table><thead><tr><th>${t('colSupplierName')}</th><th>${t('colCount')}</th><th>${t('colPending')}</th><th>${t('colCollected')}</th><th>${t('colTotal')}</th></tr></thead>
+        <tbody>${Object.entries(bySupplier).map(([sup,v])=>`<tr><td>${sup}</td><td class="num">${v.count}</td><td class="num">${money(v.pending)}</td><td class="num">${money(v.collected)}</td><td class="num" style="font-weight:600">${money(v.pending+v.collected)}</td></tr>`).join('')}</tbody></table>`}
+    </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('commDetails')}</h3></div>
+      ${list.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;">
+      <table><thead><tr><th>${t('colBookingNo')}</th><th>${t('colSupplierName')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colCommAmount')}</th><th>${t('colStatus')}</th><th></th></tr></thead>
+        <tbody>${list.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.supplier}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td>
+          <td class="num">${money(b.commission)}</td><td><span class="tag ${b.commission_status}">${b.commission_status==='collected'?t('statusCollected'):t('statusPending')}</span></td>
+          <td>${b.commission_status==='pending'?`<button class="btn btn-ghost btn-sm" onclick="uiCollectCommission('${b.id}')">${t('collectComm')}</button>`:''}</td></tr>`).join('')}</tbody></table></div>`}
+    </div>`;
+}
+
+/* ===================== REPORTS ===================== */
+function renderReports(){
+  document.getElementById('pageSub').textContent = t('subReports');
+  const rows = branches.map(b=>{
+    const bl = bookings.filter(x=>x.branch_id===b.id);
+    const tt = computeTotals(bl, manualExpenses.filter(e=>e.branch_id===b.id));
+    const margin = tt.revenue>0 ? (tt.netProfit/tt.revenue*100) : 0;
+    return {name:b.name, ...tt, margin};
+  });
+  document.getElementById('content').innerHTML = `
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales')}</div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit')}</div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('branchTable')}</h3></div>
+      ${rows.length===0?`<div class="empty">${t('emptyBranches')}</div>`:`<div style="overflow-x:auto;">
+      <table><thead><tr><th>${t('colBranchName')}</th><th>${t('colBookCount')}</th><th>${t('colSalesTotal')}</th><th>${t('colCostTotal')}</th><th>${t('colCommTotal')}</th><th>${t('colExpTotal')}</th><th>${t('colNetProfitCol')}</th><th>${t('colMargin')}</th></tr></thead>
+        <tbody>${rows.map(r=>`<tr><td>${r.name}</td><td class="num">${r.count}</td><td class="num">${money(r.sales)}</td><td class="num">${money(r.cost)}</td>
+          <td class="num">${money(r.commission)}</td><td class="num">${money(r.expenses)}</td><td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${money(r.netProfit)}</td><td class="num">${r.margin.toFixed(1)}%</td></tr>`).join('')}</tbody></table></div>`}
+    </div>`;
+}
+
+/* ===================== USERS ===================== */
+function renderUsers(){
+  document.getElementById('pageSub').textContent = t('subUsers');
+  document.getElementById('content').innerHTML = `
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('usersTitle')}</h3><button class="btn btn-primary btn-sm" id="addUserBtn">${t('addUser')}</button></div>
+      <table><thead><tr><th>${t('colUserName')}</th><th>${t('colUsername')}</th><th>${t('colRole')}</th><th>${t('colUserBranch')}</th><th></th></tr></thead>
+        <tbody>${users.map(u=>`<tr><td>${u.name}</td><td class="num">${u.username}</td>
+          <td><span class="tag ${u.role}">${u.role==='admin'?t('roleAdmin'):u.role==='accountant'?t('roleAccountant'):t('roleEmployee')}</span></td>
+          <td>${u.branch_id?branchName(u.branch_id):'—'}</td>
+          <td>${u.id!==currentUser().id?`<button class="btn btn-danger btn-sm" onclick="uiDeleteUser('${u.id}')">${t('delete')}</button>`:''}</td></tr>`).join('')}</tbody></table>
+    </div>`;
+  document.getElementById('addUserBtn').onclick = openUserModal;
+}
+function openUserModal(){
+  showModal(`
+    <div class="modal-head"><h3>${t('modalNewUser')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="userForm">
+      <div class="field"><label>${t('fieldFullName')}</label><input name="name" required></div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldUsername')}</label><input name="username" required></div>
+        <div class="field"><label>${t('fieldPassword')}</label><input name="password" required></div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldRole')}</label><select name="role"><option value="employee">${t('roleEmployee')}</option><option value="accountant">${t('roleAccountant')}</option><option value="admin">${t('roleAdmin')}</option></select></div>
+        <div class="field"><label>${t('fieldUserBranch')}</label><select name="branchId"><option value="">${t('noBranch')}</option>${branches.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>
+      </div>
+      <div id="userErrorBox"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
+        <button type="submit" class="btn btn-primary" id="userSaveBtn">${t('add')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  document.getElementById('userForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('userSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
+    const f = new FormData(e.target);
+    const username = (f.get('username')||'').trim();
+    const role = f.get('role');
+    const branchId = f.get('branchId')||null;
+    try{
+      const {data:newId, error} = await sb.rpc('create_app_user', { p_name:f.get('name'), p_username:username, p_password:f.get('password'), p_role:role, p_branch_id: role==='employee'?branchId:null });
+      if(error){
+        if(String(error.message||'').toLowerCase().includes('duplicate')){ document.getElementById('userErrorBox').innerHTML = `<div class="login-error">${t('usernameTaken')}</div>`; btn.disabled=false; btn.textContent=t('add'); return; }
+        throw error;
+      }
+      users.push({ id:newId, name:f.get('name'), username, role, branch_id: role==='employee'?branchId:null });
+      closeModal(); render();
+    }catch(err){ console.error(err); document.getElementById('userErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`; btn.disabled=false; btn.textContent=t('add'); }
+  };
+}
+window.uiDeleteUser = async function(id){
+  if(id===currentUser().id){ alert(t('cannotDeleteSelf')); return; }
+  try{ const {error} = await sb.from('app_users').delete().eq('id', id); if(error) throw error; users = users.filter(u=>u.id!==id); render(); }
+  catch(e){ alert(t('connError')); }
+};
+
+/* ===================== SETTINGS ===================== */
+function renderSettings(){
+  document.getElementById('pageSub').textContent = t('subSettings');
+  document.getElementById('content').innerHTML = `
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('branchesTitle')}</h3><button class="btn btn-primary btn-sm" id="addBranchBtn">${t('addBranch')}</button></div>
+      <table><thead><tr><th>${t('colBranchOnly')}</th><th></th></tr></thead>
+        <tbody>${branches.map(b=>`<tr><td>${b.name}</td><td><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
+      <div class="note">${t('branchDeleteNote')}</div>
+    </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('resetTitle')}</h3></div><p class="note">${t('resetNote')}</p></div>`;
+  document.getElementById('addBranchBtn').onclick = ()=>{
+    showModal(`
+      <div class="modal-head"><h3>${t('modalNewBranch')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+      <form id="branchForm">
+        <div class="field"><label>${t('fieldBranchName')}</label><input name="name" required></div>
+        <div id="branchErrorBox"></div>
+        <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
+          <button type="submit" class="btn btn-primary" id="branchSaveBtn">${t('add')}</button>
+          <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+        </div>
+      </form>`);
+    document.getElementById('branchForm').onsubmit = async (e)=>{
+      e.preventDefault();
+      const btn = document.getElementById('branchSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
+      const f = new FormData(e.target);
+      try{
+        const {data:ins, error} = await sb.from('branches').insert({name:f.get('name')}).select().single();
+        if(error) throw error;
+        branches.push(ins); closeModal(); render();
+      }catch(err){ document.getElementById('branchErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`; btn.disabled=false; btn.textContent=t('add'); }
+    };
+  };
+}
+window.uiRemoveBranch = async function(id){
+  try{
+    const {error} = await sb.from('branches').delete().eq('id', id);
+    if(error) throw error;
+    branches = branches.filter(b=>b.id!==id);
+    if(branchFilter===id) branchFilter='all';
+    render();
+  }catch(e){ alert(t('branchDeleteError')); }
+};
+
+/* ===================== MODAL ===================== */
+function showModal(html){ document.getElementById('modalBody').innerHTML = html; document.getElementById('overlay').classList.add('show'); }
+function closeModal(){ document.getElementById('overlay').classList.remove('show'); }
+window.closeModal = closeModal;
+document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal(); });
+
+/* ===================== INIT ===================== */
+boot();
+</script>
+</body>
+</html>
