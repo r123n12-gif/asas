@@ -215,7 +215,10 @@ const T = {
     myAccountBtn:'👤 حسابي', modalMyAccount:'إعدادات حسابي', fieldCurrentPassword:'كلمة المرور الحالية',
     fieldNewUsername:'اسم المستخدم', fieldNewPassword:'كلمة المرور الجديدة', fieldConfirmPassword:'تأكيد كلمة المرور الجديدة',
     saveAccount:'حفظ التغييرات', accountUpdated:'تم تحديث بيانات حسابك بنجاح.', wrongCurrentPassword:'كلمة المرور الحالية غير صحيحة.',
-    passwordMismatch:'كلمة المرور الجديدة وتأكيدها غير متطابقين.', leaveBlankNote:'اترك كلمة المرور الجديدة فاضية إذا ما تبي تغيّرها.'
+    passwordMismatch:'كلمة المرور الجديدة وتأكيدها غير متطابقين.', leaveBlankNote:'اترك كلمة المرور الجديدة فاضية إذا ما تبي تغيّرها.',
+    edit:'تعديل', modalEditBooking:'تعديل الحجز', saveChanges:'حفظ التعديلات', returnedTag:'مُرجَع للموظف',
+    returnToEmployee:'إرجاع للموظف للتعديل', confirmDeleteBooking:'هل أنت متأكد من حذف هذا الحجز؟ لا يمكن التراجع عن هذا الإجراء.',
+    editNotePrompt:'وضّح للموظف ما المطلوب تعديله (اختياري):', editNoteLabel:'ملاحظة المحاسب'
   },
   en: {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
@@ -295,7 +298,10 @@ const T = {
     myAccountBtn:'👤 My account', modalMyAccount:'My account settings', fieldCurrentPassword:'Current password',
     fieldNewUsername:'Username', fieldNewPassword:'New password', fieldConfirmPassword:'Confirm new password',
     saveAccount:'Save changes', accountUpdated:'Your account was updated successfully.', wrongCurrentPassword:'Current password is incorrect.',
-    passwordMismatch:'New password and confirmation do not match.', leaveBlankNote:'Leave the new password blank to keep it unchanged.'
+    passwordMismatch:'New password and confirmation do not match.', leaveBlankNote:'Leave the new password blank to keep it unchanged.',
+    edit:'Edit', modalEditBooking:'Edit booking', saveChanges:'Save changes', returnedTag:'Returned to employee',
+    returnToEmployee:'Return to employee for edit', confirmDeleteBooking:'Are you sure you want to delete this booking? This cannot be undone.',
+    editNotePrompt:"Explain to the employee what needs to be fixed (optional):", editNoteLabel:"Accountant's note"
   }
 };
 let lang = localStorage.getItem('asas_lang') || 'ar';
@@ -375,6 +381,8 @@ function effectiveBranchFilter(){
   return branchFilter;
 }
 function filteredBookings(){
+  const u = currentUser();
+  if(u && u.role==='employee') return bookings.filter(b=>b.created_by===u.id);
   const bf = effectiveBranchFilter();
   if(bf==='all') return bookings;
   return bookings.filter(b=>b.branch_id===bf);
@@ -404,14 +412,42 @@ async function addBooking(data){
   const {data:inserted, error} = await sb.from('bookings').insert(row).select().single();
   if(error) throw error;
   bookings.unshift(inserted);
-  const jRows = [{ date:inserted.date, branch_id:inserted.branch_id, desc_key:'jSale',
+  const jRows = [{ date:inserted.date, branch_id:inserted.branch_id, booking_id:inserted.id, desc_key:'jSale',
     desc_args:[inserted.booking_no, inserted.airline||'-', inserted.customer],
     debit_key:'accCustomers', credit_key:'accSalesRev', amount: sell }];
-  if(net>0) jRows.push({ date:inserted.date, branch_id:inserted.branch_id, desc_key:'jCost',
+  if(net>0) jRows.push({ date:inserted.date, branch_id:inserted.branch_id, booking_id:inserted.id, desc_key:'jCost',
     desc_args:[inserted.booking_no, inserted.airline||'-'], debit_key:'accCogs', credit_key:'accSuppliers', amount: net });
   const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
   if(jErr) throw jErr;
   journal.unshift(...jIns.reverse());
+}
+async function updateBooking(id, data){
+  const net = Number(data.net)||0, profit = Number(data.profit)||0;
+  const sell = +(net+profit).toFixed(2);
+  const row = {
+    date: data.date, customer: data.customer, branch_id: data.branchId,
+    airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null,
+    is_open_ticket: !!data.isOpenTicket, supplier: data.source,
+    sell, cost: net, profit_amount: profit, margin: profit, net_profit: profit,
+    payment_status: data.paymentStatus, payment_method: data.paymentMethod,
+    bank_name: data.paymentMethod==='transfer' ? (data.bankName||null) : null,
+    edit_requested:false, edit_note:null
+  };
+  const {data:updated, error} = await sb.from('bookings').update(row).eq('id', id).select().single();
+  if(error) throw error;
+  const idx = bookings.findIndex(b=>b.id===id);
+  if(idx>-1) bookings[idx] = updated;
+}
+async function deleteBooking(id){
+  const {error} = await sb.from('bookings').delete().eq('id', id);
+  if(error) throw error;
+  bookings = bookings.filter(b=>b.id!==id);
+  journal = journal.filter(j=>j.booking_id!==id);
+}
+async function requestBookingEdit(id, note){
+  const {error} = await sb.from('bookings').update({edit_requested:true, edit_note:note||null}).eq('id', id);
+  if(error) throw error;
+  const b = bookings.find(x=>x.id===id); if(b){ b.edit_requested=true; b.edit_note=note||null; }
 }
 function journalDesc(j){
   const templates = { jSale:{ar:(a)=>`مبيعات حجز #${a[0]} - ${a[1]} - ${a[2]}`, en:(a)=>`Sale booking #${a[0]} - ${a[1]} - ${a[2]}`},
@@ -613,15 +649,16 @@ function renderDashboard(){
     <div class="section-flex">
       <div class="panel" style="flex:1.3">
         <div class="panel-head"><h3 class="panel-title">${t('recentBookings')}</h3><button class="btn btn-gold btn-sm" id="quickAddBtn">${t('addBooking')}</button></div>
-        ${bookingsTable(list.slice(0,6), false)}
+        ${bookingsTable(list.slice(0,6), 'none')}
       </div>
       ${canSeeAllBranches() ? `<div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('branchCompareSales')}</h3></div>${branchBarsHTML('sales')}</div>` : ''}
     </div>
   `;
   document.getElementById('quickAddBtn').onclick = openBookingModal;
 }
-function bookingsTable(list, showActions){
+function bookingsTable(list, mode){
   if(list.length===0) return `<div class="empty">${t('emptyBookings')}</div>`;
+  const showActions = mode!=='none';
   return `<div style="overflow-x:auto;"><table>
       <thead><tr><th>${t('colNo')}</th><th>${t('colAirline')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colBranch')}</th>
         <th>${t('colNet')}</th><th>${t('colProfit')}</th><th>${t('colSell')}</th><th>${t('colSupplier')}</th><th>${t('colInvoiceNo')}</th><th>${t('colPayStatus')}</th><th>${t('colPaymentMethod')}</th>${showActions?'<th></th>':''}</tr></thead>
@@ -634,8 +671,14 @@ function bookingsTable(list, showActions){
           <td>${b.supplier||'—'}</td><td>${b.invoice_no||'—'}</td>
           <td><span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span></td>
           <td>${b.payment_method==='transfer'?`${t('payTransfer')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('transferVerified'):t('transferPending')}</span>`:t('payCash')}</td>
-          ${showActions?`<td>${b.payment_status!=='paid'?`<button class="btn btn-ghost btn-sm" onclick="uiMarkPaid('${b.id}')">${t('collectPayment')}</button>`:''}</td>`:''}
-        </tr>`).join('')}</tbody></table></div>`;
+          ${showActions?`<td style="display:flex;gap:5px;flex-wrap:wrap;">
+            ${b.payment_status!=='paid'?`<button class="btn btn-ghost btn-sm" onclick="uiMarkPaid('${b.id}')">${t('collectPayment')}</button>`:''}
+            ${mode==='manage'?`<button class="btn btn-ghost btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>
+              <button class="btn btn-danger btn-sm" onclick="uiDeleteBooking('${b.id}')">${t('delete')}</button>
+              ${b.edit_requested?`<span class="tag pending">${t('returnedTag')}</span>`:`<button class="btn btn-ghost btn-sm" onclick="uiRequestEdit('${b.id}')">${t('returnToEmployee')}</button>`}`:''}
+            ${mode==='employee' && b.edit_requested?`<button class="btn btn-gold btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>`:''}
+          </td>`:''}
+        </tr>${mode==='employee' && b.edit_requested && b.edit_note?`<tr><td colspan="13" style="background:#FBEFE0;font-size:11.5px;color:#A8722C;">📝 ${t('editNoteLabel')}: ${b.edit_note}</td></tr>`:''}`).join('')}</tbody></table></div>`;
 }
 function branchBarsHTML(metric){
   const rows = branches.map(b=>{
@@ -653,13 +696,14 @@ function branchBarsHTML(metric){
 /* ===================== BOOKINGS ===================== */
 function renderBookings(){
   document.getElementById('pageSub').textContent = t('subBookings');
+  const mode = canSeeAllBranches() ? 'manage' : 'employee';
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('bookingsLog')}</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="printReportBtn">${t('printReport')}</button>
         <button class="btn btn-primary btn-sm" id="addBookingBtn">${t('addBookingFull')}</button>
       </div></div>
-      ${bookingsTable(filteredBookings(), true)}
+      ${bookingsTable(filteredBookings(), mode)}
     </div>`;
   document.getElementById('addBookingBtn').onclick = openBookingModal;
   document.getElementById('printReportBtn').onclick = openPrintReportModal;
@@ -779,46 +823,48 @@ function generateBranchReport(branchId, employeeId, dateFrom, dateTo){
   w.onload = ()=>{ w.focus(); w.print(); };
   setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
 }
-function openBookingModal(){
+function openBookingModal(existing){
   const u = currentUser();
+  const isEdit = !!existing;
   const branchOptions = (u.role==='employee') ? branches.filter(b=>b.id===u.branch_id) : branches;
+  const v = existing || {};
   showModal(`
-    <div class="modal-head"><h3>${t('modalNewBooking')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <div class="modal-head"><h3>${isEdit?t('modalEditBooking'):t('modalNewBooking')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="bookingForm">
       <div class="grid-2">
-        <div class="field"><label>${t('fieldAirline')}</label><input name="airline" list="airlineHints" required>
+        <div class="field"><label>${t('fieldAirline')}</label><input name="airline" list="airlineHints" required value="${v.airline||''}">
           <datalist id="airlineHints">${AIRLINE_HINTS.map(a=>`<option value="${a}">`).join('')}</datalist>
         </div>
-        <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}" ${v.branch_id===b.id?'selected':''}>${b.name}</option>`).join('')}</select></div>
       </div>
-      <div class="field"><label>${t('fieldCustomer')}</label><input name="customer" required></div>
+      <div class="field"><label>${t('fieldCustomer')}</label><input name="customer" required value="${v.customer||''}"></div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldTicketNo')}</label><input name="ticketNo"></div>
-        <div class="field"><label>${t('fieldInvoiceNo')}</label><input name="invoiceNo"></div>
-      </div>
-      <div class="grid-2">
-        <div class="field"><label>${t('fieldSupplier')}</label><select name="source">${SOURCE_PRESETS.map(s=>`<option>${s}</option>`).join('')}</select></div>
-        <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${todayStr()}"></div>
+        <div class="field"><label>${t('fieldTicketNo')}</label><input name="ticketNo" value="${v.ticket_no||''}"></div>
+        <div class="field"><label>${t('fieldInvoiceNo')}</label><input name="invoiceNo" value="${v.invoice_no||''}"></div>
       </div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldNet')}</label><input type="number" step="0.01" name="net" required></div>
-        <div class="field"><label>${t('fieldProfit')}</label><input type="number" step="0.01" name="profit" required></div>
+        <div class="field"><label>${t('fieldSupplier')}</label><select name="source">${SOURCE_PRESETS.map(s=>`<option ${v.supplier===s?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${v.date||todayStr()}"></div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldNet')}</label><input type="number" step="0.01" name="net" required value="${v.cost??''}"></div>
+        <div class="field"><label>${t('fieldProfit')}</label><input type="number" step="0.01" name="profit" required value="${v.profit_amount??''}"></div>
       </div>
       <div class="field" style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" name="isOpenTicket" id="isOpenTicket" style="width:auto;">
+        <input type="checkbox" name="isOpenTicket" id="isOpenTicket" style="width:auto;" ${v.is_open_ticket?'checked':''}>
         <label for="isOpenTicket" style="margin:0;">${t('fieldOpenTicket')}</label>
       </div>
-      <div class="field"><label>${t('fieldPayStatus')}</label><select name="paymentStatus"><option value="pending">${t('payPending')}</option><option value="paid">${t('payPaid')}</option></select></div>
+      <div class="field"><label>${t('fieldPayStatus')}</label><select name="paymentStatus"><option value="pending" ${v.payment_status==='pending'?'selected':''}>${t('payPending')}</option><option value="paid" ${v.payment_status==='paid'?'selected':''}>${t('payPaid')}</option></select></div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="paymentMethod" id="paymentMethodSel"><option value="cash">${t('payCash')}</option><option value="transfer">${t('payTransfer')}</option></select></div>
-        <div class="field" id="bankNameField" style="display:none;"><label>${t('fieldBankName')}</label><select name="bankName">
-          <option value="RAJHI">${t('bankRajhi')}</option><option value="AHLI">${t('bankAhli')}</option><option value="OTHER">${t('bankOther')}</option>
+        <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="paymentMethod" id="paymentMethodSel"><option value="cash" ${v.payment_method==='cash'?'selected':''}>${t('payCash')}</option><option value="transfer" ${v.payment_method==='transfer'?'selected':''}>${t('payTransfer')}</option></select></div>
+        <div class="field" id="bankNameField" style="display:${v.payment_method==='transfer'?'':'none'};"><label>${t('fieldBankName')}</label><select name="bankName">
+          <option value="RAJHI" ${v.bank_name==='RAJHI'?'selected':''}>${t('bankRajhi')}</option><option value="AHLI" ${v.bank_name==='AHLI'?'selected':''}>${t('bankAhli')}</option><option value="OTHER" ${v.bank_name==='OTHER'?'selected':''}>${t('bankOther')}</option>
         </select></div>
       </div>
       <div class="note">${t('journalNote')}</div>
       <div id="bookingErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
-        <button type="submit" class="btn btn-primary" id="bookingSaveBtn">${t('saveBooking')}</button>
+        <button type="submit" class="btn btn-primary" id="bookingSaveBtn">${isEdit?t('saveChanges'):t('saveBooking')}</button>
         <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
       </div>
     </form>`);
@@ -829,21 +875,31 @@ function openBookingModal(){
     e.preventDefault();
     const btn = document.getElementById('bookingSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
     const f = new FormData(e.target);
+    const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
+      ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), source:f.get('source'), date:f.get('date'),
+      net:f.get('net'), profit:f.get('profit'), isOpenTicket: f.get('isOpenTicket')==='on',
+      paymentStatus:f.get('paymentStatus'), paymentMethod:f.get('paymentMethod'), bankName:f.get('bankName') };
     try{
-      await addBooking({ airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
-        ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), source:f.get('source'), date:f.get('date'),
-        net:f.get('net'), profit:f.get('profit'), isOpenTicket: f.get('isOpenTicket')==='on',
-        paymentStatus:f.get('paymentStatus'), paymentMethod:f.get('paymentMethod'), bankName:f.get('bankName') });
+      if(isEdit){ await updateBooking(existing.id, payload); } else { await addBooking(payload); }
       closeModal(); render();
     }catch(err){
       console.error(err);
       document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
-      btn.disabled=false; btn.textContent=t('saveBooking');
+      btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking');
     }
   };
 }
 window.uiMarkPaid = async function(id){ try{ await markPaid(id); render(); }catch(e){ alert(t('connError')); } };
 window.uiCollectCommission = async function(id){ try{ await collectCommission(id); render(); }catch(e){ alert(t('connError')); } };
+window.uiEditBooking = function(id){ const b = bookings.find(x=>x.id===id); if(b) openBookingModal(b); };
+window.uiDeleteBooking = async function(id){
+  if(!confirm(t('confirmDeleteBooking'))) return;
+  try{ await deleteBooking(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
+window.uiRequestEdit = async function(id){
+  const note = prompt(t('editNotePrompt'))||'';
+  try{ await requestBookingEdit(id, note); render(); }catch(e){ alert(t('connError')); }
+};
 
 /* ===================== LEDGER ===================== */
 function renderLedger(){
