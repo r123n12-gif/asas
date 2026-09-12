@@ -63,6 +63,7 @@
   .tag.admin{background:#E6E0F5;color:#5B3FA0;}
   .tag.employee{background:#E6F0F5;color:var(--teal);}
   .tag.accountant{background:#FFF1DE;color:#A8722C;}
+  .tag.rejected{background:#F7E7E4;color:var(--red);}
 
   .btn{font-family:inherit;font-size:13px;font-weight:600;padding:9px 16px;border-radius:8px;border:none;cursor:pointer;transition:opacity .15s;}
   .btn:hover{opacity:.88;} .btn:disabled{opacity:.5;cursor:default;}
@@ -191,7 +192,20 @@ const T = {
     setupStep:'افتح الملف بمحرر نصوص، وابحث عن السطرين اللي فيهم YOUR_SUPABASE_URL و YOUR_SUPABASE_ANON_KEY في أول الكود، واستبدلهم بمفاتيح مشروعك من Project Settings → API في Supabase.',
     roleAccountant:'محاسب', fieldAirline:'شركة الطيران', fieldTicketNo:'رقم التذكرة', fieldInvoiceNo:'رقم الفاتورة',
     fieldNet:'الصافي (ر.س)', fieldProfit:'الربح (ر.س)', fieldOpenTicket:'تذكرة مفتوحة', tagOpen:'تذكرة مفتوحة',
-    colAirline:'شركة الطيران', colTicketNo:'رقم التذكرة', colInvoiceNo:'رقم الفاتورة', colNet:'الصافي', colProfit:'الربح'
+    colAirline:'شركة الطيران', colTicketNo:'رقم التذكرة', colInvoiceNo:'رقم الفاتورة', colNet:'الصافي', colProfit:'الربح',
+    navDeposits:'الإيداعات النقدية', subDeposits:'تسجيل واعتماد إيداعات الكاش وتأكيد التحويلات البنكية',
+    fieldPaymentMethod:'طريقة الدفع من العميل', payCash:'كاش', payTransfer:'تحويل بنكي',
+    fieldBankName:'البنك المحوّل له', bankRajhi:'مصرف الراجحي', bankAhli:'البنك الأهلي', bankOther:'بنك آخر',
+    colPaymentMethod:'طريقة الدفع', transferPending:'بانتظار تأكيد المحاسب', transferVerified:'تم التأكيد',
+    verifyTransferBtn:'تأكيد الاستلام', branchCashOnHand:'كاش الفرع غير المودّع',
+    depositsTitle:'إيداعات الكاش', addDeposit:'+ تسجيل إيداع', fieldDepositAmount:'مبلغ الإيداع (ر.س)',
+    fieldDepositDestination:'الإيداع لحساب', fieldDepositReceipt:'صورة الإيصال', destIATA:'حساب الوكالة (IATA)',
+    submitDeposit:'إرسال الإيداع', depositPending:'قيد الاعتماد', depositApproved:'معتمد', depositRejected:'مرفوض',
+    approve:'اعتماد', reject:'رفض', colDestination:'الجهة', colAmount:'المبلغ', colReceipt:'الإيصال', viewReceipt:'عرض',
+    colDepositStatus:'الحالة', pendingTransfersTitle:'تحويلات بانتظار التأكيد', noPendingTransfers:'لا توجد تحويلات معلّقة.',
+    noPendingDeposits:'لا توجد إيداعات معلّقة.', uploading:'جاري الرفع...', receiptRequired:'يجب إرفاق صورة الإيصال.',
+    depositHistory:'سجل الإيداعات', myBranchCash:'رصيد الكاش الحالي لفرعك (غير مودّع بعد)', allBranchesCash:'كاش غير مودّع حسب الفرع',
+    depositSaved:'تم إرسال الإيداع للمحاسب للاعتماد.', rejectReason:'سبب الرفض (اختياري)'
   },
   en: {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
@@ -248,7 +262,20 @@ const T = {
     setupStep:'Open the file in a text editor, find the two lines with YOUR_SUPABASE_URL and YOUR_SUPABASE_ANON_KEY near the top of the script, and replace them with your project keys from Project Settings → API in Supabase.',
     roleAccountant:'Accountant', fieldAirline:'Airline', fieldTicketNo:'Ticket number', fieldInvoiceNo:'Invoice number',
     fieldNet:'Net (SAR)', fieldProfit:'Profit (SAR)', fieldOpenTicket:'Open ticket', tagOpen:'Open ticket',
-    colAirline:'Airline', colTicketNo:'Ticket No.', colInvoiceNo:'Invoice No.', colNet:'Net', colProfit:'Profit'
+    colAirline:'Airline', colTicketNo:'Ticket No.', colInvoiceNo:'Invoice No.', colNet:'Net', colProfit:'Profit',
+    navDeposits:'Cash Deposits', subDeposits:'Record and approve cash deposits, confirm bank transfers',
+    fieldPaymentMethod:'Customer payment method', payCash:'Cash', payTransfer:'Bank transfer',
+    fieldBankName:'Bank transferred to', bankRajhi:'Al Rajhi Bank', bankAhli:'Al Ahli Bank', bankOther:'Other bank',
+    colPaymentMethod:'Payment method', transferPending:'Awaiting accountant confirmation', transferVerified:'Confirmed',
+    verifyTransferBtn:'Confirm receipt', branchCashOnHand:'Branch cash not yet deposited',
+    depositsTitle:'Cash deposits', addDeposit:'+ Record deposit', fieldDepositAmount:'Deposit amount (SAR)',
+    fieldDepositDestination:'Deposit to account', fieldDepositReceipt:'Receipt photo', destIATA:'Agency account (IATA)',
+    submitDeposit:'Submit deposit', depositPending:'Pending approval', depositApproved:'Approved', depositRejected:'Rejected',
+    approve:'Approve', reject:'Reject', colDestination:'Destination', colAmount:'Amount', colReceipt:'Receipt', viewReceipt:'View',
+    colDepositStatus:'Status', pendingTransfersTitle:'Transfers awaiting confirmation', noPendingTransfers:'No pending transfers.',
+    noPendingDeposits:'No pending deposits.', uploading:'Uploading...', receiptRequired:'Please attach a receipt photo.',
+    depositHistory:'Deposit history', myBranchCash:"Your branch's current cash balance (not yet deposited)", allBranchesCash:'Undeposited cash by branch',
+    depositSaved:'Deposit submitted to the accountant for approval.', rejectReason:'Rejection reason (optional)'
   }
 };
 let lang = localStorage.getItem('asas_lang') || 'ar';
@@ -261,20 +288,57 @@ function setSession(u){ localStorage.setItem('asas_session', JSON.stringify(u));
 function clearSession(){ localStorage.removeItem('asas_session'); }
 
 /* ===================== LOCAL CACHE ===================== */
-let branches = [], users = [], bookings = [], journal = [], manualExpenses = [];
+let branches = [], users = [], bookings = [], journal = [], manualExpenses = [], deposits = [];
 let route = 'dashboard';
 let branchFilter = 'all';
 
 async function fetchAll(){
-  const [b, u, bk, jr, ex] = await Promise.all([
+  const [b, u, bk, jr, ex, dp] = await Promise.all([
     sb.from('branches').select('*').order('created_at'),
     sb.from('app_users').select('id,name,username,role,branch_id').order('created_at'),
     sb.from('bookings').select('*').order('created_at', {ascending:false}),
     sb.from('journal').select('*').order('created_at', {ascending:false}),
-    sb.from('manual_expenses').select('*').order('created_at', {ascending:false})
+    sb.from('manual_expenses').select('*').order('created_at', {ascending:false}),
+    sb.from('cash_deposits').select('*').order('created_at', {ascending:false})
   ]);
-  if(b.error||u.error||bk.error||jr.error||ex.error) throw (b.error||u.error||bk.error||jr.error||ex.error);
-  branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[];
+  if(b.error||u.error||bk.error||jr.error||ex.error||dp.error) throw (b.error||u.error||bk.error||jr.error||ex.error||dp.error);
+  branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[]; deposits = dp.data||[];
+}
+/* ===================== CASH DEPOSITS ===================== */
+function branchCashOnHand(branchId){
+  const collectedCash = bookings.filter(b=>b.branch_id===branchId && b.payment_method==='cash').reduce((s,b)=>s+Number(b.sell||0),0);
+  const approvedDeposits = deposits.filter(d=>d.branch_id===branchId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
+  return +(collectedCash-approvedDeposits).toFixed(2);
+}
+async function uploadReceiptFile(file){
+  const path = `${Date.now()}_${Math.random().toString(36).slice(2)}_${file.name}`;
+  const {error} = await sb.storage.from(RECEIPTS_BUCKET).upload(path, file);
+  if(error) throw error;
+  const {data} = sb.storage.from(RECEIPTS_BUCKET).getPublicUrl(path);
+  return data.publicUrl;
+}
+async function submitDeposit(data){
+  const receiptUrl = await uploadReceiptFile(data.file);
+  const row = { branch_id:data.branchId, amount:Number(data.amount)||0, destination:data.destination,
+    receipt_url:receiptUrl, status:'pending', submitted_by:currentUser()?.id||null };
+  const {data:ins, error} = await sb.from('cash_deposits').insert(row).select().single();
+  if(error) throw error;
+  deposits.unshift(ins);
+}
+async function approveDeposit(id){
+  const {error} = await sb.from('cash_deposits').update({status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
+  if(error) throw error;
+  const d = deposits.find(x=>x.id===id); if(d){ d.status='approved'; }
+}
+async function rejectDeposit(id, notes){
+  const {error} = await sb.from('cash_deposits').update({status:'rejected', notes:notes||null, reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
+  if(error) throw error;
+  const d = deposits.find(x=>x.id===id); if(d){ d.status='rejected'; d.notes=notes||null; }
+}
+async function verifyTransfer(bookingId){
+  const {error} = await sb.from('bookings').update({transfer_verified:true, transfer_verified_by:currentUser()?.id||null, transfer_verified_at:new Date().toISOString()}).eq('id', bookingId);
+  if(error) throw error;
+  const b = bookings.find(x=>x.id===bookingId); if(b){ b.transfer_verified = true; }
 }
 
 /* ===================== HELPERS ===================== */
@@ -297,6 +361,11 @@ function filteredBookings(){
 }
 const SOURCE_PRESETS = ['AKBAR','NDC','PORTAL','GALILEO','مباشر'];
 const AIRLINE_HINTS = ['SV','EY','EK','G9','FZ','GF','QR','6E','XY'];
+const DEPOSIT_DESTINATIONS = ['AKBAR','NDC','PORTAL','GALILEO','IATA'];
+const BANK_OPTIONS = ['RAJHI','AHLI','OTHER'];
+const RECEIPTS_BUCKET = 'receipts';
+function destLabel(d){ return d==='IATA' ? t('destIATA') : d; }
+function bankLabel(b){ return b==='RAJHI'?t('bankRajhi'):b==='AHLI'?t('bankAhli'):t('bankOther'); }
 
 /* ===================== ACCOUNTING ENGINE (Supabase-backed) ===================== */
 async function addBooking(data){
@@ -308,6 +377,8 @@ async function addBooking(data){
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, commission_rate: 0, commission: 0, profit_amount: profit,
     margin: profit, net_profit: profit, payment_status: data.paymentStatus||'pending',
+    payment_method: data.paymentMethod||'cash', bank_name: data.paymentMethod==='transfer' ? (data.bankName||null) : null,
+    transfer_verified: false,
     commission_status:'pending', created_by: currentUser()?.id||null
   };
   const {data:inserted, error} = await sb.from('bookings').insert(row).select().single();
@@ -374,7 +445,8 @@ function expensesForFilter(){
 
 /* ===================== NAV ===================== */
 function navItems(){
-  const items = [ {route:'dashboard', label:t('navDashboard'), icon:'◆'}, {route:'bookings', label:t('navBookings'), icon:'🎫'} ];
+  const items = [ {route:'dashboard', label:t('navDashboard'), icon:'◆'}, {route:'bookings', label:t('navBookings'), icon:'🎫'},
+    {route:'deposits', label:t('navDeposits'), icon:'💰'} ];
   if(canSeeAllBranches()){
     items.push({route:'ledger', label:t('navLedger'), icon:'≡'});
     items.push({route:'reports', label:t('navReports'), icon:'▤'});
@@ -461,7 +533,7 @@ function render(){
   document.getElementById('langBtn').onclick = ()=>{ setLang(lang==='ar'?'en':'ar'); render(); };
 
   const routes = { dashboard:renderDashboard, bookings:renderBookings, ledger:renderLedger,
-    reports:renderReports, users:renderUsers, settings:renderSettings };
+    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits };
   (routes[route]||renderDashboard)();
 }
 
@@ -530,7 +602,7 @@ function bookingsTable(list, showActions){
   if(list.length===0) return `<div class="empty">${t('emptyBookings')}</div>`;
   return `<div style="overflow-x:auto;"><table>
       <thead><tr><th>${t('colNo')}</th><th>${t('colAirline')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colBranch')}</th>
-        <th>${t('colNet')}</th><th>${t('colProfit')}</th><th>${t('colSell')}</th><th>${t('colSupplier')}</th><th>${t('colInvoiceNo')}</th><th>${t('colPayStatus')}</th>${showActions?'<th></th>':''}</tr></thead>
+        <th>${t('colNet')}</th><th>${t('colProfit')}</th><th>${t('colSell')}</th><th>${t('colSupplier')}</th><th>${t('colInvoiceNo')}</th><th>${t('colPayStatus')}</th><th>${t('colPaymentMethod')}</th>${showActions?'<th></th>':''}</tr></thead>
       <tbody>${list.map(b=>`
         <tr><td class="num">${b.booking_no}</td><td><b>${b.airline||'—'}</b></td><td>${b.customer}</td>
           <td>${b.is_open_ticket?`<span class="tag pending">${t('tagOpen')}</span>`:(b.ticket_no||'—')}</td>
@@ -539,6 +611,7 @@ function bookingsTable(list, showActions){
           <td class="num" style="font-weight:600">${money(b.sell)}</td>
           <td>${b.supplier||'—'}</td><td>${b.invoice_no||'—'}</td>
           <td><span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span></td>
+          <td>${b.payment_method==='transfer'?`${t('payTransfer')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('transferVerified'):t('transferPending')}</span>`:t('payCash')}</td>
           ${showActions?`<td>${b.payment_status!=='paid'?`<button class="btn btn-ghost btn-sm" onclick="uiMarkPaid('${b.id}')">${t('collectPayment')}</button>`:''}</td>`:''}
         </tr>`).join('')}</tbody></table></div>`;
 }
@@ -595,6 +668,12 @@ function openBookingModal(){
         <label for="isOpenTicket" style="margin:0;">${t('fieldOpenTicket')}</label>
       </div>
       <div class="field"><label>${t('fieldPayStatus')}</label><select name="paymentStatus"><option value="pending">${t('payPending')}</option><option value="paid">${t('payPaid')}</option></select></div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="paymentMethod" id="paymentMethodSel"><option value="cash">${t('payCash')}</option><option value="transfer">${t('payTransfer')}</option></select></div>
+        <div class="field" id="bankNameField" style="display:none;"><label>${t('fieldBankName')}</label><select name="bankName">
+          <option value="RAJHI">${t('bankRajhi')}</option><option value="AHLI">${t('bankAhli')}</option><option value="OTHER">${t('bankOther')}</option>
+        </select></div>
+      </div>
       <div class="note">${t('journalNote')}</div>
       <div id="bookingErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
@@ -602,6 +681,9 @@ function openBookingModal(){
         <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
       </div>
     </form>`);
+  document.getElementById('paymentMethodSel').onchange = (e)=>{
+    document.getElementById('bankNameField').style.display = e.target.value==='transfer' ? '' : 'none';
+  };
   document.getElementById('bookingForm').onsubmit = async (e)=>{
     e.preventDefault();
     const btn = document.getElementById('bookingSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
@@ -610,7 +692,7 @@ function openBookingModal(){
       await addBooking({ airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
         ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), source:f.get('source'), date:f.get('date'),
         net:f.get('net'), profit:f.get('profit'), isOpenTicket: f.get('isOpenTicket')==='on',
-        paymentStatus:f.get('paymentStatus') });
+        paymentStatus:f.get('paymentStatus'), paymentMethod:f.get('paymentMethod'), bankName:f.get('bankName') });
       closeModal(); render();
     }catch(err){
       console.error(err);
@@ -725,6 +807,95 @@ function renderReports(){
           <td class="num">${money(r.commission)}</td><td class="num">${money(r.expenses)}</td><td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${money(r.netProfit)}</td><td class="num">${r.margin.toFixed(1)}%</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
 }
+
+/* ===================== CASH DEPOSITS PAGE ===================== */
+function renderDeposits(){
+  document.getElementById('pageSub').textContent = t('subDeposits');
+  const u = currentUser();
+  const canManage = canSeeAllBranches();
+  let html = '';
+  if(!canManage){
+    const bal = branchCashOnHand(u.branch_id);
+    html += `<div class="kpi-row" style="grid-template-columns:1fr;"><div class="kpi" style="--accent:var(--gold)">
+      <div class="kpi-label">${t('myBranchCash')}</div><div class="kpi-value">${money(bal)}</div></div></div>`;
+  }else{
+    const rows = branches.map(b=>({name:b.name, bal:branchCashOnHand(b.id)}));
+    html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('allBranchesCash')}</h3></div>
+      ${rows.length===0?`<div class="empty">${t('emptyBranches')}</div>`:`<table><thead><tr><th>${t('colBranchName')}</th><th>${t('colAmount')}</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr><td>${r.name}</td><td class="num" style="font-weight:600">${money(r.bal)}</td></tr>`).join('')}</tbody></table>`}
+    </div>`;
+    const pendingTransfers = bookings.filter(b=>b.payment_method==='transfer' && !b.transfer_verified);
+    html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingTransfersTitle')}</h3></div>
+      ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th></th></tr></thead>
+      <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td><td>${bankLabel(b.bank_name)}</td><td class="num">${money(b.sell)}</td>
+        <td><button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
+    </div>`;
+  }
+  const myDeposits = canManage ? deposits : deposits.filter(d=>d.branch_id===u.branch_id);
+  const pendingDeposits = myDeposits.filter(d=>d.status==='pending');
+  const historyDeposits = myDeposits.filter(d=>d.status!=='pending');
+  html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('depositsTitle')}</h3><button class="btn btn-primary btn-sm" id="addDepositBtn">${t('addDeposit')}</button></div>
+    ${depositsTableHTML(pendingDeposits, canManage)}
+  </div>
+  <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('depositHistory')}</h3></div>
+    ${depositsTableHTML(historyDeposits, false)}
+  </div>`;
+  document.getElementById('content').innerHTML = html;
+  document.getElementById('addDepositBtn').onclick = openDepositModal;
+}
+function depositsTableHTML(list, showApprove){
+  if(list.length===0) return `<div class="empty">${t('noPendingDeposits')}</div>`;
+  return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colBranch')}</th><th>${t('colDestination')}</th><th>${t('colAmount')}</th><th>${t('colReceipt')}</th><th>${t('colDepositStatus')}</th>${showApprove?'<th></th>':''}</tr></thead>
+    <tbody>${list.map(d=>`<tr><td>${(d.created_at||'').slice(0,10)}</td><td>${branchName(d.branch_id)}</td><td>${destLabel(d.destination)}</td><td class="num">${money(d.amount)}</td>
+      <td><a href="${d.receipt_url}" target="_blank">${t('viewReceipt')}</a></td>
+      <td><span class="tag ${d.status==='approved'?'collected':d.status==='rejected'?'rejected':'pending'}">${d.status==='approved'?t('depositApproved'):d.status==='rejected'?t('depositRejected'):t('depositPending')}</span></td>
+      ${showApprove?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveDeposit('${d.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectDeposit('${d.id}')">${t('reject')}</button></td>`:''}
+    </tr>`).join('')}</tbody></table></div>`;
+}
+function openDepositModal(){
+  const u = currentUser();
+  const canManage = canSeeAllBranches();
+  const branchOptions = canManage ? branches : branches.filter(b=>b.id===u.branch_id);
+  const defaultBranch = u.branch_id || (branchOptions[0]?.id||'');
+  const suggestedAmount = defaultBranch ? branchCashOnHand(defaultBranch) : 0;
+  showModal(`
+    <div class="modal-head"><h3>${t('addDeposit')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="depositForm">
+      ${canManage ? `<div class="field"><label>${t('fieldBranch')}</label><select name="branchId" id="depositBranchSel">${branchOptions.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>` : `<input type="hidden" name="branchId" value="${defaultBranch}">`}
+      <div class="field"><label>${t('fieldDepositDestination')}</label><select name="destination">${DEPOSIT_DESTINATIONS.map(d=>`<option value="${d}">${destLabel(d)}</option>`).join('')}</select></div>
+      <div class="field"><label>${t('fieldDepositAmount')}</label><input type="number" step="0.01" name="amount" id="depositAmountInput" value="${suggestedAmount}" required></div>
+      <div class="field"><label>${t('fieldDepositReceipt')}</label><input type="file" name="receipt" accept="image/*" required></div>
+      <div id="depositErrorBox"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
+        <button type="submit" class="btn btn-primary" id="depositSaveBtn">${t('submitDeposit')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  const branchSel = document.getElementById('depositBranchSel');
+  if(branchSel) branchSel.onchange = (e)=>{ document.getElementById('depositAmountInput').value = branchCashOnHand(e.target.value); };
+  document.getElementById('depositForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('depositSaveBtn');
+    const f = new FormData(e.target);
+    const file = f.get('receipt');
+    if(!file || !file.size){ document.getElementById('depositErrorBox').innerHTML = `<div class="login-error">${t('receiptRequired')}</div>`; return; }
+    btn.disabled=true; btn.textContent=t('uploading');
+    try{
+      await submitDeposit({ branchId:f.get('branchId'), destination:f.get('destination'), amount:f.get('amount'), file });
+      closeModal(); render();
+    }catch(err){
+      console.error(err);
+      document.getElementById('depositErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      btn.disabled=false; btn.textContent=t('submitDeposit');
+    }
+  };
+}
+window.uiApproveDeposit = async function(id){ try{ await approveDeposit(id); render(); }catch(e){ alert(t('connError')); } };
+window.uiRejectDeposit = async function(id){
+  const reason = prompt(t('rejectReason'))||'';
+  try{ await rejectDeposit(id, reason); render(); }catch(e){ alert(t('connError')); }
+};
+window.uiVerifyTransfer = async function(id){ try{ await verifyTransfer(id); render(); }catch(e){ alert(t('connError')); } };
 
 /* ===================== USERS ===================== */
 function renderUsers(){
