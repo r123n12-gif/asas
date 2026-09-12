@@ -688,7 +688,7 @@ function renderDashboard(){
       ${canSeeAllBranches() ? `<div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('branchCompareSales')}</h3></div>${branchBarsHTML('sales')}</div>` : ''}
     </div>
   `;
-  document.getElementById('quickAddBtn').onclick = openBookingModal;
+  document.getElementById('quickAddBtn').onclick = ()=>openBookingModal();
 }
 function bookingsTable(list, mode){
   if(list.length===0) return `<div class="empty">${t('emptyBookings')}</div>`;
@@ -739,7 +739,7 @@ function renderBookings(){
       </div></div>
       ${bookingsTable(filteredBookings(), mode)}
     </div>`;
-  document.getElementById('addBookingBtn').onclick = openBookingModal;
+  document.getElementById('addBookingBtn').onclick = ()=>openBookingModal();
   document.getElementById('printReportBtn').onclick = openPrintReportModal;
 }
 function openPrintReportModal(){
@@ -913,6 +913,12 @@ function openBookingModal(existing){
       ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), source:f.get('source'), date:f.get('date'),
       net:f.get('net'), profit:f.get('profit'), isOpenTicket: f.get('isOpenTicket')==='on',
       paymentStatus:f.get('paymentStatus'), paymentMethod:f.get('paymentMethod'), bankName:f.get('bankName') };
+    if(isEdit && !existing.id){
+      console.error('Missing booking id on edit. existing =', existing);
+      document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">خطأ داخلي: لم يتم العثور على رقم الحجز. أعد فتح صفحة الحجوزات وحاول تعديل الحجز من جديد (وأرسل صورة من هذه الرسالة لو تكررت).</div>`;
+      btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking');
+      return;
+    }
     try{
       if(isEdit){ await updateBooking(existing.id, payload); } else { await addBooking(payload); }
       closeModal(); render();
@@ -925,7 +931,11 @@ function openBookingModal(existing){
 }
 window.uiMarkPaid = async function(id){ try{ await markPaid(id); render(); }catch(e){ alert(t('connError')); } };
 window.uiCollectCommission = async function(id){ try{ await collectCommission(id); render(); }catch(e){ alert(t('connError')); } };
-window.uiEditBooking = function(id){ const b = bookings.find(x=>x.id===id); if(b) openBookingModal(b); };
+window.uiEditBooking = function(id){
+  const b = bookings.find(x=>x.id===id);
+  if(!b){ console.error('uiEditBooking: booking not found for id', id); alert('تعذر إيجاد هذا الحجز، حدّث الصفحة وحاول من جديد.'); return; }
+  openBookingModal(b);
+};
 window.uiDeleteBooking = async function(id){
   if(!confirm(t('confirmDeleteBooking'))) return;
   try{ await deleteBooking(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
