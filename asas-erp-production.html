@@ -205,7 +205,11 @@ const T = {
     colDepositStatus:'الحالة', pendingTransfersTitle:'تحويلات بانتظار التأكيد', noPendingTransfers:'لا توجد تحويلات معلّقة.',
     noPendingDeposits:'لا توجد إيداعات معلّقة.', uploading:'جاري الرفع...', receiptRequired:'يجب إرفاق صورة الإيصال.',
     depositHistory:'سجل الإيداعات', myBranchCash:'رصيد الكاش الحالي لفرعك (غير مودّع بعد)', allBranchesCash:'كاش غير مودّع حسب الفرع',
-    depositSaved:'تم إرسال الإيداع للمحاسب للاعتماد.', rejectReason:'سبب الرفض (اختياري)'
+    depositSaved:'تم إرسال الإيداع للمحاسب للاعتماد.', rejectReason:'سبب الرفض (اختياري)',
+    printReport:'🖨️ طباعة / حفظ تقرير', modalPrintReport:'طباعة تقرير المبيعات', fieldDateFrom:'من تاريخ', fieldDateTo:'إلى تاريخ',
+    printNow:'طباعة / حفظ PDF', reportTitle:'تقرير المبيعات', reportBranchLabel:'الفرع', reportPeriodLabel:'الفترة',
+    reportGenOn:'تاريخ إصدار التقرير', reportAllPeriod:'كل الفترة المتوفرة', reportTotalsTitle:'الملخص',
+    reportBookingsTitle:'تفاصيل الحجوزات'
   },
   en: {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
@@ -275,7 +279,11 @@ const T = {
     colDepositStatus:'Status', pendingTransfersTitle:'Transfers awaiting confirmation', noPendingTransfers:'No pending transfers.',
     noPendingDeposits:'No pending deposits.', uploading:'Uploading...', receiptRequired:'Please attach a receipt photo.',
     depositHistory:'Deposit history', myBranchCash:"Your branch's current cash balance (not yet deposited)", allBranchesCash:'Undeposited cash by branch',
-    depositSaved:'Deposit submitted to the accountant for approval.', rejectReason:'Rejection reason (optional)'
+    depositSaved:'Deposit submitted to the accountant for approval.', rejectReason:'Rejection reason (optional)',
+    printReport:'🖨️ Print / save report', modalPrintReport:'Print sales report', fieldDateFrom:'From date', fieldDateTo:'To date',
+    printNow:'Print / Save PDF', reportTitle:'Sales report', reportBranchLabel:'Branch', reportPeriodLabel:'Period',
+    reportGenOn:'Report generated on', reportAllPeriod:'Entire available period', reportTotalsTitle:'Summary',
+    reportBookingsTitle:'Booking details'
   }
 };
 let lang = localStorage.getItem('asas_lang') || 'ar';
@@ -633,10 +641,92 @@ function renderBookings(){
   document.getElementById('pageSub').textContent = t('subBookings');
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('bookingsLog')}</h3>
-      <button class="btn btn-primary btn-sm" id="addBookingBtn">${t('addBookingFull')}</button></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-sm" id="printReportBtn">${t('printReport')}</button>
+        <button class="btn btn-primary btn-sm" id="addBookingBtn">${t('addBookingFull')}</button>
+      </div></div>
       ${bookingsTable(filteredBookings(), true)}
     </div>`;
   document.getElementById('addBookingBtn').onclick = openBookingModal;
+  document.getElementById('printReportBtn').onclick = openPrintReportModal;
+}
+function openPrintReportModal(){
+  showModal(`
+    <div class="modal-head"><h3>${t('modalPrintReport')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="printReportForm">
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" name="dateFrom"></div>
+        <div class="field"><label>${t('fieldDateTo')}</label><input type="date" name="dateTo" value="${todayStr()}"></div>
+      </div>
+      <div class="note">اتركهم فاضيين لطباعة تقرير كل الفترة المتوفرة (حتى لو سنة كاملة أو أكثر).
+      <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
+        <button type="submit" class="btn btn-primary" id="printReportSaveBtn">${t('printNow')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  document.getElementById('printReportForm').onsubmit = (e)=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    generateBranchReport(f.get('dateFrom')||null, f.get('dateTo')||null);
+    closeModal();
+  };
+}
+function generateBranchReport(dateFrom, dateTo){
+  const bf = effectiveBranchFilter();
+  const list = filteredBookings().filter(b=> (!dateFrom || b.date>=dateFrom) && (!dateTo || b.date<=dateTo))
+    .sort((a,b)=> (a.date||'').localeCompare(b.date||''));
+  const exp = expensesForFilter().filter(e=> (!dateFrom || e.date>=dateFrom) && (!dateTo || e.date<=dateTo));
+  const tt = computeTotals(list, exp);
+  const branchTitle = bf==='all' ? t('allBranches') : branchName(bf);
+  const periodLabel = (dateFrom||dateTo) ? `${dateFrom||'…'} → ${dateTo||'…'}` : t('reportAllPeriod');
+  const rowsHtml = list.map(b=>`<tr>
+      <td>${b.booking_no}</td><td>${b.date}</td><td>${branchName(b.branch_id)}</td><td>${b.airline||'—'}</td><td>${b.customer}</td>
+      <td>${b.ticket_no||'—'}</td><td>${b.supplier||'—'}</td>
+      <td style="text-align:end">${money(b.cost)}</td><td style="text-align:end">${money(b.profit_amount)}</td><td style="text-align:end;font-weight:600">${money(b.sell)}</td>
+      <td>${b.payment_method==='transfer'?t('payTransfer'):t('payCash')}</td>
+      <td>${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</td>
+    </tr>`).join('');
+  const html = `<!DOCTYPE html><html lang="${lang}" dir="${lang==='ar'?'rtl':'ltr'}"><head><meta charset="UTF-8">
+    <title>${t('reportTitle')} — ${branchTitle}</title>
+    <style>
+      body{font-family:'IBM Plex Sans Arabic',system-ui,sans-serif;color:#1C1C1C;padding:24px;}
+      h1{font-size:19px;margin:0 0 2px;} .sub{color:#5B6570;font-size:12px;margin-bottom:18px;}
+      .meta{display:flex;gap:24px;flex-wrap:wrap;font-size:12.5px;margin-bottom:18px;background:#FBF7EE;padding:10px 14px;border-radius:8px;}
+      .meta b{display:block;font-size:11px;color:#5B6570;font-weight:500;margin-bottom:2px;}
+      .kpis{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:22px;}
+      .kpi{border:1px solid #E4DECB;border-radius:8px;padding:10px 14px;min-width:130px;}
+      .kpi div:first-child{font-size:11px;color:#5B6570;margin-bottom:4px;}
+      .kpi div:last-child{font-size:16px;font-weight:700;}
+      table{width:100%;border-collapse:collapse;font-size:11px;}
+      th{background:#0F2A3D;color:#fff;padding:7px 6px;text-align:${lang==='ar'?'right':'left'};white-space:nowrap;}
+      td{padding:6px;border-bottom:1px solid #E4DECB;}
+      h2{font-size:14px;margin:22px 0 8px;}
+      @media print{ body{padding:6px;} }
+    </style></head><body>
+    <h1>${t('agencyAr')} — ${t('reportTitle')}</h1>
+    <div class="sub">${t('agencyEn')}</div>
+    <div class="meta">
+      <div><b>${t('reportBranchLabel')}</b>${branchTitle}</div>
+      <div><b>${t('reportPeriodLabel')}</b>${periodLabel}</div>
+      <div><b>${t('reportGenOn')}</b>${new Date().toLocaleString(lang==='ar'?'ar-SA':'en-US')}</div>
+    </div>
+    <h2>${t('reportTotalsTitle')}</h2>
+    <div class="kpis">
+      <div class="kpi"><div>${t('kpiSales')}</div><div>${money(tt.sales)}</div></div>
+      <div class="kpi"><div>${t('kpiProfit')}</div><div>${money(tt.netProfit)}</div></div>
+      <div class="kpi"><div>${t('kpiCount')}</div><div>${tt.count}</div></div>
+      <div class="kpi"><div>${t('expenseOp')}</div><div>${money(tt.expenses)}</div></div>
+    </div>
+    <h2>${t('reportBookingsTitle')}</h2>
+    <table><thead><tr><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colBranch')}</th><th>${t('colAirline')}</th><th>${t('colCustomer')}</th>
+      <th>${t('colTicketNo')}</th><th>${t('colSupplier')}</th><th>${t('colNet')}</th><th>${t('colProfit')}</th><th>${t('colSell')}</th><th>${t('colPaymentMethod')}</th><th>${t('colPayStatus')}</th></tr></thead>
+      <tbody>${rowsHtml || `<tr><td colspan="12" style="text-align:center;padding:16px;">${t('emptyBookings')}</td></tr>`}</tbody></table>
+    </body></html>`;
+  const w = window.open('', '_blank');
+  if(!w){ alert(t('connError')); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+  w.onload = ()=>{ w.focus(); w.print(); };
+  setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
 }
 function openBookingModal(){
   const u = currentUser();
