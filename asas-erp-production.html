@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Cormorant+Garamond:wght@600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
     --navy:#0F2A3D; --navy-2:#153A50; --teal:#1A6E7E; --gold:#D9A544; --gold-2:#C98A2E;
@@ -233,7 +234,14 @@ const T = {
     costReviewPlaceholder:'يعبّئه المحاسب لاحقًا', employeeCostNote:'سجّل سعر التذكرة المحصّل من العميل فقط — المحاسب يدخل التكلفة الحقيقية لاحقًا ويُحسب الربح تلقائيًا.',
     costReviewNote:'⚠️ هذا الحجز بانتظار تدقيق التكلفة من المحاسب — الربح غير معروف بعد.',
     pendingReviewTag:'قيد المراجعة', reviewCostBtn:'تدقيق التكلفة', reviewCostPrompt:'أدخل التكلفة الحقيقية (التحويل للمورد):',
-    invalidNumber:'رقم غير صحيح.'
+    invalidNumber:'رقم غير صحيح.', hiddenValue:'••••', adminOnlyAction:'هذا الإجراء متاح للمدير (الأدمن) فقط.', notAllowedAction:'ما عندك صلاحية لهذا الإجراء.',
+    navReconcile:'المطابقة الخارجية', subReconcile:'رفع تقرير خارجي (Galileo / B2B / إكسل) ومطابقته مع تذاكر النظام',
+    reconcileTitle:'مطابقة التذاكر', reconcileNote:'رفّع ملف إكسل أو CSV من نظام الحجز (Galileo) أو بوابة المورد (B2B)، واختر عمود رقم التذكرة — سنطلع لك فورًا أي تذكرة موجودة بالملف الخارجي وناسي الموظف يسجّلها بالنظام.',
+    reconcileFileLabel:'اختر الملف (Excel أو CSV)', reconcileColLabel:'عمود رقم التذكرة', reconcileRunBtn:'🔍 طابق الآن',
+    reconcileEmptyFile:'الملف فاضي أو غير مقروء.', reconcileParseError:'تعذر قراءة الملف، تأكد إنه إكسل أو CSV صحيح.',
+    reconcileTotalRows:'إجمالي صفوف الملف', reconcileMatched:'مطابقة (موجودة بالنظام)', reconcileMissing:'غير موجودة بالنظام',
+    reconcileAllMatched:'✅ كل التذاكر بالملف موجودة بالنظام — ما فيه نواقص.', reconcileMissingNote:'هذي التذاكر موجودة بالتقرير الخارجي بس غير مسجّلة بالنظام — يحتمل الموظف نسيها.',
+    payInstallment:'تابي/تمارا (تقسيط)', fieldInstallmentProvider:'المزود', installmentFeeNote:'يُخصم 7% رسوم تابي/تمارا تلقائيًا من المبلغ عند اعتماد المحاسب.'
   },
   en: {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
@@ -331,7 +339,14 @@ const T = {
     costReviewPlaceholder:'Filled in later by the accountant', employeeCostNote:'Only record the ticket price charged to the customer — the accountant will enter the real cost later and profit is calculated automatically.',
     costReviewNote:'⚠️ This booking is awaiting cost review by the accountant — profit is not known yet.',
     pendingReviewTag:'Pending review', reviewCostBtn:'Review cost', reviewCostPrompt:'Enter the real cost (amount transferred to supplier):',
-    invalidNumber:'Invalid number.'
+    invalidNumber:'Invalid number.', hiddenValue:'••••', adminOnlyAction:'This action is available to the admin only.', notAllowedAction:"You don't have permission for this action.",
+    navReconcile:'External Reconciliation', subReconcile:'Upload an external report (Galileo / B2B / Excel) and match it against system tickets',
+    reconcileTitle:'Ticket reconciliation', reconcileNote:'Upload an Excel or CSV file from the GDS (Galileo) or supplier portal (B2B), pick the ticket-number column — we will immediately show any ticket that exists in the external file but was never recorded in the system.',
+    reconcileFileLabel:'Choose file (Excel or CSV)', reconcileColLabel:'Ticket number column', reconcileRunBtn:'🔍 Match now',
+    reconcileEmptyFile:'The file is empty or unreadable.', reconcileParseError:'Could not read the file, make sure it is a valid Excel or CSV file.',
+    reconcileTotalRows:'Total file rows', reconcileMatched:'Matched (found in system)', reconcileMissing:'Not found in system',
+    reconcileAllMatched:'✅ Every ticket in the file exists in the system — nothing missing.', reconcileMissingNote:'These tickets exist in the external report but are not recorded in the system — the employee may have forgotten them.',
+    payInstallment:'Tabby/Tamara (BNPL)', fieldInstallmentProvider:'Provider', installmentFeeNote:'A 7% Tabby/Tamara fee is deducted automatically once the accountant approves.'
   }
 };
 let lang = localStorage.getItem('asas_lang') || 'ar';
@@ -403,7 +418,9 @@ async function verifyPaymentReceived(bookingId){
   if(!b) return;
   const sell = Number(b.sell)||0;
   const isSpan = b.payment_method==='span';
-  const feeAmount = isSpan ? +(sell*0.08).toFixed(2) : 0;
+  const isInstallment = b.payment_method==='installment';
+  const feeRate = isSpan ? 0.08 : isInstallment ? 0.07 : 0;
+  const feeAmount = feeRate>0 ? +(sell*feeRate).toFixed(2) : 0;
   const netToBank = +(sell-feeAmount).toFixed(2);
   const {error} = await sb.from('bookings').update({transfer_verified:true, transfer_verified_by:currentUser()?.id||null, transfer_verified_at:new Date().toISOString(), payment_status:'paid'}).eq('id', bookingId);
   if(error) throw error;
@@ -415,6 +432,9 @@ async function verifyPaymentReceived(bookingId){
   const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
   if(jErr) throw jErr;
   journal.unshift(...jIns.reverse());
+  if(b.cost_reviewed && Number(b.cost)>0 && !b.supplier_settled){
+    await settleSupplierPayment(bookingId);
+  }
 }
 async function reviewBookingCost(bookingId, netCost){
   const b = bookings.find(x=>x.id===bookingId);
@@ -469,6 +489,8 @@ function currentUser(){ return getSession(); }
 function isAdmin(){ const u = currentUser(); return u && u.role==='admin'; }
 function isAccountant(){ const u = currentUser(); return u && u.role==='accountant'; }
 function canSeeAllBranches(){ return isAdmin() || isAccountant(); }
+function canSeeProfit(){ return isAdmin(); }
+function moneyOrHidden(n){ return canSeeProfit() ? money(n) : `<span style="color:var(--ink-soft)">${t('hiddenValue')}</span>`; }
 function effectiveBranchFilter(){
   const u = currentUser();
   if(u && u.role==='employee') return u.branch_id || 'all';
@@ -487,7 +509,7 @@ const DEPOSIT_DESTINATIONS = ['AKBAR','NDC','PORTAL','GALILEO','IATA'];
 const BANK_OPTIONS = ['RAJHI','AHLI','OTHER'];
 const RECEIPTS_BUCKET = 'receipts';
 function destLabel(d){ return d==='IATA' ? t('destIATA') : d; }
-function bankLabel(b){ return b==='RAJHI'?t('bankRajhi'):b==='AHLI'?t('bankAhli'):t('bankOther'); }
+function bankLabel(b){ return b==='RAJHI'?t('bankRajhi'):b==='AHLI'?t('bankAhli'):b==='TABBY'?'Tabby':b==='TAMARA'?'Tamara':t('bankOther'); }
 
 /* ===================== ACCOUNTING ENGINE (Supabase-backed) ===================== */
 async function addBooking(data){
@@ -499,7 +521,7 @@ async function addBooking(data){
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, commission_rate: 0, commission: 0, profit_amount: profit,
     margin: profit, net_profit: profit, payment_status:'pending', cost_reviewed: net>0,
-    payment_method: data.paymentMethod||'cash', bank_name: data.paymentMethod==='transfer' ? (data.bankName||null) : null,
+    payment_method: data.paymentMethod||'cash', bank_name: data.paymentMethod==='transfer' ? (data.bankName||null) : data.paymentMethod==='installment' ? (data.installmentProvider||null) : null,
     transfer_verified: false,
     commission_status:'pending', created_by: currentUser()?.id||null
   };
@@ -524,7 +546,7 @@ async function updateBooking(id, data){
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, profit_amount: profit, margin: profit, net_profit: profit, cost_reviewed: net>0,
     payment_method: data.paymentMethod,
-    bank_name: data.paymentMethod==='transfer' ? (data.bankName||null) : null,
+    bank_name: data.paymentMethod==='transfer' ? (data.bankName||null) : data.paymentMethod==='installment' ? (data.installmentProvider||null) : null,
     edit_requested:false, edit_note:null
   };
   const {data:updated, error} = await sb.from('bookings').update(row).eq('id', id).select().single();
@@ -653,6 +675,7 @@ function navItems(){
   if(canSeeAllBranches()){
     items.push({route:'ledger', label:t('navLedger'), icon:'≡'});
     items.push({route:'reports', label:t('navReports'), icon:'▤'});
+    items.push({route:'reconcile', label:t('navReconcile'), icon:'🔍'});
   }
   if(isAdmin()){
     items.push({route:'users', label:t('navUsers'), icon:'👤'});
@@ -738,7 +761,7 @@ function render(){
   document.getElementById('myAccountBtn').onclick = openMyAccountModal;
 
   const routes = { dashboard:renderDashboard, bookings:renderBookings, ledger:renderLedger,
-    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits };
+    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, reconcile:renderReconcile };
   (routes[route]||renderDashboard)();
 }
 
@@ -789,19 +812,19 @@ function renderDashboard(){
   c.innerHTML = `
     <div class="kpi-row">
       <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${money(tt.sales)}</div></div>
-      <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${tt.netProfit>=0?'pos':'neg'}">${money(tt.netProfit)}</div></div>
+      <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${tt.netProfit>=0?'pos':'neg'}">${canSeeProfit()?money(tt.netProfit):moneyOrHidden(0)}</div></div>
       <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${t('kpiCount')}</div><div class="kpi-value">${tt.count}</div></div>
       <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('kpiPendingComm')}</div><div class="kpi-value">${money(tt.pendingCommission)}</div></div>
     </div>
     <div class="section-flex">
       <div class="panel" style="flex:1.3">
-        <div class="panel-head"><h3 class="panel-title">${t('recentBookings')}</h3><button class="btn btn-gold btn-sm" id="quickAddBtn">${t('addBooking')}</button></div>
+        <div class="panel-head"><h3 class="panel-title">${t('recentBookings')}</h3>${!isAccountant()?`<button class="btn btn-gold btn-sm" id="quickAddBtn">${t('addBooking')}</button>`:''}</div>
         ${bookingsTable(list.slice(0,6), 'none')}
       </div>
       ${canSeeAllBranches() ? `<div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('branchCompareSales')}</h3></div>${branchBarsHTML('sales')}</div>` : ''}
     </div>
   `;
-  document.getElementById('quickAddBtn').onclick = ()=>openBookingModal();
+  if(document.getElementById('quickAddBtn')) document.getElementById('quickAddBtn').onclick = ()=>openBookingModal();
 }
 function bookingsTable(list, mode){
   if(list.length===0) return `<div class="empty">${t('emptyBookings')}</div>`;
@@ -813,19 +836,20 @@ function bookingsTable(list, mode){
         <tr><td class="num">${b.booking_no}</td><td><b>${b.airline||'—'}</b></td><td>${b.customer}</td>
           <td>${b.is_open_ticket?`<span class="tag pending">${t('tagOpen')}</span>`:(b.ticket_no||'—')}</td>
           <td>${branchName(b.branch_id)}</td>
-          <td class="num">${b.cost_reviewed?money(b.cost):`<span class="tag pending">${t('pendingReviewTag')}</span>`}</td><td class="num">${b.cost_reviewed?money(b.profit_amount):`<span class="tag pending">${t('pendingReviewTag')}</span>`}</td>
+          <td class="num">${canSeeProfit()?(b.cost_reviewed?money(b.cost):`<span class="tag pending">${t('pendingReviewTag')}</span>`):moneyOrHidden(0)}</td><td class="num">${canSeeProfit()?(b.cost_reviewed?money(b.profit_amount):`<span class="tag pending">${t('pendingReviewTag')}</span>`):moneyOrHidden(0)}</td>
           <td class="num" style="font-weight:600">${money(b.sell)}</td>
-          <td>${b.supplier||'—'}${(Number(b.cost)>0)?`<br><span class="tag ${b.supplier_settled?'collected':'pending'}">${b.supplier_settled?t('supplierSettledTag'):t('supplierUnsettledTag')}</span>`:''}</td><td>${b.invoice_no||'—'}</td>
+          <td>${b.supplier||'—'}${(canSeeProfit() && Number(b.cost)>0)?`<br><span class="tag ${b.supplier_settled?'collected':'pending'}">${b.supplier_settled?t('supplierSettledTag'):t('supplierUnsettledTag')}</span>`:''}</td><td>${b.invoice_no||'—'}</td>
           <td><span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span></td>
           <td>${b.payment_method==='transfer'?`${t('payTransfer')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
             :b.payment_method==='span'?`${t('paySpan')}<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
+            :b.payment_method==='installment'?`${t('payInstallment')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
             :t('payCash')}</td>
           ${showActions?`<td style="display:flex;gap:5px;flex-wrap:wrap;">
-            ${mode==='manage' && !b.cost_reviewed?`<button class="btn btn-gold btn-sm" onclick="uiReviewCost('${b.id}')">${t('reviewCostBtn')}</button>`:''}
+            ${isAdmin() && !b.cost_reviewed?`<button class="btn btn-gold btn-sm" onclick="uiReviewCost('${b.id}')">${t('reviewCostBtn')}</button>`:''}
             ${mode==='manage' && b.payment_method==='cash' && b.payment_status!=='paid'?`<button class="btn btn-ghost btn-sm" onclick="uiMarkPaid('${b.id}')">${t('collectPayment')}</button>`:''}
             ${mode==='manage' && Number(b.cost)>0 && !b.supplier_settled?`<button class="btn btn-gold btn-sm" onclick="uiSettleSupplier('${b.id}')">${t('settleSupplierBtn')}</button>`:''}
             ${mode==='manage'?`<button class="btn btn-ghost btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>
-              <button class="btn btn-danger btn-sm" onclick="uiDeleteBooking('${b.id}')">${t('delete')}</button>
+              ${isAdmin()?`<button class="btn btn-danger btn-sm" onclick="uiDeleteBooking('${b.id}')">${t('delete')}</button>`:''}
               ${b.edit_requested?`<span class="tag pending">${t('returnedTag')}</span>`:`<button class="btn btn-ghost btn-sm" onclick="uiRequestEdit('${b.id}')">${t('returnToEmployee')}</button>`}`:''}
             ${mode==='employee' && b.edit_requested?`<button class="btn btn-gold btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>`:''}
           </td>`:''}
@@ -852,11 +876,11 @@ function renderBookings(){
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('bookingsLog')}</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="printReportBtn">${t('printReport')}</button>
-        <button class="btn btn-primary btn-sm" id="addBookingBtn">${t('addBookingFull')}</button>
+        ${!isAccountant()?`<button class="btn btn-primary btn-sm" id="addBookingBtn">${t('addBookingFull')}</button>`:''}
       </div></div>
       ${bookingsTable(filteredBookings(), mode)}
     </div>`;
-  document.getElementById('addBookingBtn').onclick = ()=>openBookingModal();
+  if(document.getElementById('addBookingBtn')) document.getElementById('addBookingBtn').onclick = ()=>openBookingModal();
   document.getElementById('printReportBtn').onclick = openPrintReportModal;
 }
 function openPrintReportModal(){
@@ -896,8 +920,8 @@ function bookingRowHTML(b){
   return `<tr>
       <td>${b.booking_no}</td><td>${b.date}</td><td>${branchName(b.branch_id)}</td><td>${userName(b.created_by)}</td><td>${b.airline||'—'}</td><td>${b.customer}</td>
       <td>${b.ticket_no||'—'}</td><td>${b.supplier||'—'}</td>
-      <td style="text-align:end">${money(b.cost)}</td><td style="text-align:end">${money(b.profit_amount)}</td><td style="text-align:end;font-weight:600">${money(b.sell)}</td>
-      <td>${b.payment_method==='transfer'?t('payTransfer'):b.payment_method==='span'?t('paySpan'):t('payCash')}</td>
+      <td style="text-align:end">${canSeeProfit()?money(b.cost):t('hiddenValue')}</td><td style="text-align:end">${canSeeProfit()?money(b.profit_amount):t('hiddenValue')}</td><td style="text-align:end;font-weight:600">${money(b.sell)}</td>
+      <td>${b.payment_method==='transfer'?t('payTransfer'):b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payCash')}</td>
       <td>${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</td>
     </tr>`;
 }
@@ -909,7 +933,7 @@ function bookingsTableHTML(list){
 function totalsKpisHTML(tt){
   return `<div class="kpis">
       <div class="kpi"><div>${t('kpiSales')}</div><div>${money(tt.sales)}</div></div>
-      <div class="kpi"><div>${t('kpiProfit')}</div><div>${money(tt.netProfit)}</div></div>
+      ${canSeeProfit()?`<div class="kpi"><div>${t('kpiProfit')}</div><div>${money(tt.netProfit)}</div></div>`:''}
       <div class="kpi"><div>${t('kpiCount')}</div><div>${tt.count}</div></div>
       <div class="kpi"><div>${t('expenseOp')}</div><div>${money(tt.expenses)}</div></div>
     </div>`;
@@ -1007,12 +1031,16 @@ function openBookingModal(existing){
         <label for="isOpenTicket" style="margin:0;">${t('fieldOpenTicket')}</label>
       </div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="paymentMethod" id="paymentMethodSel"><option value="cash" ${v.payment_method==='cash'?'selected':''}>${t('payCash')}</option><option value="transfer" ${v.payment_method==='transfer'?'selected':''}>${t('payTransfer')}</option><option value="span" ${v.payment_method==='span'?'selected':''}>${t('paySpan')}</option></select></div>
+        <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="paymentMethod" id="paymentMethodSel"><option value="cash" ${v.payment_method==='cash'?'selected':''}>${t('payCash')}</option><option value="transfer" ${v.payment_method==='transfer'?'selected':''}>${t('payTransfer')}</option><option value="span" ${v.payment_method==='span'?'selected':''}>${t('paySpan')}</option><option value="installment" ${v.payment_method==='installment'?'selected':''}>${t('payInstallment')}</option></select></div>
         <div class="field" id="bankNameField" style="display:${v.payment_method==='transfer'?'':'none'};"><label>${t('fieldBankName')}</label><select name="bankName">
           <option value="RAJHI" ${v.bank_name==='RAJHI'?'selected':''}>${t('bankRajhi')}</option><option value="AHLI" ${v.bank_name==='AHLI'?'selected':''}>${t('bankAhli')}</option><option value="OTHER" ${v.bank_name==='OTHER'?'selected':''}>${t('bankOther')}</option>
         </select></div>
+        <div class="field" id="installmentProviderField" style="display:${v.payment_method==='installment'?'':'none'};"><label>${t('fieldInstallmentProvider')}</label><select name="installmentProvider">
+          <option value="TABBY" ${v.bank_name==='TABBY'?'selected':''}>Tabby</option><option value="TAMARA" ${v.bank_name==='TAMARA'?'selected':''}>Tamara</option>
+        </select></div>
       </div>
       <div id="spanNoteBox" class="note" style="display:${v.payment_method==='span'?'':'none'};color:#A8722C;">${t('spanFeeNote')}</div>
+      <div id="installmentNoteBox" class="note" style="display:${v.payment_method==='installment'?'':'none'};color:#A8722C;">${t('installmentFeeNote')}</div>
       <div class="note">${t('journalNote')} — ${t('paymentPendingNote')}</div>
       <div id="bookingErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
@@ -1023,6 +1051,8 @@ function openBookingModal(existing){
   document.getElementById('paymentMethodSel').onchange = (e)=>{
     document.getElementById('bankNameField').style.display = e.target.value==='transfer' ? '' : 'none';
     document.getElementById('spanNoteBox').style.display = e.target.value==='span' ? '' : 'none';
+    document.getElementById('installmentProviderField').style.display = e.target.value==='installment' ? '' : 'none';
+    document.getElementById('installmentNoteBox').style.display = e.target.value==='installment' ? '' : 'none';
   };
   document.getElementById('bookingForm').onsubmit = async (e)=>{
     e.preventDefault();
@@ -1031,7 +1061,7 @@ function openBookingModal(existing){
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
       ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), source:f.get('source'), date:f.get('date'),
       net:f.get('net'), sell:f.get('sell'), isOpenTicket: f.get('isOpenTicket')==='on',
-      paymentMethod:f.get('paymentMethod'), bankName:f.get('bankName') };
+      paymentMethod:f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider') };
     if(isEdit && !existing.id){
       console.error('Missing booking id on edit. existing =', existing);
       document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">خطأ داخلي: لم يتم العثور على رقم الحجز. أعد فتح صفحة الحجوزات وحاول تعديل الحجز من جديد (وأرسل صورة من هذه الرسالة لو تكررت).</div>`;
@@ -1048,7 +1078,10 @@ function openBookingModal(existing){
     }
   };
 }
-window.uiMarkPaid = async function(id){ try{ await markPaid(id); render(); }catch(e){ alert(t('connError')); } };
+window.uiMarkPaid = async function(id){
+  if(!canSeeAllBranches()){ alert(t('notAllowedAction')); return; }
+  try{ await markPaid(id); render(); }catch(e){ alert(t('connError')); }
+};
 window.uiCollectCommission = async function(id){ try{ await collectCommission(id); render(); }catch(e){ alert(t('connError')); } };
 window.uiEditBooking = function(id){
   const b = bookings.find(x=>x.id===id);
@@ -1056,6 +1089,7 @@ window.uiEditBooking = function(id){
   openBookingModal(b);
 };
 window.uiDeleteBooking = async function(id){
+  if(!isAdmin()){ alert(t('adminOnlyAction')); return; }
   if(!confirm(t('confirmDeleteBooking'))) return;
   try{ await deleteBooking(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
 };
@@ -1085,14 +1119,14 @@ function renderLedger(){
         <table><tbody>
           <tr><td>${t('incomeSales')}</td><td class="num">${money(tt.sales)}</td></tr>
           <tr><td>${t('incomeComm')}</td><td class="num">${money(tt.commission)}</td></tr>
-          <tr><td>${t('expenseCost')}</td><td class="num neg">${money(tt.cost)}</td></tr>
+          <tr><td>${t('expenseCost')}</td><td class="num neg">${moneyOrHidden(tt.cost)}</td></tr>
           <tr><td>${t('expenseOp')}</td><td class="num neg">${money(tt.expenses)}</td></tr>
-          <tr style="border-top:2px solid var(--navy);font-weight:700;"><td>${t('netProfit')}</td><td class="num ${tt.netProfit>=0?'pos':'neg'}">${money(tt.netProfit)}</td></tr>
+          <tr style="border-top:2px solid var(--navy);font-weight:700;"><td>${t('netProfit')}</td><td class="num ${tt.netProfit>=0?'pos':'neg'}">${moneyOrHidden(tt.netProfit)}</td></tr>
         </tbody></table>
-        ${tt.pendingReviewCount>0?`<div class="note" style="color:#A8722C;">⚠️ ${tt.pendingReviewCount} ${t('pendingReviewTag')} (${money(tt.pendingReviewSales)}) — ${t('reviewCostBtn')}</div>`:''}
+        ${(isAdmin() && tt.pendingReviewCount>0)?`<div class="note" style="color:#A8722C;">⚠️ ${tt.pendingReviewCount} ${t('pendingReviewTag')} (${money(tt.pendingReviewSales)}) — ${t('reviewCostBtn')}</div>`:''}
       </div>
       <div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('chartOfAccounts')}</h3></div>
-        <table><thead><tr><th>${t('jDesc')}</th><th>${t('colAmount')}</th></tr></thead><tbody>${['accCashOnHand','accBank','accCustomers','accCommRec','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'].map(k=>`<tr><td>${t(k)}</td><td class="num" style="font-weight:600">${money(accountBalance(k, jrnl))}</td></tr>`).join('')}</tbody></table>
+        <table><thead><tr><th>${t('jDesc')}</th><th>${t('colAmount')}</th></tr></thead><tbody>${['accCashOnHand','accBank','accCustomers','accCommRec','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'].map(k=>`<tr><td>${t(k)}</td><td class="num" style="font-weight:600">${k==='accCogs'?moneyOrHidden(accountBalance(k, jrnl)):money(accountBalance(k, jrnl))}</td></tr>`).join('')}</tbody></table>
       </div>
     </div>
     <div class="panel">
@@ -1233,7 +1267,7 @@ function renderReports(){
   const nameHeader = groupBy==='employee' ? t('colUserName') : t('colBranchName');
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales')}</div>
-    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit')}</div>
+    ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit')}</div>`:''}
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('branchTable')}</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -1246,8 +1280,8 @@ function renderReports(){
       </div>
       ${rows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;">
       <table><thead><tr><th>${nameHeader}</th>${groupBy==='employee'?`<th>${t('colUserBranch')}</th>`:''}<th>${t('colBookCount')}</th><th>${t('colSalesTotal')}</th><th>${t('colCostTotal')}</th><th>${t('colCommTotal')}</th>${groupBy==='branch'?`<th>${t('colExpTotal')}</th>`:''}<th>${t('colNetProfitCol')}</th><th>${t('colMargin')}</th></tr></thead>
-        <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td class="num">${r.count}</td><td class="num">${money(r.sales)}</td><td class="num">${money(r.cost)}</td>
-          <td class="num">${money(r.commission)}</td>${groupBy==='branch'?`<td class="num">${money(r.expenses)}</td>`:''}<td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${money(r.netProfit)}</td><td class="num">${r.margin.toFixed(1)}%</td></tr>`).join('')}</tbody></table></div>`}
+        <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td class="num">${r.count}</td><td class="num">${money(r.sales)}</td><td class="num">${moneyOrHidden(r.cost)}</td>
+          <td class="num">${money(r.commission)}</td>${groupBy==='branch'?`<td class="num">${money(r.expenses)}</td>`:''}<td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${moneyOrHidden(r.netProfit)}</td><td class="num">${canSeeProfit()?r.margin.toFixed(1)+'%':t('hiddenValue')}</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
   document.getElementById('reportGroupBySel').onchange = (e)=>{ reportGroupBy = e.target.value; renderReports(); };
   document.getElementById('reportSearchInput').oninput = (e)=>{ reportSearchTerm = e.target.value; renderReports(); };
@@ -1269,12 +1303,12 @@ function renderDeposits(){
       ${rows.length===0?`<div class="empty">${t('emptyBranches')}</div>`:`<table><thead><tr><th>${t('colBranchName')}</th><th>${t('colAmount')}</th></tr></thead>
       <tbody>${rows.map(r=>`<tr><td>${r.name}</td><td class="num" style="font-weight:600">${money(r.bal)}</td></tr>`).join('')}</tbody></table>`}
     </div>`;
-    const pendingTransfers = bookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span') && !b.transfer_verified);
+    const pendingTransfers = bookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && !b.transfer_verified);
     html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingVerifyTitle')}</h3></div>
       ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('colAmount')}</th><th>${t('colFee')}</th><th></th></tr></thead>
       <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td>
-        <td>${b.payment_method==='span'?t('paySpan'):`${t('payTransfer')} (${bankLabel(b.bank_name)})`}</td><td class="num">${money(b.sell)}</td>
-        <td class="num">${b.payment_method==='span'?money(+(Number(b.sell)*0.08).toFixed(2)):'—'}</td>
+        <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?`${t('payInstallment')} (${bankLabel(b.bank_name)})`:`${t('payTransfer')} (${bankLabel(b.bank_name)})`}</td><td class="num">${money(b.sell)}</td>
+        <td class="num">${b.payment_method==='span'?money(+(Number(b.sell)*0.08).toFixed(2)):b.payment_method==='installment'?money(+(Number(b.sell)*0.07).toFixed(2)):'—'}</td>
         <td><button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
   }
@@ -1345,6 +1379,7 @@ window.uiRejectDeposit = async function(id){
 window.uiVerifyTransfer = async function(id){ try{ await verifyPaymentReceived(id); render(); }catch(e){ console.error(e); alert(t('connError')); } };
 window.uiSettleSupplier = async function(id){ try{ await settleSupplierPayment(id); render(); }catch(e){ console.error(e); alert(t('connError')); } };
 window.uiReviewCost = function(id){
+  if(!isAdmin()){ alert(t('adminOnlyAction')); return; }
   const b = bookings.find(x=>x.id===id);
   if(!b) return;
   const val = prompt(`${t('reviewCostPrompt')} (${t('fieldSellPrice')}: ${money(b.sell)})`, '');
@@ -1479,6 +1514,72 @@ async function exportFullBackup(){
     URL.revokeObjectURL(url);
   }catch(err){ console.error(err); alert(t('connError')); }
   finally{ btn.disabled=false; btn.textContent=t('exportBackupBtn'); }
+}
+
+/* ===================== RECONCILIATION ===================== */
+let reconcileRows = [];
+let reconcileHeaders = [];
+function renderReconcile(){
+  document.getElementById('pageSub').textContent = t('subReconcile');
+  document.getElementById('content').innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('reconcileTitle')}</h3></div>
+      <p class="note">${t('reconcileNote')}</p>
+      <div class="field"><label>${t('reconcileFileLabel')}</label><input type="file" id="reconcileFileInput" accept=".xlsx,.xls,.csv"></div>
+      <div id="reconcileColumnBox" style="display:none;margin-top:10px;">
+        <div class="grid-2">
+          <div class="field"><label>${t('reconcileColLabel')}</label><select id="reconcileColSel"></select></div>
+          <div class="field" style="display:flex;align-items:flex-end;"><button class="btn btn-primary btn-sm" id="reconcileRunBtn">${t('reconcileRunBtn')}</button></div>
+        </div>
+      </div>
+      <div id="reconcileResultBox" style="margin-top:14px;"></div>
+    </div>`;
+  document.getElementById('reconcileFileInput').onchange = (e)=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev)=>{
+      try{
+        const wb = XLSX.read(ev.target.result, {type:'binary'});
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, {defval:''});
+        if(rows.length===0){ alert(t('reconcileEmptyFile')); return; }
+        reconcileRows = rows;
+        reconcileHeaders = Object.keys(rows[0]);
+        const sel = document.getElementById('reconcileColSel');
+        sel.innerHTML = reconcileHeaders.map(h=>`<option value="${h}">${h}</option>`).join('');
+        document.getElementById('reconcileColumnBox').style.display = '';
+        document.getElementById('reconcileResultBox').innerHTML = '';
+      }catch(err){ console.error(err); alert(t('reconcileParseError')); }
+    };
+    reader.readAsBinaryString(file);
+  };
+  document.getElementById('reconcileRunBtn').onclick = ()=>{
+    const col = document.getElementById('reconcileColSel').value;
+    const systemTickets = new Set(bookings.filter(b=>b.ticket_no).map(b=>String(b.ticket_no).trim().toUpperCase()));
+    const missing = [];
+    let matched = 0;
+    reconcileRows.forEach(row=>{
+      const raw = row[col];
+      if(raw===undefined || raw===null || String(raw).trim()==='') return;
+      const val = String(raw).trim().toUpperCase();
+      if(systemTickets.has(val)) matched++;
+      else missing.push(row);
+    });
+    const otherCols = reconcileHeaders.filter(h=>h!==col).slice(0,4);
+    const box = document.getElementById('reconcileResultBox');
+    box.innerHTML = `
+      <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:14px;">
+        <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('reconcileTotalRows')}</div><div class="kpi-value">${reconcileRows.length}</div></div>
+        <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('reconcileMatched')}</div><div class="kpi-value">${matched}</div></div>
+        <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('reconcileMissing')}</div><div class="kpi-value neg">${missing.length}</div></div>
+      </div>
+      ${missing.length===0?`<div class="empty">${t('reconcileAllMatched')}</div>`:`
+      <div class="note" style="color:var(--red);font-weight:600;">⚠️ ${t('reconcileMissingNote')}</div>
+      <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${col}</th>${otherCols.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
+        <tbody>${missing.map(row=>`<tr><td style="font-weight:700;color:var(--red);">${row[col]}</td>${otherCols.map(c=>`<td>${row[c]??''}</td>`).join('')}</tr>`).join('')}</tbody>
+      </table></div>`}`;
+  };
 }
 
 /* ===================== MODAL ===================== */
