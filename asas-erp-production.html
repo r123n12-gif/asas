@@ -241,7 +241,13 @@ const T = {
     reconcileEmptyFile:'الملف فاضي أو غير مقروء.', reconcileParseError:'تعذر قراءة الملف، تأكد إنه إكسل أو CSV صحيح.',
     reconcileTotalRows:'إجمالي صفوف الملف', reconcileMatched:'مطابقة (موجودة بالنظام)', reconcileMissing:'غير موجودة بالنظام',
     reconcileAllMatched:'✅ كل التذاكر بالملف موجودة بالنظام — ما فيه نواقص.', reconcileMissingNote:'هذي التذاكر موجودة بالتقرير الخارجي بس غير مسجّلة بالنظام — يحتمل الموظف نسيها.',
-    payInstallment:'تابي/تمارا (تقسيط)', fieldInstallmentProvider:'المزود', installmentFeeNote:'يُخصم 7% رسوم تابي/تمارا تلقائيًا من المبلغ عند اعتماد المحاسب.'
+    payInstallment:'تابي/تمارا (تقسيط)', fieldInstallmentProvider:'المزود', installmentFeeNote:'يُخصم 7% رسوم تابي/تمارا تلقائيًا من المبلغ عند اعتماد المحاسب.',
+    actualAmountPrompt:'أدخل المبلغ الفعلي اللي دخل البنك (لو مختلف عن سعر التذكرة، السعر يُصحَّح تلقائيًا):',
+    refundedTag:'تم الرفند', refundPendingTag:'طلب رفند قيد المراجعة', refundRejectedTag:'رفض طلب الرفند', requestRefundBtn:'طلب رفند',
+    modalRequestRefund:'طلب رفند', refundRequestNote:'أرفق نموذج/إيصال الرفند (من شركة الطيران أو المورد) ليقدَّم للمحاسب للمراجعة.',
+    fieldRefundReceipt:'نموذج/إيصال الرفند', fieldRefundNote:'ملاحظة (اختياري)', refundNotePlaceholder:'سبب الرفند...',
+    submitRefundBtn:'إرسال طلب الرفند', pendingRefundsTitle:'طلبات الرفند بانتظار المراجعة', noPendingRefunds:'لا توجد طلبات رفند معلّقة.',
+    confirmApproveRefund:'اعتماد الرفند يعكس كل القيود المحاسبية الخاصة بهذا الحجز (البيع، التكلفة، التحصيل). هل أنت متأكد؟'
   },
   en: {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
@@ -346,7 +352,13 @@ const T = {
     reconcileEmptyFile:'The file is empty or unreadable.', reconcileParseError:'Could not read the file, make sure it is a valid Excel or CSV file.',
     reconcileTotalRows:'Total file rows', reconcileMatched:'Matched (found in system)', reconcileMissing:'Not found in system',
     reconcileAllMatched:'✅ Every ticket in the file exists in the system — nothing missing.', reconcileMissingNote:'These tickets exist in the external report but are not recorded in the system — the employee may have forgotten them.',
-    payInstallment:'Tabby/Tamara (BNPL)', fieldInstallmentProvider:'Provider', installmentFeeNote:'A 7% Tabby/Tamara fee is deducted automatically once the accountant approves.'
+    payInstallment:'Tabby/Tamara (BNPL)', fieldInstallmentProvider:'Provider', installmentFeeNote:'A 7% Tabby/Tamara fee is deducted automatically once the accountant approves.',
+    actualAmountPrompt:'Enter the actual amount that landed in the bank (if different from the ticket price, the price is corrected automatically):',
+    refundedTag:'Refunded', refundPendingTag:'Refund request pending review', refundRejectedTag:'Refund request rejected', requestRefundBtn:'Request refund',
+    modalRequestRefund:'Request refund', refundRequestNote:'Attach the refund form/receipt (from the airline or supplier) to submit it for accountant review.',
+    fieldRefundReceipt:'Refund form/receipt', fieldRefundNote:'Note (optional)', refundNotePlaceholder:'Reason for refund...',
+    submitRefundBtn:'Submit refund request', pendingRefundsTitle:'Refund requests awaiting review', noPendingRefunds:'No pending refund requests.',
+    confirmApproveRefund:'Approving the refund will reverse all ledger entries for this booking (sale, cost, collection). Are you sure?'
   }
 };
 let lang = localStorage.getItem('asas_lang') || 'ar';
@@ -413,10 +425,24 @@ async function rejectDeposit(id, notes){
   if(error) throw error;
   const d = deposits.find(x=>x.id===id); if(d){ d.status='rejected'; d.notes=notes||null; }
 }
-async function verifyPaymentReceived(bookingId){
+async function verifyPaymentReceived(bookingId, actualAmount){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) return;
-  const sell = Number(b.sell)||0;
+  let sell = Number(b.sell)||0;
+  if(actualAmount!==undefined && actualAmount!==null && !isNaN(actualAmount) && +actualAmount!==sell){
+    const newSell = +Number(actualAmount).toFixed(2);
+    const newProfit = b.cost_reviewed ? +(newSell-Number(b.cost||0)).toFixed(2) : b.profit_amount;
+    const {error:eSell} = await sb.from('bookings').update({sell:newSell, profit_amount:newProfit, margin:newProfit, net_profit:newProfit}).eq('id', bookingId);
+    if(eSell) throw eSell;
+    b.sell = newSell; b.profit_amount = newProfit; b.margin = newProfit; b.net_profit = newProfit;
+    sell = newSell;
+    const existingSale = journal.find(j=>j.booking_id===bookingId && j.desc_key==='jSale');
+    if(existingSale){
+      const {data:uSale, error:eSaleJ} = await sb.from('journal').update({amount:newSell}).eq('id', existingSale.id).select().single();
+      if(eSaleJ) throw eSaleJ;
+      const idx = journal.findIndex(j=>j.id===existingSale.id); if(idx>-1) journal[idx]=uSale;
+    }
+  }
   const isSpan = b.payment_method==='span';
   const isInstallment = b.payment_method==='installment';
   const feeRate = isSpan ? 0.08 : isInstallment ? 0.07 : 0;
@@ -457,6 +483,33 @@ async function reviewBookingCost(bookingId, netCost){
       if(e3) throw e3;
       journal.unshift(ins);
     }
+  }
+}
+async function requestRefund(bookingId, file, note){
+  const receiptUrl = await uploadReceiptFile(file);
+  const {data:updated, error} = await sb.from('bookings').update({ refund_status:'pending', refund_receipt_url:receiptUrl, refund_note:note||null,
+    refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString() }).eq('id', bookingId).select().single();
+  if(error) throw error;
+  const idx = bookings.findIndex(b=>b.id===bookingId); if(idx>-1) bookings[idx]=updated;
+}
+async function rejectRefund(bookingId, note){
+  const {error} = await sb.from('bookings').update({refund_status:'rejected', refund_note:note||null, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}).eq('id', bookingId);
+  if(error) throw error;
+  const b = bookings.find(x=>x.id===bookingId); if(b){ b.refund_status='rejected'; b.refund_note=note||null; }
+}
+async function approveRefund(bookingId){
+  const b = bookings.find(x=>x.id===bookingId);
+  if(!b) return;
+  const {error} = await sb.from('bookings').update({refund_status:'approved', refunded:true, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}).eq('id', bookingId);
+  if(error) throw error;
+  b.refund_status='approved'; b.refunded=true;
+  const origRows = journal.filter(j=>j.booking_id===bookingId);
+  if(origRows.length>0){
+    const reversedRows = origRows.map(j=>({ date:todayStr(), branch_id:j.branch_id, booking_id:bookingId,
+      desc_key:'jRefund', desc_args:[b.booking_no], debit_key:j.credit_key, credit_key:j.debit_key, amount:j.amount }));
+    const {data:jIns, error:jErr} = await sb.from('journal').insert(reversedRows).select();
+    if(jErr) throw jErr;
+    journal.unshift(...jIns.reverse());
   }
 }
 async function settleSupplierPayment(bookingId){
@@ -606,7 +659,8 @@ function journalDesc(j){
     jCardFee:{ar:(a)=>`رسوم شبكة (سبان) حجز #${a[0]}`, en:(a)=>`Card/network fee for booking #${a[0]}`},
     jDeposit:{ar:(a)=>`إيداع كاش الفرع لحساب ${a[0]}`, en:(a)=>`Branch cash deposit to ${a[0]} account`},
     jManual:{ar:(a)=>`قيد يدوي: ${a[0]}`, en:(a)=>`Manual entry: ${a[0]}`},
-    jSupplierPay:{ar:(a)=>`دفعة لمورد ${a[0]} - حجز #${a[1]}`, en:(a)=>`Payment to supplier ${a[0]} - booking #${a[1]}`} };
+    jSupplierPay:{ar:(a)=>`دفعة لمورد ${a[0]} - حجز #${a[1]}`, en:(a)=>`Payment to supplier ${a[0]} - booking #${a[1]}`},
+    jRefund:{ar:(a)=>`عكس قيود بسبب رفند حجز #${a[0]}`, en:(a)=>`Reversal due to refund of booking #${a[0]}`} };
   const tpl = templates[j.desc_key];
   return tpl ? tpl[lang](j.desc_args||[]) : '';
 }
@@ -650,18 +704,19 @@ async function addManualJournalEntry(data){
   journal.unshift(jIns);
 }
 function computeTotals(bookingsList, expensesList){
-  const sales = bookingsList.reduce((s,b)=>s+Number(b.sell),0);
-  const reviewed = bookingsList.filter(b=>b.cost_reviewed);
-  const pendingReview = bookingsList.filter(b=>!b.cost_reviewed);
+  const active = bookingsList.filter(b=>!b.refunded);
+  const sales = active.reduce((s,b)=>s+Number(b.sell),0);
+  const reviewed = active.filter(b=>b.cost_reviewed);
+  const pendingReview = active.filter(b=>!b.cost_reviewed);
   const cost = reviewed.reduce((s,b)=>s+Number(b.cost),0);
-  const commission = bookingsList.reduce((s,b)=>s+Number(b.commission),0);
+  const commission = active.reduce((s,b)=>s+Number(b.commission),0);
   const expenses = expensesList.reduce((s,e)=>s+Number(e.amount),0);
   const revenue = sales+commission;
   const reviewedProfit = reviewed.reduce((s,b)=>s+Number(b.profit_amount||0),0);
   const netProfit = reviewedProfit+commission-expenses;
   const pendingReviewSales = pendingReview.reduce((s,b)=>s+Number(b.sell),0);
-  const pendingCommission = bookingsList.filter(b=>b.commission_status==='pending').reduce((s,b)=>s+Number(b.commission),0);
-  return {sales,cost,commission,expenses,revenue,netProfit,pendingCommission,pendingReviewCount:pendingReview.length,pendingReviewSales,count:bookingsList.length};
+  const pendingCommission = active.filter(b=>b.commission_status==='pending').reduce((s,b)=>s+Number(b.commission),0);
+  return {sales,cost,commission,expenses,revenue,netProfit,pendingCommission,pendingReviewCount:pendingReview.length,pendingReviewSales,count:active.length};
 }
 function expensesForFilter(){
   const bf = effectiveBranchFilter();
@@ -839,7 +894,7 @@ function bookingsTable(list, mode){
           <td class="num">${canSeeProfit()?(b.cost_reviewed?money(b.cost):`<span class="tag pending">${t('pendingReviewTag')}</span>`):moneyOrHidden(0)}</td><td class="num">${canSeeProfit()?(b.cost_reviewed?money(b.profit_amount):`<span class="tag pending">${t('pendingReviewTag')}</span>`):moneyOrHidden(0)}</td>
           <td class="num" style="font-weight:600">${money(b.sell)}</td>
           <td>${b.supplier||'—'}${(canSeeProfit() && Number(b.cost)>0)?`<br><span class="tag ${b.supplier_settled?'collected':'pending'}">${b.supplier_settled?t('supplierSettledTag'):t('supplierUnsettledTag')}</span>`:''}</td><td>${b.invoice_no||'—'}</td>
-          <td><span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span></td>
+          <td>${b.refunded?`<span class="tag rejected">${t('refundedTag')}</span>`:b.refund_status==='pending'?`<span class="tag pending">${t('refundPendingTag')}</span>`:b.refund_status==='rejected'?`<span class="tag rejected">${t('refundRejectedTag')}</span>`:`<span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span>`}</td>
           <td>${b.payment_method==='transfer'?`${t('payTransfer')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
             :b.payment_method==='span'?`${t('paySpan')}<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
             :b.payment_method==='installment'?`${t('payInstallment')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
@@ -852,6 +907,7 @@ function bookingsTable(list, mode){
               ${isAdmin()?`<button class="btn btn-danger btn-sm" onclick="uiDeleteBooking('${b.id}')">${t('delete')}</button>`:''}
               ${b.edit_requested?`<span class="tag pending">${t('returnedTag')}</span>`:`<button class="btn btn-ghost btn-sm" onclick="uiRequestEdit('${b.id}')">${t('returnToEmployee')}</button>`}`:''}
             ${mode==='employee' && b.edit_requested?`<button class="btn btn-gold btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>`:''}
+            ${(mode==='employee'||isAdmin()) && !b.refund_status && !b.refunded?`<button class="btn btn-ghost btn-sm" onclick="uiRequestRefund('${b.id}')">${t('requestRefundBtn')}</button>`:''}
           </td>`:''}
         </tr>${mode==='employee' && b.edit_requested && b.edit_note?`<tr><td colspan="13" style="background:#FBEFE0;font-size:11.5px;color:#A8722C;">📝 ${t('editNoteLabel')}: ${b.edit_note}</td></tr>`:''}`).join('')}</tbody></table></div>`;
 }
@@ -1311,6 +1367,13 @@ function renderDeposits(){
         <td class="num">${b.payment_method==='span'?money(+(Number(b.sell)*0.08).toFixed(2)):b.payment_method==='installment'?money(+(Number(b.sell)*0.07).toFixed(2)):'—'}</td>
         <td><button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
+    const pendingRefunds = bookings.filter(b=>b.refund_status==='pending');
+    html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingRefundsTitle')}</h3></div>
+      ${pendingRefunds.length===0?`<div class="empty">${t('noPendingRefunds')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colSell')}</th><th>${t('colReceipt')}</th><th></th></tr></thead>
+      <tbody>${pendingRefunds.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td><td class="num">${money(b.sell)}</td>
+        <td><a href="${b.refund_receipt_url}" target="_blank">${t('viewReceipt')}</a></td>
+        <td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveRefund('${b.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectRefund('${b.id}')">${t('reject')}</button></td></tr>`).join('')}</tbody></table></div>`}
+    </div>`;
   }
   const myDeposits = canManage ? deposits : deposits.filter(d=>d.branch_id===u.branch_id);
   const pendingDeposits = myDeposits.filter(d=>d.status==='pending');
@@ -1333,6 +1396,47 @@ function depositsTableHTML(list, showApprove){
       ${showApprove?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveDeposit('${d.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectDeposit('${d.id}')">${t('reject')}</button></td>`:''}
     </tr>`).join('')}</tbody></table></div>`;
 }
+function openRefundRequestModal(bookingId){
+  const b = bookings.find(x=>x.id===bookingId);
+  if(!b) return;
+  showModal(`
+    <div class="modal-head"><h3>${t('modalRequestRefund')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="refundRequestForm">
+      <div class="note">${t('refundRequestNote')} (${t('colNo')}: ${b.booking_no} — ${b.customer})</div>
+      <div class="field"><label>${t('fieldRefundReceipt')}</label><input type="file" name="receipt" accept="image/*,.pdf" required></div>
+      <div class="field"><label>${t('fieldRefundNote')}</label><input name="note" placeholder="${t('refundNotePlaceholder')}"></div>
+      <div id="refundErrorBox"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
+        <button type="submit" class="btn btn-primary" id="refundSaveBtn">${t('submitRefundBtn')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  document.getElementById('refundRequestForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('refundSaveBtn');
+    const f = new FormData(e.target);
+    const file = f.get('receipt');
+    if(!file || !file.size){ document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${t('receiptRequired')}</div>`; return; }
+    btn.disabled=true; btn.textContent=t('uploading');
+    try{
+      await requestRefund(bookingId, file, f.get('note'));
+      closeModal(); render();
+    }catch(err){
+      console.error(err);
+      document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      btn.disabled=false; btn.textContent=t('submitRefundBtn');
+    }
+  };
+}
+window.uiRequestRefund = function(id){ openRefundRequestModal(id); };
+window.uiApproveRefund = async function(id){
+  if(!confirm(t('confirmApproveRefund'))) return;
+  try{ await approveRefund(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
+window.uiRejectRefund = async function(id){
+  const note = prompt(t('rejectReason'))||'';
+  try{ await rejectRefund(id, note); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
 function openDepositModal(){
   const u = currentUser();
   const canManage = canSeeAllBranches();
@@ -1376,7 +1480,15 @@ window.uiRejectDeposit = async function(id){
   const reason = prompt(t('rejectReason'))||'';
   try{ await rejectDeposit(id, reason); render(); }catch(e){ alert(t('connError')); }
 };
-window.uiVerifyTransfer = async function(id){ try{ await verifyPaymentReceived(id); render(); }catch(e){ console.error(e); alert(t('connError')); } };
+window.uiVerifyTransfer = async function(id){
+  const b = bookings.find(x=>x.id===id);
+  if(!b) return;
+  const val = prompt(`${t('actualAmountPrompt')} (${t('fieldSellPrice')}: ${money(b.sell)})`, String(b.sell));
+  if(val===null) return;
+  const amt = Number(val);
+  if(isNaN(amt) || amt<0){ alert(t('invalidNumber')); return; }
+  try{ await verifyPaymentReceived(id, amt); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
 window.uiSettleSupplier = async function(id){ try{ await settleSupplierPayment(id); render(); }catch(e){ console.error(e); alert(t('connError')); } };
 window.uiReviewCost = function(id){
   if(!isAdmin()){ alert(t('adminOnlyAction')); return; }
