@@ -142,10 +142,10 @@ const T = {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
     sidebarSub:'نظام محاسبي', savedNote:'البيانات محفوظة بشكل دائم على قاعدة بياناتك الحقيقية.',
     navDashboard:'لوحة التحكم', navBookings:'الحجوزات والفواتير', navLedger:'دفتر الحسابات',
-    navCommissions:'العمولات', navReports:'تقارير الفروع', navUsers:'المستخدمون', navSettings:'الإعدادات',
+    navCommissions:'العمولات', navReports:'تقرير الفروع والموظفين', navUsers:'المستخدمون', navSettings:'الإعدادات',
     subDashboard:'نظرة عامة على أداء الوكالة والفروع', subBookings:'التذاكر، الفيزا، الباقات وكل خدمة تبيعها الوكالة',
     subLedger:'دليل الحسابات، القيود اليومية، وقائمة الدخل', subCommissions:'عمولات شركات الطيران وأنظمة الحجز',
-    subReports:'مقارنة أداء الفروع مع بعضها', subUsers:'إدارة حسابات الموظفين وصلاحياتهم', subSettings:'إدارة الفروع والبيانات',
+    subReports:'مقارنة أداء الفروع والموظفين مع فلترة كاملة (مورد، فرع، موظف، فترة)', subUsers:'إدارة حسابات الموظفين وصلاحياتهم', subSettings:'إدارة الفروع والبيانات',
     allBranches:'كل الفروع', logout:'تسجيل الخروج', loggedInAs:'مسجّل الدخول:',
     kpiSales:'إجمالي المبيعات', kpiProfit:'صافي الربح (مبيعات + عمولات − تكلفة − مصروفات)',
     kpiCount:'عدد الحجوزات', kpiPendingComm:'عمولات مستحقة (غير محصّلة)',
@@ -264,10 +264,10 @@ const T = {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
     sidebarSub:'Accounting System', savedNote:'Data is stored permanently in your real database.',
     navDashboard:'Dashboard', navBookings:'Bookings & Invoices', navLedger:'General Ledger',
-    navCommissions:'Commissions', navReports:'Branch Reports', navUsers:'Users', navSettings:'Settings',
+    navCommissions:'Commissions', navReports:'Branch & Employee Report', navUsers:'Users', navSettings:'Settings',
     subDashboard:'Overview of agency and branch performance', subBookings:'Tickets, visas, packages and every service the agency sells',
     subLedger:'Chart of accounts, daily journal, and income statement', subCommissions:'Airline and GDS commissions',
-    subReports:'Compare performance across branches', subUsers:'Manage employee accounts and permissions', subSettings:'Manage branches and data',
+    subReports:'Compare branch and employee performance with full filters (supplier, branch, employee, period)', subUsers:'Manage employee accounts and permissions', subSettings:'Manage branches and data',
     allBranches:'All branches', logout:'Log out', loggedInAs:'Logged in as:',
     kpiSales:'Total sales', kpiProfit:'Net profit (sales + commission − cost − expenses)',
     kpiCount:'Number of bookings', kpiPendingComm:'Pending commissions (uncollected)',
@@ -631,7 +631,7 @@ function filteredBookings(){
   if(bf==='all') return bookings;
   return bookings.filter(b=>b.branch_id===bf);
 }
-const SOURCE_PRESETS = ['AKBAR','NDC','PORTAL','GALILEO','مباشر'];
+const SOURCE_PRESETS = ['AKBAR','NDC','PORTAL','GALILEO','G9','GULF','J9','AM','مباشر'];
 const AIRLINE_HINTS = ['SV','EY','EK','G9','FZ','GF','QR','6E','XY'];
 const DEPOSIT_DESTINATIONS = ['AKBAR','NDC','PORTAL','GALILEO','IATA'];
 const BANK_OPTIONS = ['RAJHI','AHLI','OTHER'];
@@ -1489,21 +1489,44 @@ function renderCommissions(){
 /* ===================== REPORTS ===================== */
 let reportGroupBy = 'branch';
 let reportSearchTerm = '';
+let reportSupplierFilter = 'all';
+let reportBranchFilter = 'all';
+let reportEmployeeFilter = 'all';
+let reportDateFrom = null;
+let reportDateTo = null;
+function reportFilteredBookings(){
+  return bookings.filter(b=>
+    (reportSupplierFilter==='all' || b.supplier===reportSupplierFilter) &&
+    (reportBranchFilter==='all' || b.branch_id===reportBranchFilter) &&
+    (reportEmployeeFilter==='all' || b.created_by===reportEmployeeFilter) &&
+    (!reportDateFrom || b.date>=reportDateFrom) && (!reportDateTo || b.date<=reportDateTo));
+}
+function setReportQuickRange(kind){
+  const today = todayStr();
+  let from = today;
+  if(kind==='month') from = today.slice(0,8)+'01';
+  else if(kind==='year') from = today.slice(0,4)+'-01-01';
+  reportDateFrom = from; reportDateTo = today;
+  renderReports();
+}
 function renderReports(){
   document.getElementById('pageSub').textContent = t('subReports');
   const groupBy = reportGroupBy;
+  const scoped = reportFilteredBookings();
+  const suppliers = [...new Set(bookings.map(b=>b.supplier).filter(Boolean))];
   let rows = [];
   if(groupBy==='employee'){
     rows = users.map(u=>{
-      const bl = bookings.filter(x=>x.created_by===u.id);
+      const bl = scoped.filter(x=>x.created_by===u.id);
       const tt = computeTotals(bl, []);
       const margin = tt.sales>0 ? (tt.netProfit/tt.sales*100) : 0;
       return {name:u.name, sub:branchName(u.branch_id), ...tt, margin};
     }).filter(r=>r.count>0 || !reportSearchTerm);
   }else{
     rows = branches.map(b=>{
-      const bl = bookings.filter(x=>x.branch_id===b.id);
-      const tt = computeTotals(bl, manualExpenses.filter(e=>e.branch_id===b.id));
+      const bl = scoped.filter(x=>x.branch_id===b.id);
+      const exp = manualExpenses.filter(e=>e.branch_id===b.id && (!reportDateFrom||e.date>=reportDateFrom) && (!reportDateTo||e.date<=reportDateTo));
+      const tt = computeTotals(bl, exp);
       const margin = tt.revenue>0 ? (tt.netProfit/tt.revenue*100) : 0;
       return {name:b.name, sub:null, ...tt, margin};
     });
@@ -1514,6 +1537,27 @@ function renderReports(){
   }
   const nameHeader = groupBy==='employee' ? t('colUserName') : t('colBranchName');
   document.getElementById('content').innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('reconcileFiltersTitle')}</h3></div>
+      <div class="grid-2">
+        <div class="field"><label>${t('colSupplier')}</label><select id="repSupplier"><option value="all" ${reportSupplierFilter==='all'?'selected':''}>${t('allSuppliersOpt')}</option>${suppliers.map(s=>`<option value="${s}" ${reportSupplierFilter===s?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldBranch')}</label><select id="repBranch"><option value="all" ${reportBranchFilter==='all'?'selected':''}>${t('allBranches')}</option>${branches.map(b=>`<option value="${b.id}" ${reportBranchFilter===b.id?'selected':''}>${b.name}</option>`).join('')}</select></div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldEmployeeFilter')}</label><select id="repEmployee"><option value="all" ${reportEmployeeFilter==='all'?'selected':''}>${t('allEmployeesOpt')}</option>${users.map(u=>`<option value="${u.id}" ${reportEmployeeFilter===u.id?'selected':''}>${u.name}</option>`).join('')}</select></div>
+        <div class="field"><label></label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-ghost btn-sm" id="repToday">${t('quickToday')}</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="repMonth">${t('quickMonth')}</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="repYear">${t('quickYear')}</button>
+          </div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" id="repDateFrom" value="${reportDateFrom||''}"></div>
+        <div class="field"><label>${t('fieldDateTo')}</label><input type="date" id="repDateTo" value="${reportDateTo||''}"></div>
+      </div>
+    </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales')}</div>
     ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit')}</div>`:''}
     <div class="panel">
@@ -1533,6 +1577,14 @@ function renderReports(){
     </div>`;
   document.getElementById('reportGroupBySel').onchange = (e)=>{ reportGroupBy = e.target.value; renderReports(); };
   document.getElementById('reportSearchInput').oninput = (e)=>{ reportSearchTerm = e.target.value; renderReports(); };
+  document.getElementById('repSupplier').onchange = (e)=>{ reportSupplierFilter = e.target.value; renderReports(); };
+  document.getElementById('repBranch').onchange = (e)=>{ reportBranchFilter = e.target.value; renderReports(); };
+  document.getElementById('repEmployee').onchange = (e)=>{ reportEmployeeFilter = e.target.value; renderReports(); };
+  document.getElementById('repDateFrom').onchange = (e)=>{ reportDateFrom = e.target.value||null; renderReports(); };
+  document.getElementById('repDateTo').onchange = (e)=>{ reportDateTo = e.target.value||null; renderReports(); };
+  document.getElementById('repToday').onclick = ()=>setReportQuickRange('today');
+  document.getElementById('repMonth').onclick = ()=>setReportQuickRange('month');
+  document.getElementById('repYear').onclick = ()=>setReportQuickRange('year');
 }
 
 /* ===================== CASH DEPOSITS PAGE ===================== */
