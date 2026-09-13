@@ -593,6 +593,7 @@ function isAccountant(){ const u = currentUser(); return u && u.role==='accounta
 function canSeeAllBranches(){ return isAdmin() || isAccountant(); }
 function canSeeProfit(){ return isAdmin(); }
 function canSeeOwnProfit(){ return isAdmin() || (currentUser()?.role==='employee'); }
+function canSeeSell(){ return isAdmin() || (currentUser()?.role==='employee'); }
 function moneyOrHidden(n){ return canSeeProfit() ? money(n) : `<span style="color:var(--ink-soft)">${t('hiddenValue')}</span>`; }
 function effectiveBranchFilter(){
   const u = currentUser();
@@ -942,7 +943,7 @@ function bookingsTable(list, mode){
           <td>${b.is_open_ticket?`<span class="tag pending">${t('tagOpen')}</span>`:(b.ticket_no||'—')}</td>
           <td>${branchName(b.branch_id)}</td>
           <td class="num">${b.cost_reviewed?money(b.cost):`<span class="tag pending">${t('pendingReviewTag')}</span>`}</td><td class="num">${(isAdmin()||mode==='employee')?(b.cost_reviewed?money(b.profit_amount):`<span class="tag pending">${t('pendingReviewTag')}</span>`):moneyOrHidden(0)}</td>
-          <td class="num" style="font-weight:600">${money(b.sell)}</td>
+          <td class="num" style="font-weight:600">${canSeeSell()?money(b.sell):moneyOrHidden(0)}</td>
           <td>${b.supplier||'—'}${(Number(b.cost)>0)?`<br><span class="tag ${b.supplier_settled?'collected':'pending'}">${b.supplier_settled?t('supplierSettledTag'):t('supplierUnsettledTag')}</span>`:''}</td><td>${b.invoice_no||'—'}</td>
           <td>${b.refunded?`<span class="tag rejected">${t('refundedTag')}</span>`:b.refund_status==='pending'?`<span class="tag pending">${t('refundPendingTag')}</span>`:b.refund_status==='rejected'?`<span class="tag rejected">${t('refundRejectedTag')}</span>`:`<span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span>`}</td>
           <td>${b.payment_method==='transfer'?`${t('payTransfer')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
@@ -1098,7 +1099,7 @@ function bookingRowHTML(b){
   return `<tr>
       <td>${b.booking_no}</td><td>${b.date}</td><td>${branchName(b.branch_id)}</td><td>${userName(b.created_by)}</td><td>${b.airline||'—'}</td><td>${b.customer}</td>
       <td>${b.ticket_no||'—'}</td><td>${b.supplier||'—'}</td>
-      <td style="text-align:end">${money(b.cost)}</td><td style="text-align:end">${canSeeOwnProfit()?money(b.profit_amount):t('hiddenValue')}</td><td style="text-align:end;font-weight:600">${money(b.sell)}</td>
+      <td style="text-align:end">${money(b.cost)}</td><td style="text-align:end">${canSeeOwnProfit()?money(b.profit_amount):t('hiddenValue')}</td><td style="text-align:end;font-weight:600">${canSeeSell()?money(b.sell):t('hiddenValue')}</td>
       <td>${b.payment_method==='transfer'?t('payTransfer'):b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payCash')}</td>
       <td>${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</td>
     </tr>`;
