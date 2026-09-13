@@ -1143,6 +1143,35 @@ function totalsKpisHTML(tt){
       <div class="kpi"><div>${t('expenseOp')}</div><div>${money(tt.expenses)}</div></div>
     </div>`;
 }
+function printBranchEmployeeReport(rows, groupBy, nameHeader){
+  const filters = [];
+  if(reportSupplierFilter!=='all') filters.push(`${t('colSupplier')}: ${reportSupplierFilter}`);
+  if(reportBranchFilter!=='all') filters.push(`${t('fieldBranch')}: ${branchName(reportBranchFilter)}`);
+  if(reportEmployeeFilter!=='all') filters.push(`${t('fieldEmployeeFilter')}: ${userName(reportEmployeeFilter)}`);
+  const periodLabel = (reportDateFrom||reportDateTo) ? `${reportDateFrom||'…'} → ${reportDateTo||'…'}` : t('reportAllPeriod');
+  filters.push(`${t('reportPeriodLabel')}: ${periodLabel}`);
+  const showSell = canSeeSell(), showProfit = canSeeProfit();
+  const html = `<!DOCTYPE html><html lang="${lang}" dir="${lang==='ar'?'rtl':'ltr'}"><head><meta charset="UTF-8">
+    <title>${t('navReports')}</title>
+    <style>
+      body{font-family:'IBM Plex Sans Arabic',system-ui,sans-serif;color:#1C1C1C;padding:24px;}
+      h1{font-size:18px;margin:0 0 10px;}
+      .meta{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-bottom:16px;background:#FBF7EE;padding:10px 14px;border-radius:8px;}
+      table{width:100%;border-collapse:collapse;font-size:12px;}
+      th{background:#0F2A3D;color:#fff;padding:7px 6px;text-align:${lang==='ar'?'right':'left'};} td{padding:6px;border-bottom:1px solid #E4DECB;}
+    </style></head><body>
+    <h1>${t('agencyAr')} — ${t('navReports')}</h1>
+    <div class="meta">${filters.map(f=>`<div>${f}</div>`).join('')}</div>
+    <table><thead><tr><th>${nameHeader}</th>${groupBy==='employee'?`<th>${t('colUserBranch')}</th>`:''}<th>${t('colBookCount')}</th><th>${t('colSalesTotal')}</th><th>${t('colCostTotal')}</th><th>${t('colCommTotal')}</th>${groupBy==='branch'?`<th>${t('colExpTotal')}</th>`:''}<th>${t('colNetProfitCol')}</th><th>${t('colMargin')}</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td style="text-align:end">${r.count}</td><td style="text-align:end">${showSell?money(r.sales):t('hiddenValue')}</td><td style="text-align:end">${money(r.cost)}</td>
+        <td style="text-align:end">${money(r.commission)}</td>${groupBy==='branch'?`<td style="text-align:end">${money(r.expenses)}</td>`:''}<td style="text-align:end;font-weight:600">${showProfit?money(r.netProfit):t('hiddenValue')}</td><td style="text-align:end">${showProfit?r.margin.toFixed(1)+'%':t('hiddenValue')}</td></tr>`).join('') || `<tr><td colspan="8" style="text-align:center;padding:16px;">${t('emptyData')}</td></tr>`}</tbody>
+    </table>
+    </body></html>`;
+  const w = window.open('', '_blank');
+  if(!w){ alert(t('connError')); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+  setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
+}
 function generateBranchReport(branchId, employeeId, dateFrom, dateTo){
   const inRange = (d)=> (!dateFrom || d>=dateFrom) && (!dateTo || d<=dateTo);
   const baseBookings = bookings.filter(b=> (employeeId==='all'||b.created_by===employeeId) && inRange(b.date||''));
@@ -1568,6 +1597,7 @@ function renderReports(){
             <option value="employee" ${groupBy==='employee'?'selected':''}>${t('groupByEmployee')}</option>
           </select>
           <input class="select-ctrl" id="reportSearchInput" type="text" placeholder="${t('searchPlaceholder')}" value="${reportSearchTerm}">
+          <button class="btn btn-ghost btn-sm" id="reportPrintBtn">${t('printReport')}</button>
         </div>
       </div>
       ${rows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;">
@@ -1575,6 +1605,7 @@ function renderReports(){
         <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td class="num">${r.count}</td><td class="num">${canSeeSell()?money(r.sales):moneyOrHidden(0)}</td><td class="num">${money(r.cost)}</td>
           <td class="num">${money(r.commission)}</td>${groupBy==='branch'?`<td class="num">${money(r.expenses)}</td>`:''}<td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${moneyOrHidden(r.netProfit)}</td><td class="num">${canSeeProfit()?r.margin.toFixed(1)+'%':t('hiddenValue')}</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
+  document.getElementById('reportPrintBtn').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
   document.getElementById('reportGroupBySel').onchange = (e)=>{ reportGroupBy = e.target.value; renderReports(); };
   document.getElementById('reportSearchInput').oninput = (e)=>{ reportSearchTerm = e.target.value; renderReports(); };
   document.getElementById('repSupplier').onchange = (e)=>{ reportSupplierFilter = e.target.value; renderReports(); };
@@ -1598,7 +1629,7 @@ function renderTransfers(){
       <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td>
         <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payTransfer')}</td>
         <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
-        <td class="num">${canSeeSell()?money(b.sell):moneyOrHidden(0)}</td>
+        <td class="num">${money(b.sell)}</td>
         <td class="num">${b.payment_method==='span'?money(+(Number(b.sell)*0.008).toFixed(2)):b.payment_method==='installment'?money(+(Number(b.sell)*0.07).toFixed(2)):'—'}</td>
         <td><button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
     </div>
@@ -1607,7 +1638,7 @@ function renderTransfers(){
       <tbody>${verifiedTransfers.slice(0,50).map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td>
         <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payTransfer')}</td>
         <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
-        <td class="num">${canSeeSell()?money(b.sell):moneyOrHidden(0)}</td></tr>`).join('')}</tbody></table></div>`}
+        <td class="num">${money(b.sell)}</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
   document.getElementById('content').innerHTML = html;
 }
@@ -1742,8 +1773,7 @@ window.uiRejectDeposit = async function(id){
 window.uiVerifyTransfer = async function(id){
   const b = bookings.find(x=>x.id===id);
   if(!b) return;
-  const hint = canSeeSell() ? ` (${t('fieldSellPrice')}: ${money(b.sell)})` : '';
-  const val = prompt(`${t('actualAmountPrompt')}${hint}`, canSeeSell()?String(b.sell):'');
+  const val = prompt(`${t('actualAmountPrompt')} (${t('fieldSellPrice')}: ${money(b.sell)})`, String(b.sell));
   if(val===null) return;
   const amt = Number(val);
   if(isNaN(amt) || amt<0){ alert(t('invalidNumber')); return; }
