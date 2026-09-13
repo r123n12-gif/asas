@@ -221,8 +221,9 @@ const T = {
     returnToEmployee:'إرجاع للموظف للتعديل', confirmDeleteBooking:'هل أنت متأكد من حذف هذا الحجز؟ لا يمكن التراجع عن هذا الإجراء.',
     editNotePrompt:'وضّح للموظف ما المطلوب تعديله (اختياري):', editNoteLabel:'ملاحظة المحاسب',
     groupByBranch:'تصنيف حسب: الفرع', groupByEmployee:'تصنيف حسب: الموظف', searchPlaceholder:'بحث بالاسم...',
-    paySpan:'شبكة/سبان (بطاقة)', spanFeeNote:'يُخصم 8% رسوم شبكة تلقائيًا من المبلغ عند اعتماد المحاسب.',
+    paySpan:'شبكة/سبان (بطاقة)', spanFeeNote:'يُخصم 0.8% رسوم شبكة (مدى) تلقائيًا من المبلغ عند اعتماد المحاسب.',
     pendingVerifyTitle:'تحويلات وشبكة بانتظار التأكيد', colFee:'رسوم الشبكة', employeeMustHaveBranch:'يجب اختيار فرع للموظف.',
+    navTransfers:'التحويلات البنكية', subTransfers:'تأكيد التحويلات البنكية وسبان وتابي/تمارا مع ذكر البنك', verifiedTransfersTitle:'تحويلات مؤكَّدة (سجل)', noVerifiedTransfers:'لا توجد تحويلات مؤكّدة بعد.',
     verifiedTag:'تم التأكيد', bankTag:'البنك', paymentPendingNote:'كل حجز يبدأ بحالة "قيد التحصيل" ولا يتحول لـ"مدفوع" إلا بعد اعتماد/تأكيد المحاسب أو المدير — لمنع أي تلاعب.',
     backupTitle:'نسخة احتياطية للبيانات', backupNote:'يصدّر هذا الزر كل بيانات النظام (الفروع، المستخدمين، الحجوزات، القيود، الإيداعات) كملف JSON تقدر تحفظه على جهازك. يُنصح بعمل هذا أسبوعيًا على الأقل.',
     exportBackupBtn:'⬇️ تصدير نسخة احتياطية كاملة',
@@ -337,8 +338,9 @@ const T = {
     returnToEmployee:'Return to employee for edit', confirmDeleteBooking:'Are you sure you want to delete this booking? This cannot be undone.',
     editNotePrompt:"Explain to the employee what needs to be fixed (optional):", editNoteLabel:"Accountant's note",
     groupByBranch:'Group by: Branch', groupByEmployee:'Group by: Employee', searchPlaceholder:'Search by name...',
-    paySpan:'Card / network (SPAN)', spanFeeNote:'An 8% network fee is deducted automatically once the accountant approves.',
+    paySpan:'Card / network (SPAN)', spanFeeNote:'A 0.8% (mada) network fee is deducted automatically once the accountant approves.',
     pendingVerifyTitle:'Transfers & card payments awaiting confirmation', colFee:'Network fee', employeeMustHaveBranch:'A branch must be selected for the employee.',
+    navTransfers:'Bank Transfers', subTransfers:'Confirm bank transfers, card network, and Tabby/Tamara payments, with bank shown', verifiedTransfersTitle:'Confirmed transfers (history)', noVerifiedTransfers:'No confirmed transfers yet.',
     verifiedTag:'Confirmed', bankTag:'Bank', paymentPendingNote:'Every booking starts as "pending" and only becomes "paid" once the accountant or admin confirms/approves it — to prevent manipulation.',
     backupTitle:'Data backup', backupNote:'This exports all system data (branches, users, bookings, journal, deposits) as a JSON file you can save on your device. Recommended at least weekly.',
     exportBackupBtn:'⬇️ Export full backup',
@@ -459,7 +461,7 @@ async function verifyPaymentReceived(bookingId, actualAmount){
   }
   const isSpan = b.payment_method==='span';
   const isInstallment = b.payment_method==='installment';
-  const feeRate = isSpan ? 0.08 : isInstallment ? 0.07 : 0;
+  const feeRate = isSpan ? 0.008 : isInstallment ? 0.07 : 0;
   const feeAmount = feeRate>0 ? +(sell*feeRate).toFixed(2) : 0;
   const netToBank = +(sell-feeAmount).toFixed(2);
   const {error} = await sb.from('bookings').update({transfer_verified:true, transfer_verified_by:currentUser()?.id||null, transfer_verified_at:new Date().toISOString(), payment_status:'paid'}).eq('id', bookingId);
@@ -779,6 +781,7 @@ function navItems(){
   const items = [ {route:'dashboard', label:t('navDashboard'), icon:'◆'}, {route:'bookings', label:t('navBookings'), icon:'🎫'},
     {route:'deposits', label:t('navDeposits'), icon:'💰'} ];
   if(canSeeAllBranches()){
+    items.push({route:'transfers', label:t('navTransfers'), icon:'🏦'});
     items.push({route:'ledger', label:t('navLedger'), icon:'≡'});
     items.push({route:'reports', label:t('navReports'), icon:'▤'});
     items.push({route:'reconcile', label:t('navReconcile'), icon:'🔍'});
@@ -867,7 +870,7 @@ function render(){
   document.getElementById('myAccountBtn').onclick = openMyAccountModal;
 
   const routes = { dashboard:renderDashboard, bookings:renderBookings, ledger:renderLedger,
-    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, reconcile:renderReconcile };
+    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile };
   (routes[route]||renderDashboard)();
 }
 
@@ -917,7 +920,7 @@ function renderDashboard(){
   const c = document.getElementById('content');
   c.innerHTML = `
     <div class="kpi-row">
-      <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${money(tt.sales)}</div></div>
+      <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${canSeeSell()?money(tt.sales):moneyOrHidden(0)}</div></div>
       <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${tt.netProfit>=0?'pos':'neg'}">${canSeeOwnProfit()?money(tt.netProfit):moneyOrHidden(0)}</div></div>
       <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${t('kpiCount')}</div><div class="kpi-value">${tt.count}</div></div>
       <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('kpiPendingComm')}</div><div class="kpi-value">${money(tt.pendingCommission)}</div></div>
@@ -1111,7 +1114,7 @@ function bookingsTableHTML(list){
 }
 function totalsKpisHTML(tt){
   return `<div class="kpis">
-      <div class="kpi"><div>${t('kpiSales')}</div><div>${money(tt.sales)}</div></div>
+      <div class="kpi"><div>${t('kpiSales')}</div><div>${canSeeSell()?money(tt.sales):t('hiddenValue')}</div></div>
       ${canSeeOwnProfit()?`<div class="kpi"><div>${t('kpiProfit')}</div><div>${money(tt.netProfit)}</div></div>`:''}
       <div class="kpi"><div>${t('kpiCount')}</div><div>${tt.count}</div></div>
       <div class="kpi"><div>${t('expenseOp')}</div><div>${money(tt.expenses)}</div></div>
@@ -1296,16 +1299,16 @@ function renderLedger(){
     <div class="section-flex">
       <div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('incomeStatement')}</h3></div>
         <table><tbody>
-          <tr><td>${t('incomeSales')}</td><td class="num">${money(tt.sales)}</td></tr>
+          <tr><td>${t('incomeSales')}</td><td class="num">${canSeeSell()?money(tt.sales):moneyOrHidden(0)}</td></tr>
           <tr><td>${t('incomeComm')}</td><td class="num">${money(tt.commission)}</td></tr>
-          <tr><td>${t('expenseCost')}</td><td class="num neg">${moneyOrHidden(tt.cost)}</td></tr>
+          <tr><td>${t('expenseCost')}</td><td class="num neg">${money(tt.cost)}</td></tr>
           <tr><td>${t('expenseOp')}</td><td class="num neg">${money(tt.expenses)}</td></tr>
           <tr style="border-top:2px solid var(--navy);font-weight:700;"><td>${t('netProfit')}</td><td class="num ${tt.netProfit>=0?'pos':'neg'}">${moneyOrHidden(tt.netProfit)}</td></tr>
         </tbody></table>
         ${(isAdmin() && tt.pendingReviewCount>0)?`<div class="note" style="color:#A8722C;">⚠️ ${tt.pendingReviewCount} ${t('pendingReviewTag')} (${money(tt.pendingReviewSales)}) — ${t('reviewCostBtn')}</div>`:''}
       </div>
       <div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('chartOfAccounts')}</h3></div>
-        <table><thead><tr><th>${t('jDesc')}</th><th>${t('colAmount')}</th></tr></thead><tbody>${['accCashOnHand','accBank','accCustomers','accCommRec','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'].map(k=>`<tr><td>${t(k)}</td><td class="num" style="font-weight:600">${k==='accCogs'?moneyOrHidden(accountBalance(k, jrnl)):money(accountBalance(k, jrnl))}</td></tr>`).join('')}</tbody></table>
+        <table><thead><tr><th>${t('jDesc')}</th><th>${t('colAmount')}</th></tr></thead><tbody>${['accCashOnHand','accBank','accCustomers','accCommRec','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'].map(k=>`<tr><td>${t(k)}</td><td class="num" style="font-weight:600">${k==='accSalesRev'?moneyOrHidden(accountBalance(k, jrnl)):money(accountBalance(k, jrnl))}</td></tr>`).join('')}</tbody></table>
       </div>
     </div>
     <div class="panel">
@@ -1459,7 +1462,7 @@ function renderReports(){
       </div>
       ${rows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;">
       <table><thead><tr><th>${nameHeader}</th>${groupBy==='employee'?`<th>${t('colUserBranch')}</th>`:''}<th>${t('colBookCount')}</th><th>${t('colSalesTotal')}</th><th>${t('colCostTotal')}</th><th>${t('colCommTotal')}</th>${groupBy==='branch'?`<th>${t('colExpTotal')}</th>`:''}<th>${t('colNetProfitCol')}</th><th>${t('colMargin')}</th></tr></thead>
-        <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td class="num">${r.count}</td><td class="num">${money(r.sales)}</td><td class="num">${moneyOrHidden(r.cost)}</td>
+        <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td class="num">${r.count}</td><td class="num">${canSeeSell()?money(r.sales):moneyOrHidden(0)}</td><td class="num">${money(r.cost)}</td>
           <td class="num">${money(r.commission)}</td>${groupBy==='branch'?`<td class="num">${money(r.expenses)}</td>`:''}<td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${moneyOrHidden(r.netProfit)}</td><td class="num">${canSeeProfit()?r.margin.toFixed(1)+'%':t('hiddenValue')}</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
   document.getElementById('reportGroupBySel').onchange = (e)=>{ reportGroupBy = e.target.value; renderReports(); };
@@ -1467,6 +1470,29 @@ function renderReports(){
 }
 
 /* ===================== CASH DEPOSITS PAGE ===================== */
+/* ===================== BANK TRANSFERS PAGE ===================== */
+function renderTransfers(){
+  document.getElementById('pageSub').textContent = t('subTransfers');
+  const pendingTransfers = bookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && !b.transfer_verified);
+  const verifiedTransfers = bookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && b.transfer_verified);
+  let html = `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingVerifyTitle')}</h3></div>
+      ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${t('colFee')}</th><th></th></tr></thead>
+      <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td>
+        <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payTransfer')}</td>
+        <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
+        <td class="num">${canSeeSell()?money(b.sell):moneyOrHidden(0)}</td>
+        <td class="num">${b.payment_method==='span'?money(+(Number(b.sell)*0.008).toFixed(2)):b.payment_method==='installment'?money(+(Number(b.sell)*0.07).toFixed(2)):'—'}</td>
+        <td><button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('verifiedTransfersTitle')}</h3></div>
+      ${verifiedTransfers.length===0?`<div class="empty">${t('noVerifiedTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th></tr></thead>
+      <tbody>${verifiedTransfers.slice(0,50).map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td>
+        <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payTransfer')}</td>
+        <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
+        <td class="num">${canSeeSell()?money(b.sell):moneyOrHidden(0)}</td></tr>`).join('')}</tbody></table></div>`}
+    </div>`;
+  document.getElementById('content').innerHTML = html;
+}
 function renderDeposits(){
   document.getElementById('pageSub').textContent = t('subDeposits');
   const u = currentUser();
@@ -1482,18 +1508,10 @@ function renderDeposits(){
       ${rows.length===0?`<div class="empty">${t('emptyBranches')}</div>`:`<table><thead><tr><th>${t('colBranchName')}</th><th>${t('colAmount')}</th></tr></thead>
       <tbody>${rows.map(r=>`<tr><td>${r.name}</td><td class="num" style="font-weight:600">${money(r.bal)}</td></tr>`).join('')}</tbody></table>`}
     </div>`;
-    const pendingTransfers = bookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && !b.transfer_verified);
-    html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingVerifyTitle')}</h3></div>
-      ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('colAmount')}</th><th>${t('colFee')}</th><th></th></tr></thead>
-      <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td>
-        <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?`${t('payInstallment')} (${bankLabel(b.bank_name)})`:`${t('payTransfer')} (${bankLabel(b.bank_name)})`}</td><td class="num">${money(b.sell)}</td>
-        <td class="num">${b.payment_method==='span'?money(+(Number(b.sell)*0.08).toFixed(2)):b.payment_method==='installment'?money(+(Number(b.sell)*0.07).toFixed(2)):'—'}</td>
-        <td><button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
-    </div>`;
     const pendingRefunds = bookings.filter(b=>b.refund_status==='pending');
     html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingRefundsTitle')}</h3></div>
       ${pendingRefunds.length===0?`<div class="empty">${t('noPendingRefunds')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colSell')}</th><th>${t('colReceipt')}</th><th></th></tr></thead>
-      <tbody>${pendingRefunds.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td><td class="num">${money(b.sell)}</td>
+      <tbody>${pendingRefunds.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td><td class="num">${canSeeSell()?money(b.sell):moneyOrHidden(0)}</td>
         <td><a href="${b.refund_receipt_url}" target="_blank">${t('viewReceipt')}</a></td>
         <td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveRefund('${b.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectRefund('${b.id}')">${t('reject')}</button></td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
@@ -1606,7 +1624,8 @@ window.uiRejectDeposit = async function(id){
 window.uiVerifyTransfer = async function(id){
   const b = bookings.find(x=>x.id===id);
   if(!b) return;
-  const val = prompt(`${t('actualAmountPrompt')} (${t('fieldSellPrice')}: ${money(b.sell)})`, String(b.sell));
+  const hint = canSeeSell() ? ` (${t('fieldSellPrice')}: ${money(b.sell)})` : '';
+  const val = prompt(`${t('actualAmountPrompt')}${hint}`, canSeeSell()?String(b.sell):'');
   if(val===null) return;
   const amt = Number(val);
   if(isNaN(amt) || amt<0){ alert(t('invalidNumber')); return; }
