@@ -232,6 +232,8 @@ const T = {
     sameAccountError:'لا يمكن اختيار نفس الحساب للمدين والدائن.',
     supplierSettledTag:'تم الدفع للمورد', supplierUnsettledTag:'مستحق للمورد', settleSupplierBtn:'تسوية المورد',
     supplierBalancesTitle:'أرصدة الموردين', colSupplier:'المورد', colOwed:'مستحق (غير مدفوع)', colSettled:'مدفوع',
+    supplierPayBtn:'+ دفعة لمورد', modalSupplierPay:'تسجيل دفعة لمورد', noUnsettledSupplier:'لا توجد مستحقات غير مدفوعة لأي مورد.',
+    registerPaymentBtn:'تسجيل الدفعة', selectedTotalLabel:'إجمالي المحدد',
     costReviewPlaceholder:'يعبّئه الأدمن لاحقًا', employeeCostNote:'سجّل سعر التذكرة المحصّل من العميل فقط — الأدمن يدخل التكلفة الحقيقية لاحقًا ويُحسب الربح تلقائيًا.',
     profitEntryNote:'التكلفة الحقيقية (System Fare) تُحسب تلقائيًا (سعر البيع − الربح) وتظهر للمحاسب للمطابقة مع المورد. الربح نفسه يبقى خاص بينك والأدمن فقط.',
     costReviewNote:'⚠️ هذا الحجز بانتظار تدقيق التكلفة من المحاسب — الربح غير معروف بعد.',
@@ -243,6 +245,9 @@ const T = {
     reconcileEmptyFile:'الملف فاضي أو غير مقروء.', reconcileParseError:'تعذر قراءة الملف، تأكد إنه إكسل أو CSV صحيح.',
     reconcileTotalRows:'إجمالي صفوف الملف', reconcileMatched:'مطابقة (موجودة بالنظام)', reconcileMissing:'غير موجودة بالنظام',
     reconcileAllMatched:'✅ كل التذاكر بالملف موجودة بالنظام — ما فيه نواقص.', reconcileMissingNote:'هذي التذاكر موجودة بالتقرير الخارجي بس غير مسجّلة بالنظام — يحتمل الموظف نسيها.',
+    reconcileFiltersTitle:'فلترة البحث قبل المطابقة', allSuppliersOpt:'كل الموردين', quickToday:'اليوم', quickMonth:'هذا الشهر', quickYear:'هذه السنة',
+    matchingTicketsCount:'عدد التذاكر المطابقة للفلتر', reconcileModeLabel:'طريقة المطابقة', reconcileModeTicket:'برقم التذكرة', reconcileModeAmountName:'بالمبلغ + اسم العميل',
+    reconcileAmountColLabel:'عمود المبلغ', reconcileNameColLabel:'عمود اسم العميل',
     payInstallment:'تابي/تمارا (تقسيط)', fieldInstallmentProvider:'المزود', installmentFeeNote:'يُخصم 7% رسوم تابي/تمارا تلقائيًا من المبلغ عند اعتماد المحاسب.',
     actualAmountPrompt:'أدخل المبلغ الفعلي اللي دخل البنك (لو مختلف عن سعر التذكرة، السعر يُصحَّح تلقائيًا):',
     refundedTag:'تم الرفند', refundPendingTag:'طلب رفند قيد المراجعة', refundRejectedTag:'رفض طلب الرفند', requestRefundBtn:'طلب رفند',
@@ -349,6 +354,8 @@ const T = {
     sameAccountError:'You cannot pick the same account for both debit and credit.',
     supplierSettledTag:'Paid to supplier', supplierUnsettledTag:'Owed to supplier', settleSupplierBtn:'Settle supplier',
     supplierBalancesTitle:'Supplier balances', colSupplier:'Supplier', colOwed:'Owed (unpaid)', colSettled:'Paid',
+    supplierPayBtn:'+ Supplier payment', modalSupplierPay:'Register supplier payment', noUnsettledSupplier:'No unpaid balances for any supplier.',
+    registerPaymentBtn:'Register payment', selectedTotalLabel:'Selected total',
     costReviewPlaceholder:'Filled in later by the admin', employeeCostNote:'Only record the ticket price charged to the customer — the admin will enter the real cost later and profit is calculated automatically.',
     profitEntryNote:'The real cost (System Fare) is auto-calculated (sell price − profit) and shown to the accountant for supplier reconciliation. The profit itself stays private between you and the admin only.',
     costReviewNote:'⚠️ This booking is awaiting cost review by the accountant — profit is not known yet.',
@@ -360,6 +367,9 @@ const T = {
     reconcileEmptyFile:'The file is empty or unreadable.', reconcileParseError:'Could not read the file, make sure it is a valid Excel or CSV file.',
     reconcileTotalRows:'Total file rows', reconcileMatched:'Matched (found in system)', reconcileMissing:'Not found in system',
     reconcileAllMatched:'✅ Every ticket in the file exists in the system — nothing missing.', reconcileMissingNote:'These tickets exist in the external report but are not recorded in the system — the employee may have forgotten them.',
+    reconcileFiltersTitle:'Search filters before matching', allSuppliersOpt:'All suppliers', quickToday:'Today', quickMonth:'This month', quickYear:'This year',
+    matchingTicketsCount:'Tickets matching the filter', reconcileModeLabel:'Matching method', reconcileModeTicket:'By ticket number', reconcileModeAmountName:'By amount + customer name',
+    reconcileAmountColLabel:'Amount column', reconcileNameColLabel:'Customer name column',
     payInstallment:'Tabby/Tamara (BNPL)', fieldInstallmentProvider:'Provider', installmentFeeNote:'A 7% Tabby/Tamara fee is deducted automatically once the accountant approves.',
     actualAmountPrompt:'Enter the actual amount that landed in the bank (if different from the ticket price, the price is corrected automatically):',
     refundedTag:'Refunded', refundPendingTag:'Refund request pending review', refundRejectedTag:'Refund request rejected', requestRefundBtn:'Request refund',
@@ -474,9 +484,6 @@ async function verifyPaymentReceived(bookingId, actualAmount){
   const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
   if(jErr) throw jErr;
   journal.unshift(...jIns.reverse());
-  if(b.cost_reviewed && Number(b.cost)>0 && !b.supplier_settled){
-    await settleSupplierPayment(bookingId);
-  }
 }
 async function reviewBookingCost(bookingId, netCost){
   const b = bookings.find(x=>x.id===bookingId);
@@ -583,6 +590,21 @@ function supplierBalances(list){
     else map[b.supplier].owed += Number(b.cost)||0;
   });
   return map;
+}
+async function settleSupplierBulk(bookingIds){
+  const selected = bookings.filter(b=>bookingIds.includes(b.id));
+  if(selected.length===0) return;
+  const total = +selected.reduce((s,b)=>s+Number(b.cost||0),0).toFixed(2);
+  const supplierName = selected[0].supplier||'-';
+  const sameBranch = selected.every(b=>b.branch_id===selected[0].branch_id);
+  const branchId = sameBranch ? selected[0].branch_id : null;
+  const {error} = await sb.from('bookings').update({supplier_settled:true, supplier_settled_by:currentUser()?.id||null, supplier_settled_at:new Date().toISOString()}).in('id', bookingIds);
+  if(error) throw error;
+  bookingIds.forEach(id=>{ const b = bookings.find(x=>x.id===id); if(b) b.supplier_settled=true; });
+  const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:branchId,
+    desc_key:'jSupplierBulkPay', desc_args:[supplierName, bookingIds.length], debit_key:'accSuppliers', credit_key:'accBank', amount:total }).select().single();
+  if(jErr) throw jErr;
+  journal.unshift(jIns);
 }
 
 /* ===================== HELPERS ===================== */
@@ -713,6 +735,7 @@ function journalDesc(j){
     jDeposit:{ar:(a)=>`إيداع كاش الفرع لحساب ${a[0]}`, en:(a)=>`Branch cash deposit to ${a[0]} account`},
     jManual:{ar:(a)=>`قيد يدوي: ${a[0]}`, en:(a)=>`Manual entry: ${a[0]}`},
     jSupplierPay:{ar:(a)=>`دفعة لمورد ${a[0]} - حجز #${a[1]}`, en:(a)=>`Payment to supplier ${a[0]} - booking #${a[1]}`},
+    jSupplierBulkPay:{ar:(a)=>`دفعة مجمّعة لمورد ${a[0]} (${a[1]} تذكرة)`, en:(a)=>`Bulk payment to supplier ${a[0]} (${a[1]} tickets)`},
     jRefund:{ar:(a)=>`عكس قيود بسبب رفند حجز #${a[0]}`, en:(a)=>`Reversal due to refund of booking #${a[0]}`} };
   const tpl = templates[j.desc_key];
   return tpl ? tpl[lang](j.desc_args||[]) : '';
@@ -1312,7 +1335,7 @@ function renderLedger(){
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3 class="panel-title">${t('supplierBalancesTitle')}</h3></div>
+      <div class="panel-head"><h3 class="panel-title">${t('supplierBalancesTitle')}</h3><button class="btn btn-primary btn-sm" id="supplierPayBtn">${t('supplierPayBtn')}</button></div>
       ${(()=>{ const map = supplierBalances(list); const names = Object.keys(map); return names.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colSupplier')}</th><th>${t('colOwed')}</th><th>${t('colSettled')}</th></tr></thead>
       <tbody>${names.map(n=>`<tr><td>${n}</td><td class="num neg" style="font-weight:600">${money(map[n].owed)}</td><td class="num">${money(map[n].settled)}</td></tr>`).join('')}</tbody></table></div>`; })()}
     </div>
@@ -1331,6 +1354,49 @@ function renderLedger(){
     </div>`;
   document.getElementById('addExpenseBtn').onclick = openExpenseModal;
   document.getElementById('addManualJournalBtn').onclick = openManualJournalModal;
+  document.getElementById('supplierPayBtn').onclick = openSupplierPaymentModal;
+}
+function openSupplierPaymentModal(){
+  const unsettled = bookings.filter(b=>b.supplier && Number(b.cost)>0 && !b.supplier_settled);
+  const suppliers = [...new Set(unsettled.map(b=>b.supplier))];
+  showModal(`
+    <div class="modal-head"><h3>${t('modalSupplierPay')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    ${suppliers.length===0?`<div class="empty">${t('noUnsettledSupplier')}</div>`:`
+    <div class="field"><label>${t('colSupplier')}</label><select id="supplierPaySel">
+      ${suppliers.map(s=>`<option value="${s}">${s}</option>`).join('')}
+    </select></div>
+    <div id="supplierPayListBox" style="margin-top:10px;"></div>
+    <div id="supplierPayErrorBox"></div>
+    <div style="margin-top:16px;display:flex;gap:10px;">
+      <button class="btn btn-primary" id="supplierPaySubmitBtn" disabled>${t('registerPaymentBtn')}</button>
+      <button class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+    </div>`}
+  `);
+  if(suppliers.length===0) return;
+  const renderList = (supplierName)=>{
+    const list = unsettled.filter(b=>b.supplier===supplierName).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+    const box = document.getElementById('supplierPayListBox');
+    box.innerHTML = `<div style="overflow-x:auto;"><table><thead><tr><th></th><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colAmount')}</th></tr></thead>
+      <tbody>${list.map(b=>`<tr><td><input type="checkbox" class="supPayChk" data-id="${b.id}" data-amt="${b.cost}" style="width:auto;"></td>
+        <td class="num">${b.booking_no}</td><td>${b.date}</td><td>${b.customer}</td><td>${b.ticket_no||'—'}</td><td class="num">${money(b.cost)}</td></tr>`).join('')}</tbody></table></div>
+      <div style="margin-top:10px;font-weight:700;">${t('selectedTotalLabel')}: <span id="supplierPayTotal">${money(0)}</span></div>`;
+    box.querySelectorAll('.supPayChk').forEach(chk=>{
+      chk.onchange = ()=>{
+        const checked = [...box.querySelectorAll('.supPayChk:checked')];
+        const total = checked.reduce((s,c)=>s+Number(c.dataset.amt||0),0);
+        document.getElementById('supplierPayTotal').textContent = money(total);
+        document.getElementById('supplierPaySubmitBtn').disabled = checked.length===0;
+      };
+    });
+  };
+  renderList(suppliers[0]);
+  document.getElementById('supplierPaySel').onchange = (e)=>renderList(e.target.value);
+  document.getElementById('supplierPaySubmitBtn').onclick = async ()=>{
+    const btn = document.getElementById('supplierPaySubmitBtn'); btn.disabled=true; btn.textContent=t('saving');
+    const ids = [...document.querySelectorAll('.supPayChk:checked')].map(c=>c.dataset.id);
+    try{ await settleSupplierBulk(ids); closeModal(); render(); }
+    catch(err){ console.error(err); document.getElementById('supplierPayErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`; btn.disabled=false; btn.textContent=t('registerPaymentBtn'); }
+  };
 }
 function openManualJournalModal(){
   const u = currentUser();
@@ -1795,21 +1861,88 @@ async function exportFullBackup(){
 /* ===================== RECONCILIATION ===================== */
 let reconcileRows = [];
 let reconcileHeaders = [];
+function reconcileFilterOptions(){
+  const suppliers = [...new Set(bookings.map(b=>b.supplier).filter(Boolean))];
+  return { suppliers };
+}
+function getReconcileFilteredBookings(){
+  const supplier = document.getElementById('rfSupplier')?.value || 'all';
+  const branchId = document.getElementById('rfBranch')?.value || 'all';
+  const employeeId = document.getElementById('rfEmployee')?.value || 'all';
+  const dateFrom = document.getElementById('rfDateFrom')?.value || null;
+  const dateTo = document.getElementById('rfDateTo')?.value || null;
+  return bookings.filter(b=>
+    (supplier==='all' || b.supplier===supplier) &&
+    (branchId==='all' || b.branch_id===branchId) &&
+    (employeeId==='all' || b.created_by===employeeId) &&
+    (!dateFrom || b.date>=dateFrom) && (!dateTo || b.date<=dateTo));
+}
+function updateReconcileCount(){
+  const n = getReconcileFilteredBookings().length;
+  const el = document.getElementById('rfCount');
+  if(el) el.textContent = n;
+}
+function setReconcileQuickRange(kind){
+  const today = todayStr();
+  let from = today;
+  if(kind==='month') from = today.slice(0,8)+'01';
+  else if(kind==='year') from = today.slice(0,4)+'-01-01';
+  document.getElementById('rfDateFrom').value = from;
+  document.getElementById('rfDateTo').value = today;
+  updateReconcileCount();
+}
 function renderReconcile(){
   document.getElementById('pageSub').textContent = t('subReconcile');
+  const {suppliers} = reconcileFilterOptions();
   document.getElementById('content').innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('reconcileFiltersTitle')}</h3></div>
+      <div class="grid-2">
+        <div class="field"><label>${t('colSupplier')}</label><select id="rfSupplier"><option value="all">${t('allSuppliersOpt')}</option>${suppliers.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldBranch')}</label><select id="rfBranch"><option value="all">${t('allBranches')}</option>${branches.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldEmployeeFilter')}</label><select id="rfEmployee"><option value="all">${t('allEmployeesOpt')}</option>${users.map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}</select></div>
+        <div class="field"><label></label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-ghost btn-sm" id="rfToday">${t('quickToday')}</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="rfMonth">${t('quickMonth')}</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="rfYear">${t('quickYear')}</button>
+          </div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" id="rfDateFrom"></div>
+        <div class="field"><label>${t('fieldDateTo')}</label><input type="date" id="rfDateTo" value="${todayStr()}"></div>
+      </div>
+      <div class="note" style="font-weight:700;">${t('matchingTicketsCount')}: <span id="rfCount">${bookings.length}</span></div>
+    </div>
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('reconcileTitle')}</h3></div>
       <p class="note">${t('reconcileNote')}</p>
       <div class="field"><label>${t('reconcileFileLabel')}</label><input type="file" id="reconcileFileInput" accept=".xlsx,.xls,.csv"></div>
       <div id="reconcileColumnBox" style="display:none;margin-top:10px;">
-        <div class="grid-2">
+        <div class="field"><label>${t('reconcileModeLabel')}</label><select id="reconcileModeSel">
+          <option value="ticket">${t('reconcileModeTicket')}</option>
+          <option value="amountName">${t('reconcileModeAmountName')}</option>
+        </select></div>
+        <div id="reconcileModeTicketBox" class="grid-2">
           <div class="field"><label>${t('reconcileColLabel')}</label><select id="reconcileColSel"></select></div>
-          <div class="field" style="display:flex;align-items:flex-end;"><button class="btn btn-primary btn-sm" id="reconcileRunBtn">${t('reconcileRunBtn')}</button></div>
         </div>
+        <div id="reconcileModeAmountNameBox" class="grid-2" style="display:none;">
+          <div class="field"><label>${t('reconcileAmountColLabel')}</label><select id="reconcileAmountColSel"></select></div>
+          <div class="field"><label>${t('reconcileNameColLabel')}</label><select id="reconcileNameColSel"></select></div>
+        </div>
+        <button class="btn btn-primary btn-sm" id="reconcileRunBtn" style="margin-top:8px;">${t('reconcileRunBtn')}</button>
       </div>
       <div id="reconcileResultBox" style="margin-top:14px;"></div>
     </div>`;
+  ['rfSupplier','rfBranch','rfEmployee','rfDateFrom','rfDateTo'].forEach(id=>{
+    document.getElementById(id).onchange = updateReconcileCount;
+  });
+  document.getElementById('rfToday').onclick = ()=>setReconcileQuickRange('today');
+  document.getElementById('rfMonth').onclick = ()=>setReconcileQuickRange('month');
+  document.getElementById('rfYear').onclick = ()=>setReconcileQuickRange('year');
   document.getElementById('reconcileFileInput').onchange = (e)=>{
     const file = e.target.files[0];
     if(!file) return;
@@ -1822,27 +1955,53 @@ function renderReconcile(){
         if(rows.length===0){ alert(t('reconcileEmptyFile')); return; }
         reconcileRows = rows;
         reconcileHeaders = Object.keys(rows[0]);
-        const sel = document.getElementById('reconcileColSel');
-        sel.innerHTML = reconcileHeaders.map(h=>`<option value="${h}">${h}</option>`).join('');
+        const opts = reconcileHeaders.map(h=>`<option value="${h}">${h}</option>`).join('');
+        document.getElementById('reconcileColSel').innerHTML = opts;
+        document.getElementById('reconcileAmountColSel').innerHTML = opts;
+        document.getElementById('reconcileNameColSel').innerHTML = opts;
         document.getElementById('reconcileColumnBox').style.display = '';
         document.getElementById('reconcileResultBox').innerHTML = '';
       }catch(err){ console.error(err); alert(t('reconcileParseError')); }
     };
     reader.readAsBinaryString(file);
   };
+  document.getElementById('reconcileModeSel').onchange = (e)=>{
+    const isAmountName = e.target.value==='amountName';
+    document.getElementById('reconcileModeTicketBox').style.display = isAmountName?'none':'';
+    document.getElementById('reconcileModeAmountNameBox').style.display = isAmountName?'':'none';
+  };
   document.getElementById('reconcileRunBtn').onclick = ()=>{
-    const col = document.getElementById('reconcileColSel').value;
-    const systemTickets = new Set(bookings.filter(b=>b.ticket_no).map(b=>String(b.ticket_no).trim().toUpperCase()));
+    const mode = document.getElementById('reconcileModeSel').value;
+    const scoped = getReconcileFilteredBookings();
     const missing = [];
     let matched = 0;
-    reconcileRows.forEach(row=>{
-      const raw = row[col];
-      if(raw===undefined || raw===null || String(raw).trim()==='') return;
-      const val = String(raw).trim().toUpperCase();
-      if(systemTickets.has(val)) matched++;
-      else missing.push(row);
-    });
-    const otherCols = reconcileHeaders.filter(h=>h!==col).slice(0,4);
+    let col, otherCols;
+    if(mode==='ticket'){
+      col = document.getElementById('reconcileColSel').value;
+      const systemTickets = new Set(scoped.filter(b=>b.ticket_no).map(b=>String(b.ticket_no).trim().toUpperCase()));
+      reconcileRows.forEach(row=>{
+        const raw = row[col];
+        if(raw===undefined || raw===null || String(raw).trim()==='') return;
+        const val = String(raw).trim().toUpperCase();
+        if(systemTickets.has(val)) matched++;
+        else missing.push(row);
+      });
+      otherCols = reconcileHeaders.filter(h=>h!==col).slice(0,4);
+    }else{
+      const amtCol = document.getElementById('reconcileAmountColSel').value;
+      const nameCol = document.getElementById('reconcileNameColSel').value;
+      col = nameCol;
+      const systemPairs = scoped.map(b=>({name:String(b.customer||'').trim().toUpperCase(), amt:+Number(b.sell||0).toFixed(2), emp:userName(b.created_by)}));
+      reconcileRows.forEach(row=>{
+        const rawName = row[nameCol], rawAmt = row[amtCol];
+        if((rawName===undefined||String(rawName).trim()==='') && (rawAmt===undefined||String(rawAmt).trim()==='')) return;
+        const name = String(rawName||'').trim().toUpperCase();
+        const amt = +Number(rawAmt||0).toFixed(2);
+        const hit = systemPairs.find(p=>p.name===name && Math.abs(p.amt-amt)<0.01);
+        if(hit) matched++; else missing.push(row);
+      });
+      otherCols = reconcileHeaders.filter(h=>h!==nameCol && h!==amtCol).slice(0,4);
+    }
     const box = document.getElementById('reconcileResultBox');
     box.innerHTML = `
       <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:14px;">
