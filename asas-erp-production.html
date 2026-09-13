@@ -247,7 +247,11 @@ const T = {
     modalRequestRefund:'طلب رفند', refundRequestNote:'أرفق نموذج/إيصال الرفند (من شركة الطيران أو المورد) ليقدَّم للمحاسب للمراجعة.',
     fieldRefundReceipt:'نموذج/إيصال الرفند', fieldRefundNote:'ملاحظة (اختياري)', refundNotePlaceholder:'سبب الرفند...',
     submitRefundBtn:'إرسال طلب الرفند', pendingRefundsTitle:'طلبات الرفند بانتظار المراجعة', noPendingRefunds:'لا توجد طلبات رفند معلّقة.',
-    confirmApproveRefund:'اعتماد الرفند يعكس كل القيود المحاسبية الخاصة بهذا الحجز (البيع، التكلفة، التحصيل). هل أنت متأكد؟'
+    confirmApproveRefund:'اعتماد الرفند يعكس كل القيود المحاسبية الخاصة بهذا الحجز (البيع، التكلفة، التحصيل). هل أنت متأكد؟',
+    profitHandoverBtn:'📋 تسليم الربح', modalProfitHandover:'تقرير وتسليم الربح', previewBtn:'معاينة', noEligibleProfit:'لا توجد تذاكر مؤهلة (مدقّقة التكلفة) بهذي الفترة.',
+    totalProfitLabel:'إجمالي الربح المسلَّم', submitHandoverBtn:'تسليم للأدمن', myHandoverHistory:'سجل تسليماتي',
+    profitHandoversTitle:'تسليمات الربح من الموظفين', noPendingHandovers:'لا توجد تسليمات معلّقة.',
+    confirmApproveHandover:'اعتماد هذا يعني إنك استلمت الربح فعليًا من الموظف. هل أنت متأكد؟'
   },
   en: {
     agencyAr:'أساس للسفر والسياحة', agencyEn:'ASAS TRAVEL & TOURISM',
@@ -358,7 +362,11 @@ const T = {
     modalRequestRefund:'Request refund', refundRequestNote:'Attach the refund form/receipt (from the airline or supplier) to submit it for accountant review.',
     fieldRefundReceipt:'Refund form/receipt', fieldRefundNote:'Note (optional)', refundNotePlaceholder:'Reason for refund...',
     submitRefundBtn:'Submit refund request', pendingRefundsTitle:'Refund requests awaiting review', noPendingRefunds:'No pending refund requests.',
-    confirmApproveRefund:'Approving the refund will reverse all ledger entries for this booking (sale, cost, collection). Are you sure?'
+    confirmApproveRefund:'Approving the refund will reverse all ledger entries for this booking (sale, cost, collection). Are you sure?',
+    profitHandoverBtn:'📋 Hand over profit', modalProfitHandover:'Profit report & handover', previewBtn:'Preview', noEligibleProfit:'No eligible (cost-reviewed) tickets in this period.',
+    totalProfitLabel:'Total profit handed over', submitHandoverBtn:'Submit to admin', myHandoverHistory:'My handover history',
+    profitHandoversTitle:'Profit handovers from employees', noPendingHandovers:'No pending handovers.',
+    confirmApproveHandover:'Approving this means you actually received the profit cash from the employee. Are you sure?'
   }
 };
 let lang = localStorage.getItem('asas_lang') || 'ar';
@@ -371,27 +379,31 @@ function setSession(u){ localStorage.setItem('asas_session', JSON.stringify(u));
 function clearSession(){ localStorage.removeItem('asas_session'); }
 
 /* ===================== LOCAL CACHE ===================== */
-let branches = [], users = [], bookings = [], journal = [], manualExpenses = [], deposits = [];
+let branches = [], users = [], bookings = [], journal = [], manualExpenses = [], deposits = [], profitHandovers = [];
 let route = 'dashboard';
 let branchFilter = 'all';
 
 async function fetchAll(){
-  const [b, u, bk, jr, ex, dp] = await Promise.all([
+  const [b, u, bk, jr, ex, dp, ph] = await Promise.all([
     sb.from('branches').select('*').order('created_at'),
     sb.from('app_users').select('id,name,username,role,branch_id').order('created_at'),
     sb.from('bookings').select('*').order('created_at', {ascending:false}),
     sb.from('journal').select('*').order('created_at', {ascending:false}),
     sb.from('manual_expenses').select('*').order('created_at', {ascending:false}),
-    sb.from('cash_deposits').select('*').order('created_at', {ascending:false})
+    sb.from('cash_deposits').select('*').order('created_at', {ascending:false}),
+    sb.from('profit_handovers').select('*').order('created_at', {ascending:false})
   ]);
-  if(b.error||u.error||bk.error||jr.error||ex.error||dp.error) throw (b.error||u.error||bk.error||jr.error||ex.error||dp.error);
-  branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[]; deposits = dp.data||[];
+  if(b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error) throw (b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error);
+  branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[]; deposits = dp.data||[]; profitHandovers = ph.data||[];
 }
 /* ===================== CASH DEPOSITS ===================== */
 function branchCashOnHand(branchId){
   const collectedCash = bookings.filter(b=>b.branch_id===branchId && b.payment_method==='cash').reduce((s,b)=>s+Number(b.sell||0),0);
   const approvedDeposits = deposits.filter(d=>d.branch_id===branchId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
-  return +(collectedCash-approvedDeposits).toFixed(2);
+  const approvedHandoverIds = new Set();
+  profitHandovers.filter(h=>h.status==='approved' && h.branch_id===branchId).forEach(h=>(h.booking_ids||[]).forEach(id=>approvedHandoverIds.add(id)));
+  const handedOverCashProfit = bookings.filter(b=>b.branch_id===branchId && b.payment_method==='cash' && approvedHandoverIds.has(b.id)).reduce((s,b)=>s+Number(b.profit_amount||0),0);
+  return +(collectedCash-approvedDeposits-handedOverCashProfit).toFixed(2);
 }
 async function uploadReceiptFile(file){
   const extMatch = /\.([a-zA-Z0-9]+)$/.exec(file.name||'');
@@ -484,6 +496,41 @@ async function reviewBookingCost(bookingId, netCost){
       journal.unshift(ins);
     }
   }
+}
+/* ===================== PROFIT HANDOVER (employee <-> admin only) ===================== */
+function eligibleProfitBookings(employeeId, dateFrom, dateTo){
+  const lockedIds = new Set();
+  profitHandovers.filter(h=>h.status==='pending'||h.status==='approved').forEach(h=>(h.booking_ids||[]).forEach(id=>lockedIds.add(id)));
+  return bookings.filter(b=> b.created_by===employeeId && b.cost_reviewed && !b.refunded && !lockedIds.has(b.id)
+    && (!dateFrom || b.date>=dateFrom) && (!dateTo || b.date<=dateTo));
+}
+async function submitProfitHandover(dateFrom, dateTo, list){
+  const u = currentUser();
+  const totalProfit = +list.reduce((s,b)=>s+Number(b.profit_amount||0),0).toFixed(2);
+  const {data:ins, error} = await sb.from('profit_handovers').insert({
+    branch_id:u.branch_id, employee_id:u.id, date_from:dateFrom||null, date_to:dateTo||null,
+    total_profit:totalProfit, booking_ids:list.map(b=>b.id), status:'pending'
+  }).select().single();
+  if(error) throw error;
+  profitHandovers.unshift(ins);
+  return ins;
+}
+async function approveProfitHandover(id){
+  const h = profitHandovers.find(x=>x.id===id);
+  if(!h) return;
+  const {error} = await sb.from('profit_handovers').update({status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
+  if(error) throw error;
+  h.status='approved';
+  if((h.booking_ids||[]).length>0){
+    const {error:e2} = await sb.from('bookings').update({profit_handed_over:true}).in('id', h.booking_ids);
+    if(e2) throw e2;
+    h.booking_ids.forEach(bid=>{ const b = bookings.find(x=>x.id===bid); if(b) b.profit_handed_over=true; });
+  }
+}
+async function rejectProfitHandover(id, note){
+  const {error} = await sb.from('profit_handovers').update({status:'rejected', notes:note||null, reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
+  if(error) throw error;
+  const h = profitHandovers.find(x=>x.id===id); if(h){ h.status='rejected'; h.notes=note||null; }
 }
 async function requestRefund(bookingId, file, note){
   const receiptUrl = await uploadReceiptFile(file);
@@ -928,16 +975,88 @@ function branchBarsHTML(metric){
 function renderBookings(){
   document.getElementById('pageSub').textContent = t('subBookings');
   const mode = canSeeAllBranches() ? 'manage' : 'employee';
+  const u = currentUser();
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('bookingsLog')}</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="printReportBtn">${t('printReport')}</button>
+        ${u.role==='employee'?`<button class="btn btn-gold btn-sm" id="profitHandoverBtn">${t('profitHandoverBtn')}</button>`:''}
         ${!isAccountant()?`<button class="btn btn-primary btn-sm" id="addBookingBtn">${t('addBookingFull')}</button>`:''}
       </div></div>
       ${bookingsTable(filteredBookings(), mode)}
-    </div>`;
+    </div>
+    ${u.role==='employee'?myProfitHandoverHistoryHTML(u.id):''}`;
   if(document.getElementById('addBookingBtn')) document.getElementById('addBookingBtn').onclick = ()=>openBookingModal();
   document.getElementById('printReportBtn').onclick = openPrintReportModal;
+  if(document.getElementById('profitHandoverBtn')) document.getElementById('profitHandoverBtn').onclick = openProfitHandoverModal;
+}
+function myProfitHandoverHistoryHTML(employeeId){
+  const mine = profitHandovers.filter(h=>h.employee_id===employeeId);
+  if(mine.length===0) return '';
+  return `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('myHandoverHistory')}</h3></div>
+    <div style="overflow-x:auto;"><table><thead><tr><th>${t('fieldDateFrom')}</th><th>${t('fieldDateTo')}</th><th>${t('colAmount')}</th><th>${t('colDepositStatus')}</th></tr></thead>
+    <tbody>${mine.map(h=>`<tr><td>${h.date_from||'—'}</td><td>${h.date_to||'—'}</td><td class="num" style="font-weight:600">${money(h.total_profit)}</td>
+      <td><span class="tag ${h.status==='approved'?'collected':h.status==='rejected'?'rejected':'pending'}">${h.status==='approved'?t('depositApproved'):h.status==='rejected'?t('depositRejected'):t('depositPending')}</span></td></tr>`).join('')}</tbody></table></div>
+  </div>`;
+}
+function openProfitHandoverModal(){
+  const u = currentUser();
+  showModal(`
+    <div class="modal-head"><h3>${t('modalProfitHandover')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <div class="grid-2">
+      <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" id="phDateFrom"></div>
+      <div class="field"><label>${t('fieldDateTo')}</label><input type="date" id="phDateTo" value="${todayStr()}"></div>
+    </div>
+    <div style="margin:10px 0;display:flex;gap:10px;">
+      <button class="btn btn-ghost btn-sm" id="phPreviewBtn">${t('previewBtn')}</button>
+    </div>
+    <div id="phPreviewBox"></div>
+  `);
+  document.getElementById('phPreviewBtn').onclick = ()=>{
+    const dateFrom = document.getElementById('phDateFrom').value || null;
+    const dateTo = document.getElementById('phDateTo').value || null;
+    const list = eligibleProfitBookings(u.id, dateFrom, dateTo);
+    const total = +list.reduce((s,b)=>s+Number(b.profit_amount||0),0).toFixed(2);
+    const box = document.getElementById('phPreviewBox');
+    if(list.length===0){ box.innerHTML = `<div class="empty">${t('noEligibleProfit')}</div>`; return; }
+    box.innerHTML = `
+      <div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colProfit')}</th></tr></thead>
+        <tbody>${list.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.ticket_no||'—'}</td><td>${b.customer}</td><td class="num" style="font-weight:600">${money(b.profit_amount)}</td></tr>`).join('')}</tbody>
+      </table></div>
+      <div style="margin-top:10px;font-weight:700;font-size:15px;">${t('totalProfitLabel')}: ${money(total)}</div>
+      <div style="margin-top:16px;display:flex;gap:10px;">
+        <button class="btn btn-primary" id="phSubmitBtn">${t('submitHandoverBtn')}</button>
+        <button class="btn btn-ghost" id="phPrintBtn">${t('printReport')}</button>
+      </div>`;
+    document.getElementById('phSubmitBtn').onclick = async ()=>{
+      const btn = document.getElementById('phSubmitBtn'); btn.disabled=true; btn.textContent=t('saving');
+      try{ await submitProfitHandover(dateFrom, dateTo, list); closeModal(); render(); }
+      catch(err){ console.error(err); alert(t('connError')); btn.disabled=false; btn.textContent=t('submitHandoverBtn'); }
+    };
+    document.getElementById('phPrintBtn').onclick = ()=> printProfitHandoverReport(list, total, dateFrom, dateTo, u);
+  };
+}
+function printProfitHandoverReport(list, total, dateFrom, dateTo, u){
+  const periodLabel = (dateFrom||dateTo) ? `${dateFrom||'…'} → ${dateTo||'…'}` : t('reportAllPeriod');
+  const html = `<!DOCTYPE html><html lang="${lang}" dir="${lang==='ar'?'rtl':'ltr'}"><head><meta charset="UTF-8">
+    <title>${t('modalProfitHandover')}</title>
+    <style>
+      body{font-family:'IBM Plex Sans Arabic',system-ui,sans-serif;color:#1C1C1C;padding:24px;}
+      h1{font-size:18px;margin:0 0 10px;} table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px;}
+      th{background:#0F2A3D;color:#fff;padding:7px 6px;text-align:${lang==='ar'?'right':'left'};} td{padding:6px;border-bottom:1px solid #E4DECB;}
+      .total{margin-top:14px;font-weight:700;font-size:16px;}
+    </style></head><body>
+    <h1>${t('modalProfitHandover')} — ${u.name}</h1>
+    <div>${t('reportPeriodLabel')}: ${periodLabel}</div>
+    <table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colProfit')}</th></tr></thead>
+      <tbody>${list.map(b=>`<tr><td>${b.booking_no}</td><td>${b.ticket_no||'—'}</td><td>${b.customer}</td><td style="text-align:end;font-weight:600">${money(b.profit_amount)}</td></tr>`).join('')}</tbody>
+    </table>
+    <div class="total">${t('totalProfitLabel')}: ${money(total)}</div>
+    </body></html>`;
+  const w = window.open('', '_blank');
+  if(!w){ alert(t('connError')); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+  setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
 }
 function openPrintReportModal(){
   const u = currentUser();
@@ -1562,6 +1681,27 @@ window.uiDeleteUser = async function(id){
 };
 
 /* ===================== SETTINGS ===================== */
+function profitHandoverAdminPanelHTML(){
+  if(!isAdmin()) return '';
+  const pending = profitHandovers.filter(h=>h.status==='pending');
+  const history = profitHandovers.filter(h=>h.status!=='pending');
+  return `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitHandoversTitle')}</h3></div>
+    ${pending.length===0?`<div class="empty">${t('noPendingHandovers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('reportPeriodLabel')}</th><th>${t('colAmount')}</th><th></th></tr></thead>
+    <tbody>${pending.map(h=>`<tr><td>${userName(h.employee_id)}</td><td>${branchName(h.branch_id)}</td><td>${h.date_from||'—'} → ${h.date_to||'—'}</td><td class="num" style="font-weight:700">${money(h.total_profit)}</td>
+      <td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveProfitHandover('${h.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectProfitHandover('${h.id}')">${t('reject')}</button></td></tr>`).join('')}</tbody></table></div>`}
+    ${history.length>0?`<div style="margin-top:14px;overflow-x:auto;"><table><thead><tr><th>${t('colEmployee')}</th><th>${t('reportPeriodLabel')}</th><th>${t('colAmount')}</th><th>${t('colDepositStatus')}</th></tr></thead>
+    <tbody>${history.map(h=>`<tr><td>${userName(h.employee_id)}</td><td>${h.date_from||'—'} → ${h.date_to||'—'}</td><td class="num">${money(h.total_profit)}</td>
+      <td><span class="tag ${h.status==='approved'?'collected':'rejected'}">${h.status==='approved'?t('depositApproved'):t('depositRejected')}</span></td></tr>`).join('')}</tbody></table></div>`:''}
+  </div>`;
+}
+window.uiApproveProfitHandover = async function(id){
+  if(!confirm(t('confirmApproveHandover'))) return;
+  try{ await approveProfitHandover(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
+window.uiRejectProfitHandover = async function(id){
+  const note = prompt(t('rejectReason'))||'';
+  try{ await rejectProfitHandover(id, note); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
 function renderSettings(){
   document.getElementById('pageSub').textContent = t('subSettings');
   document.getElementById('content').innerHTML = `
@@ -1570,6 +1710,7 @@ function renderSettings(){
         <tbody>${branches.map(b=>`<tr><td>${b.name}</td><td><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
       <div class="note">${t('branchDeleteNote')}</div>
     </div>
+    ${profitHandoverAdminPanelHTML()}
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('backupTitle')}</h3></div>
       <p class="note">${t('backupNote')}</p>
       <button class="btn btn-primary btn-sm" id="exportBackupBtn">${t('exportBackupBtn')}</button>
