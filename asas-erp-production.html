@@ -252,7 +252,9 @@ const T = {
     reconcileAllMatched:'✅ كل التذاكر بالملف موجودة بالنظام — ما فيه نواقص.', reconcileMissingNote:'هذي التذاكر موجودة بالتقرير الخارجي بس غير مسجّلة بالنظام — يحتمل الموظف نسيها.',
     reconcileFiltersTitle:'فلترة البحث قبل المطابقة', allSuppliersOpt:'كل الموردين', quickToday:'اليوم', quickMonth:'هذا الشهر', quickYear:'هذه السنة',
     matchingTicketsCount:'عدد التذاكر المطابقة للفلتر', reconcileModeLabel:'طريقة المطابقة', reconcileModeTicket:'برقم التذكرة', reconcileModeAmountName:'بالمبلغ + اسم العميل',
-    applySearchBtn:'بحث / تطبيق الفلاتر', searchResultTitle:'نتيجة البحث', navMySales:'مبيعاتي', subMySales:'مبيعاتك وربحك الشخصي — يومي، شهري، أو سنوي', filterPeriod:'الفترة', mySalesTitle:'تفاصيل مبيعاتي',
+    applySearchBtn:'بحث / تطبيق الفلاتر', searchResultTitle:'نتيجة البحث',
+    kpiPendingAmounts:'مبالغ مستحقة (غير مؤكدة)', kpiPendingProfit:'ربح مستحق (لم يُسلَّم)',
+    myBalanceTitle:'رصيدي المتبقي (المستحق)', myBalanceNote:'مبيعات لسا بانتظار تأكيد المحاسب، وربح لسا لم يُسلَّم للأدمن. تنقص تلقائيًا لحظة الاعتماد، وتبقى تفاصيلها هنا دائمًا للرجوع.', navMySales:'مبيعاتي', subMySales:'مبيعاتك وربحك الشخصي — يومي، شهري، أو سنوي', filterPeriod:'الفترة', mySalesTitle:'تفاصيل مبيعاتي',
     reconcileAmountColLabel:'عمود المبلغ', reconcileNameColLabel:'عمود اسم العميل', exportExcelBtn:'⬇️ تصدير Excel',
     reconcileAirlineColLabel:'عمود شركة الطيران (اختياري)', reconcileNoneOpt:'بدون', reconcileOptionalNote:'اختياري',
     reconcileRouteColLabel:'عمود مسار الرحلة (اختياري)',
@@ -386,7 +388,9 @@ const T = {
     reconcileAllMatched:'✅ Every ticket in the file exists in the system — nothing missing.', reconcileMissingNote:'These tickets exist in the external report but are not recorded in the system — the employee may have forgotten them.',
     reconcileFiltersTitle:'Search filters before matching', allSuppliersOpt:'All suppliers', quickToday:'Today', quickMonth:'This month', quickYear:'This year',
     matchingTicketsCount:'Tickets matching the filter', reconcileModeLabel:'Matching method', reconcileModeTicket:'By ticket number', reconcileModeAmountName:'By amount + customer name',
-    applySearchBtn:'Search / Apply filters', searchResultTitle:'Search result', navMySales:'My Sales', subMySales:'Your personal sales and profit — daily, monthly, or yearly', filterPeriod:'Period', mySalesTitle:'My sales details',
+    applySearchBtn:'Search / Apply filters', searchResultTitle:'Search result',
+    kpiPendingAmounts:'Pending amounts (unconfirmed)', kpiPendingProfit:'Pending profit (not handed over)',
+    myBalanceTitle:'My remaining balance (outstanding)', myBalanceNote:"Sales still awaiting accountant confirmation, and profit not yet handed to the admin. These shrink automatically once approved, and their details always stay here for reference.", navMySales:'My Sales', subMySales:'Your personal sales and profit — daily, monthly, or yearly', filterPeriod:'Period', mySalesTitle:'My sales details',
     reconcileAmountColLabel:'Amount column', reconcileNameColLabel:'Customer name column', exportExcelBtn:'⬇️ Export Excel',
     reconcileAirlineColLabel:'Airline column (optional)', reconcileNoneOpt:'None', reconcileOptionalNote:'optional',
     reconcileRouteColLabel:'Flight route column (optional)',
@@ -818,6 +822,14 @@ async function addManualJournalEntry(data){
   if(error) throw error;
   journal.unshift(jIns);
 }
+function pendingConfirmationAmount(list){
+  return +list.filter(b=>b.payment_status==='pending' && !b.refunded).reduce((s,b)=>s+Number(b.sell||0),0).toFixed(2);
+}
+function pendingProfitHandoverAmount(list){
+  const lockedIds = new Set();
+  profitHandovers.filter(h=>h.status==='pending'||h.status==='approved').forEach(h=>(h.booking_ids||[]).forEach(id=>lockedIds.add(id)));
+  return +list.filter(b=>b.cost_reviewed && !b.refunded && !lockedIds.has(b.id)).reduce((s,b)=>s+Number(b.profit_amount||0),0).toFixed(2);
+}
 function computeTotals(bookingsList, expensesList){
   const active = bookingsList.filter(b=>!b.refunded);
   const sales = active.reduce((s,b)=>s+Number(b.sell),0);
@@ -984,13 +996,16 @@ function renderDashboard(){
   document.getElementById('pageSub').textContent = t('subDashboard');
   const list = filteredBookings();
   const tt = computeTotals(list, expensesForFilter());
+  const pendingAmt = pendingConfirmationAmount(list);
+  const pendingProfitAmt = pendingProfitHandoverAmount(list);
   const c = document.getElementById('content');
   c.innerHTML = `
     <div class="kpi-row">
       <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${canSeeSell()?money(tt.sales):moneyOrHidden(0)}</div></div>
       <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${tt.netProfit>=0?'pos':'neg'}">${canSeeOwnProfit()?money(tt.netProfit):moneyOrHidden(0)}</div></div>
       <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${t('kpiCount')}</div><div class="kpi-value">${tt.count}</div></div>
-      <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('kpiPendingComm')}</div><div class="kpi-value">${money(tt.pendingCommission)}</div></div>
+      <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('kpiPendingAmounts')}</div><div class="kpi-value">${canSeeSell()?money(pendingAmt):moneyOrHidden(0)}</div></div>
+      <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('kpiPendingProfit')}</div><div class="kpi-value">${canSeeOwnProfit()?money(pendingProfitAmt):moneyOrHidden(0)}</div></div>
     </div>
     <div class="section-flex">
       <div class="panel" style="flex:1.3">
@@ -1053,7 +1068,10 @@ function renderMySales(){
   document.getElementById('pageSub').textContent = t('subMySales');
   const u = currentUser();
   const list = bookings.filter(b=> b.created_by===u.id && (!mySalesDateFrom||b.date>=mySalesDateFrom) && (!mySalesDateTo||b.date<=mySalesDateTo));
+  const allMine = bookings.filter(b=>b.created_by===u.id);
   const tt = computeTotals(list, []);
+  const pendingAmt = pendingConfirmationAmount(allMine);
+  const pendingProfitAmt = pendingProfitHandoverAmount(allMine);
   document.getElementById('content').innerHTML = `
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('filterPeriod')}</h3></div>
@@ -1072,6 +1090,14 @@ function renderMySales(){
       <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('kpiCount')}</div><div class="kpi-value">${tt.count}</div></div>
       <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${money(tt.sales)}</div></div>
       <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${tt.netProfit>=0?'pos':'neg'}">${money(tt.netProfit)}</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('myBalanceTitle')}</h3></div>
+      <p class="note">${t('myBalanceNote')}</p>
+      <div class="kpi-row" style="grid-template-columns:repeat(2,1fr);">
+        <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('kpiPendingAmounts')}</div><div class="kpi-value">${money(pendingAmt)}</div></div>
+        <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('kpiPendingProfit')}</div><div class="kpi-value">${money(pendingProfitAmt)}</div></div>
+      </div>
     </div>
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('mySalesTitle')}</h3>
