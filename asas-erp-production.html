@@ -252,7 +252,7 @@ const T = {
     reconcileAllMatched:'✅ كل التذاكر بالملف موجودة بالنظام — ما فيه نواقص.', reconcileMissingNote:'هذي التذاكر موجودة بالتقرير الخارجي بس غير مسجّلة بالنظام — يحتمل الموظف نسيها.',
     reconcileFiltersTitle:'فلترة البحث قبل المطابقة', allSuppliersOpt:'كل الموردين', quickToday:'اليوم', quickMonth:'هذا الشهر', quickYear:'هذه السنة',
     matchingTicketsCount:'عدد التذاكر المطابقة للفلتر', reconcileModeLabel:'طريقة المطابقة', reconcileModeTicket:'برقم التذكرة', reconcileModeAmountName:'بالمبلغ + اسم العميل',
-    reconcileAmountColLabel:'عمود المبلغ', reconcileNameColLabel:'عمود اسم العميل',
+    reconcileAmountColLabel:'عمود المبلغ', reconcileNameColLabel:'عمود اسم العميل', exportExcelBtn:'⬇️ تصدير Excel',
     payInstallment:'تابي/تمارا (تقسيط)', fieldInstallmentProvider:'المزود', installmentFeeNote:'يُخصم 7% رسوم تابي/تمارا تلقائيًا من المبلغ عند اعتماد المحاسب.',
     actualAmountPrompt:'أدخل المبلغ الفعلي اللي دخل البنك (لو مختلف عن سعر التذكرة، السعر يُصحَّح تلقائيًا):',
     refundedTag:'تم الرفند', refundPendingTag:'طلب رفند قيد المراجعة', refundRejectedTag:'رفض طلب الرفند', requestRefundBtn:'طلب رفند',
@@ -379,7 +379,7 @@ const T = {
     reconcileAllMatched:'✅ Every ticket in the file exists in the system — nothing missing.', reconcileMissingNote:'These tickets exist in the external report but are not recorded in the system — the employee may have forgotten them.',
     reconcileFiltersTitle:'Search filters before matching', allSuppliersOpt:'All suppliers', quickToday:'Today', quickMonth:'This month', quickYear:'This year',
     matchingTicketsCount:'Tickets matching the filter', reconcileModeLabel:'Matching method', reconcileModeTicket:'By ticket number', reconcileModeAmountName:'By amount + customer name',
-    reconcileAmountColLabel:'Amount column', reconcileNameColLabel:'Customer name column',
+    reconcileAmountColLabel:'Amount column', reconcileNameColLabel:'Customer name column', exportExcelBtn:'⬇️ Export Excel',
     payInstallment:'Tabby/Tamara (BNPL)', fieldInstallmentProvider:'Provider', installmentFeeNote:'A 7% Tabby/Tamara fee is deducted automatically once the accountant approves.',
     actualAmountPrompt:'Enter the actual amount that landed in the bank (if different from the ticket price, the price is corrected automatically):',
     refundedTag:'Refunded', refundPendingTag:'Refund request pending review', refundRejectedTag:'Refund request rejected', requestRefundBtn:'Request refund',
@@ -1035,6 +1035,7 @@ function renderBookings(){
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('bookingsLog')}</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="printReportBtn">${t('printReport')}</button>
+        <button class="btn btn-ghost btn-sm" id="exportExcelBtn">${t('exportExcelBtn')}</button>
         ${u.role==='employee'?`<button class="btn btn-gold btn-sm" id="profitHandoverBtn">${t('profitHandoverBtn')}</button>`:''}
         ${!isAccountant()?`<button class="btn btn-primary btn-sm" id="addBookingBtn">${t('addBookingFull')}</button>`:''}
       </div></div>
@@ -1043,6 +1044,7 @@ function renderBookings(){
     ${u.role==='employee'?myProfitHandoverHistoryHTML(u.id):''}`;
   if(document.getElementById('addBookingBtn')) document.getElementById('addBookingBtn').onclick = ()=>openBookingModal();
   document.getElementById('printReportBtn').onclick = openPrintReportModal;
+  document.getElementById('exportExcelBtn').onclick = ()=>exportBookingsToExcel(filteredBookings(), mode);
   if(document.getElementById('profitHandoverBtn')) document.getElementById('profitHandoverBtn').onclick = openProfitHandoverModal;
 }
 function myProfitHandoverHistoryHTML(employeeId){
@@ -1146,6 +1148,22 @@ function openPrintReportModal(){
   };
 }
 function userName(id){ const x = users.find(u=>u.id===id); return x ? x.name : '—'; }
+function exportBookingsToExcel(list, mode){
+  const showProfit = isAdmin() || mode==='employee';
+  const showSell = canSeeSell();
+  const rows = list.map(b=>({
+    [t('colNo')]: b.booking_no, [t('jDate')]: b.date, [t('colAirline')]: b.airline||'', [t('colCustomer')]: b.customer,
+    [t('colTicketNo')]: b.ticket_no||'', [t('colBranch')]: branchName(b.branch_id), [t('colEmployee')]: userName(b.created_by),
+    [t('colSupplier')]: b.supplier||'', [t('colNet')]: Number(b.cost)||0,
+    [t('colProfit')]: showProfit ? (Number(b.profit_amount)||0) : t('hiddenValue'),
+    [t('colSell')]: showSell ? (Number(b.sell)||0) : t('hiddenValue'),
+    [t('colPaymentMethod')]: b.payment_method, [t('colPayStatus')]: b.payment_status
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Bookings');
+  XLSX.writeFile(wb, `bookings-${todayStr()}.xlsx`);
+}
 function bookingRowHTML(b){
   return `<tr>
       <td>${b.booking_no}</td><td>${b.date}</td><td>${branchName(b.branch_id)}</td><td>${userName(b.created_by)}</td><td>${b.airline||'—'}</td><td>${b.customer}</td>
@@ -1167,6 +1185,25 @@ function totalsKpisHTML(tt){
       <div class="kpi"><div>${t('kpiCount')}</div><div>${tt.count}</div></div>
       <div class="kpi"><div>${t('expenseOp')}</div><div>${money(tt.expenses)}</div></div>
     </div>`;
+}
+function exportReportsToExcel(rows, groupBy, nameHeader){
+  const showSell = canSeeSell(), showProfit = canSeeProfit();
+  const exportRows = rows.map(r=>{
+    const row = { [nameHeader]: r.name };
+    if(groupBy==='employee') row[t('colUserBranch')] = r.sub||'';
+    row[t('colBookCount')] = r.count;
+    row[t('colSalesTotal')] = showSell ? r.sales : t('hiddenValue');
+    row[t('colCostTotal')] = r.cost;
+    row[t('colCommTotal')] = r.commission;
+    if(groupBy==='branch') row[t('colExpTotal')] = r.expenses;
+    row[t('colNetProfitCol')] = showProfit ? r.netProfit : t('hiddenValue');
+    row[t('colMargin')] = showProfit ? r.margin.toFixed(1)+'%' : t('hiddenValue');
+    return row;
+  });
+  const ws = XLSX.utils.json_to_sheet(exportRows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Report');
+  XLSX.writeFile(wb, `branch-employee-report-${todayStr()}.xlsx`);
 }
 function printBranchEmployeeReport(rows, groupBy, nameHeader){
   const filters = [];
@@ -1623,6 +1660,7 @@ function renderReports(){
           </select>
           <input class="select-ctrl" id="reportSearchInput" type="text" placeholder="${t('searchPlaceholder')}" value="${reportSearchTerm}">
           <button class="btn btn-ghost btn-sm" id="reportPrintBtn">${t('printReport')}</button>
+          <button class="btn btn-ghost btn-sm" id="reportExcelBtn">${t('exportExcelBtn')}</button>
         </div>
       </div>
       ${rows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;">
@@ -1631,6 +1669,7 @@ function renderReports(){
           <td class="num">${money(r.commission)}</td>${groupBy==='branch'?`<td class="num">${money(r.expenses)}</td>`:''}<td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${moneyOrHidden(r.netProfit)}</td><td class="num">${canSeeProfit()?r.margin.toFixed(1)+'%':t('hiddenValue')}</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
   document.getElementById('reportPrintBtn').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
+  document.getElementById('reportExcelBtn').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
   document.getElementById('reportGroupBySel').onchange = (e)=>{ reportGroupBy = e.target.value; renderReports(); };
   document.getElementById('reportSearchInput').oninput = (e)=>{ reportSearchTerm = e.target.value; renderReports(); };
   document.getElementById('repSupplier').onchange = (e)=>{ reportSupplierFilter = e.target.value; renderReports(); };
