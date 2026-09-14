@@ -253,6 +253,9 @@ const T = {
     reconcileFiltersTitle:'فلترة البحث قبل المطابقة', allSuppliersOpt:'كل الموردين', quickToday:'اليوم', quickMonth:'هذا الشهر', quickYear:'هذه السنة',
     matchingTicketsCount:'عدد التذاكر المطابقة للفلتر', reconcileModeLabel:'طريقة المطابقة', reconcileModeTicket:'برقم التذكرة', reconcileModeAmountName:'بالمبلغ + اسم العميل',
     reconcileAmountColLabel:'عمود المبلغ', reconcileNameColLabel:'عمود اسم العميل', exportExcelBtn:'⬇️ تصدير Excel',
+    reconcileAirlineColLabel:'عمود شركة الطيران (اختياري)', reconcileNoneOpt:'بدون', reconcileOptionalNote:'اختياري',
+    reconcileAmountMismatch:'نفس التذكرة، مبلغ مختلف', reconcileAmountMismatchNote:'⚠️ هذي التذاكر موجودة بالنظام وبنفس رقمها بالملف الخارجي، لكن المبلغ مختلف — يحتاج مراجعة.',
+    reconcileSystemAmount:'المبلغ بالنظام', reconcileFileAmount:'المبلغ بالملف الخارجي',
     payInstallment:'تابي/تمارا (تقسيط)', fieldInstallmentProvider:'المزود', installmentFeeNote:'يُخصم 7% رسوم تابي/تمارا تلقائيًا من المبلغ عند اعتماد المحاسب.',
     actualAmountPrompt:'أدخل المبلغ الفعلي اللي دخل البنك (لو مختلف عن سعر التذكرة، السعر يُصحَّح تلقائيًا):',
     refundedTag:'تم الرفند', refundPendingTag:'طلب رفند قيد المراجعة', refundRejectedTag:'رفض طلب الرفند', requestRefundBtn:'طلب رفند',
@@ -380,6 +383,9 @@ const T = {
     reconcileFiltersTitle:'Search filters before matching', allSuppliersOpt:'All suppliers', quickToday:'Today', quickMonth:'This month', quickYear:'This year',
     matchingTicketsCount:'Tickets matching the filter', reconcileModeLabel:'Matching method', reconcileModeTicket:'By ticket number', reconcileModeAmountName:'By amount + customer name',
     reconcileAmountColLabel:'Amount column', reconcileNameColLabel:'Customer name column', exportExcelBtn:'⬇️ Export Excel',
+    reconcileAirlineColLabel:'Airline column (optional)', reconcileNoneOpt:'None', reconcileOptionalNote:'optional',
+    reconcileAmountMismatch:'Same ticket, different amount', reconcileAmountMismatchNote:'⚠️ These tickets exist in the system with the same number as in the external file, but the amount differs — needs review.',
+    reconcileSystemAmount:'Amount in system', reconcileFileAmount:'Amount in external file',
     payInstallment:'Tabby/Tamara (BNPL)', fieldInstallmentProvider:'Provider', installmentFeeNote:'A 7% Tabby/Tamara fee is deducted automatically once the accountant approves.',
     actualAmountPrompt:'Enter the actual amount that landed in the bank (if different from the ticket price, the price is corrected automatically):',
     refundedTag:'Refunded', refundPendingTag:'Refund request pending review', refundRejectedTag:'Refund request rejected', requestRefundBtn:'Request refund',
@@ -2152,6 +2158,8 @@ function renderReconcile(){
         </select></div>
         <div id="reconcileModeTicketBox" class="grid-2">
           <div class="field"><label>${t('reconcileColLabel')}</label><select id="reconcileColSel"></select></div>
+          <div class="field"><label>${t('reconcileAirlineColLabel')}</label><select id="reconcileAirlineColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
+          <div class="field"><label>${t('reconcileAmountColLabel')} (${t('reconcileOptionalNote')})</label><select id="reconcileTicketAmountColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
         </div>
         <div id="reconcileModeAmountNameBox" class="grid-2" style="display:none;">
           <div class="field"><label>${t('reconcileAmountColLabel')}</label><select id="reconcileAmountColSel"></select></div>
@@ -2180,7 +2188,10 @@ function renderReconcile(){
         reconcileRows = rows;
         reconcileHeaders = Object.keys(rows[0]);
         const opts = reconcileHeaders.map(h=>`<option value="${h}">${h}</option>`).join('');
+        const optsWithNone = `<option value="">${t('reconcileNoneOpt')}</option>`+opts;
         document.getElementById('reconcileColSel').innerHTML = opts;
+        document.getElementById('reconcileAirlineColSel').innerHTML = optsWithNone;
+        document.getElementById('reconcileTicketAmountColSel').innerHTML = optsWithNone;
         document.getElementById('reconcileAmountColSel').innerHTML = opts;
         document.getElementById('reconcileNameColSel').innerHTML = opts;
         document.getElementById('reconcileColumnBox').style.display = '';
@@ -2198,19 +2209,30 @@ function renderReconcile(){
     const mode = document.getElementById('reconcileModeSel').value;
     const scoped = getReconcileFilteredBookings();
     const missing = [];
+    const amountMismatches = [];
     let matched = 0;
     let col, otherCols;
     if(mode==='ticket'){
       col = document.getElementById('reconcileColSel').value;
-      const systemTickets = new Set(scoped.filter(b=>b.ticket_no).map(b=>String(b.ticket_no).trim().toUpperCase()));
+      const airlineCol = document.getElementById('reconcileAirlineColSel').value;
+      const amtCol = document.getElementById('reconcileTicketAmountColSel').value;
+      const keyOf = (ticket, airline)=> String(ticket).trim().toUpperCase() + (airlineCol ? '|'+String(airline||'').trim().toUpperCase() : '');
+      const systemMap = new Map();
+      scoped.filter(b=>b.ticket_no).forEach(b=>{ systemMap.set(keyOf(b.ticket_no, b.airline), b); });
       reconcileRows.forEach(row=>{
         const raw = row[col];
         if(raw===undefined || raw===null || String(raw).trim()==='') return;
-        const val = String(raw).trim().toUpperCase();
-        if(systemTickets.has(val)) matched++;
-        else missing.push(row);
+        const key = keyOf(raw, airlineCol ? row[airlineCol] : '');
+        const hit = systemMap.get(key);
+        if(!hit){ missing.push(row); return; }
+        if(amtCol){
+          const fileAmt = +Number(row[amtCol]||0).toFixed(2);
+          const sysAmt = +Number(hit.sell||0).toFixed(2);
+          if(Math.abs(fileAmt-sysAmt)>=0.01){ amountMismatches.push({row, sysAmt, fileAmt, ticket:raw}); return; }
+        }
+        matched++;
       });
-      otherCols = reconcileHeaders.filter(h=>h!==col).slice(0,4);
+      otherCols = reconcileHeaders.filter(h=>h!==col && h!==airlineCol && h!==amtCol).slice(0,4);
     }else{
       const amtCol = document.getElementById('reconcileAmountColSel').value;
       const nameCol = document.getElementById('reconcileNameColSel').value;
@@ -2228,12 +2250,18 @@ function renderReconcile(){
     }
     const box = document.getElementById('reconcileResultBox');
     box.innerHTML = `
-      <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:14px;">
+      <div class="kpi-row" style="grid-template-columns:repeat(${amountMismatches.length>0?4:3},1fr);margin-bottom:14px;">
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('reconcileTotalRows')}</div><div class="kpi-value">${reconcileRows.length}</div></div>
         <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('reconcileMatched')}</div><div class="kpi-value">${matched}</div></div>
+        ${amountMismatches.length>0?`<div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('reconcileAmountMismatch')}</div><div class="kpi-value neg">${amountMismatches.length}</div></div>`:''}
         <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('reconcileMissing')}</div><div class="kpi-value neg">${missing.length}</div></div>
       </div>
-      ${missing.length===0?`<div class="empty">${t('reconcileAllMatched')}</div>`:`
+      ${amountMismatches.length>0?`
+      <div class="note" style="color:#A8722C;font-weight:600;">⚠️ ${t('reconcileAmountMismatchNote')}</div>
+      <div style="overflow-x:auto;margin-top:8px;margin-bottom:16px;"><table><thead><tr><th>${t('colTicketNo')}</th><th>${t('reconcileSystemAmount')}</th><th>${t('reconcileFileAmount')}</th></tr></thead>
+        <tbody>${amountMismatches.map(m=>`<tr><td style="font-weight:700;color:#A8722C;">${m.ticket}</td><td>${money(m.sysAmt)}</td><td>${money(m.fileAmt)}</td></tr>`).join('')}</tbody>
+      </table></div>`:''}
+      ${missing.length===0?(amountMismatches.length===0?`<div class="empty">${t('reconcileAllMatched')}</div>`:''):`
       <div class="note" style="color:var(--red);font-weight:600;">⚠️ ${t('reconcileMissingNote')}</div>
       <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${col}</th>${otherCols.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
         <tbody>${missing.map(row=>`<tr><td style="font-weight:700;color:var(--red);">${row[col]}</td>${otherCols.map(c=>`<td>${row[c]??''}</td>`).join('')}</tr>`).join('')}</tbody>
