@@ -252,7 +252,7 @@ const T = {
     reconcileAllMatched:'✅ كل التذاكر بالملف موجودة بالنظام — ما فيه نواقص.', reconcileMissingNote:'هذي التذاكر موجودة بالتقرير الخارجي بس غير مسجّلة بالنظام — يحتمل الموظف نسيها.',
     reconcileFiltersTitle:'فلترة البحث قبل المطابقة', allSuppliersOpt:'كل الموردين', quickToday:'اليوم', quickMonth:'هذا الشهر', quickYear:'هذه السنة',
     matchingTicketsCount:'عدد التذاكر المطابقة للفلتر', reconcileModeLabel:'طريقة المطابقة', reconcileModeTicket:'برقم التذكرة', reconcileModeAmountName:'بالمبلغ + اسم العميل',
-    applySearchBtn:'بحث / تطبيق الفلاتر', navMySales:'مبيعاتي', subMySales:'مبيعاتك وربحك الشخصي — يومي، شهري، أو سنوي', filterPeriod:'الفترة', mySalesTitle:'تفاصيل مبيعاتي',
+    applySearchBtn:'بحث / تطبيق الفلاتر', searchResultTitle:'نتيجة البحث', navMySales:'مبيعاتي', subMySales:'مبيعاتك وربحك الشخصي — يومي، شهري، أو سنوي', filterPeriod:'الفترة', mySalesTitle:'تفاصيل مبيعاتي',
     reconcileAmountColLabel:'عمود المبلغ', reconcileNameColLabel:'عمود اسم العميل', exportExcelBtn:'⬇️ تصدير Excel',
     reconcileAirlineColLabel:'عمود شركة الطيران (اختياري)', reconcileNoneOpt:'بدون', reconcileOptionalNote:'اختياري',
     reconcileRouteColLabel:'عمود مسار الرحلة (اختياري)',
@@ -386,7 +386,7 @@ const T = {
     reconcileAllMatched:'✅ Every ticket in the file exists in the system — nothing missing.', reconcileMissingNote:'These tickets exist in the external report but are not recorded in the system — the employee may have forgotten them.',
     reconcileFiltersTitle:'Search filters before matching', allSuppliersOpt:'All suppliers', quickToday:'Today', quickMonth:'This month', quickYear:'This year',
     matchingTicketsCount:'Tickets matching the filter', reconcileModeLabel:'Matching method', reconcileModeTicket:'By ticket number', reconcileModeAmountName:'By amount + customer name',
-    applySearchBtn:'Search / Apply filters', navMySales:'My Sales', subMySales:'Your personal sales and profit — daily, monthly, or yearly', filterPeriod:'Period', mySalesTitle:'My sales details',
+    applySearchBtn:'Search / Apply filters', searchResultTitle:'Search result', navMySales:'My Sales', subMySales:'Your personal sales and profit — daily, monthly, or yearly', filterPeriod:'Period', mySalesTitle:'My sales details',
     reconcileAmountColLabel:'Amount column', reconcileNameColLabel:'Customer name column', exportExcelBtn:'⬇️ Export Excel',
     reconcileAirlineColLabel:'Airline column (optional)', reconcileNoneOpt:'None', reconcileOptionalNote:'optional',
     reconcileRouteColLabel:'Flight route column (optional)',
@@ -1701,6 +1701,8 @@ function renderReports(){
     rows = rows.filter(r=> r.name.toLowerCase().includes(term) || (r.sub||'').toLowerCase().includes(term));
   }
   const nameHeader = groupBy==='employee' ? t('colUserName') : t('colBranchName');
+  const summaryExp = manualExpenses.filter(e=> (reportBranchFilter==='all'||e.branch_id===reportBranchFilter) && (!reportDateFrom||e.date>=reportDateFrom) && (!reportDateTo||e.date<=reportDateTo));
+  const summaryTT = computeTotals(scoped, summaryExp);
   document.getElementById('content').innerHTML = `
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('reconcileFiltersTitle')}</h3></div>
@@ -1724,6 +1726,19 @@ function renderReports(){
       </div>
       <button type="button" class="btn btn-primary" id="repSearchBtn" style="margin-top:6px;">🔍 ${t('applySearchBtn')}</button>
     </div>
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('searchResultTitle')}</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" id="reportPrintBtnTop">${t('printReport')}</button>
+          <button class="btn btn-ghost btn-sm" id="reportExcelBtnTop">${t('exportExcelBtn')}</button>
+        </div>
+      </div>
+      <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);">
+        <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('kpiCount')}</div><div class="kpi-value">${summaryTT.count}</div></div>
+        <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${canSeeSell()?money(summaryTT.sales):moneyOrHidden(0)}</div></div>
+        <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${summaryTT.netProfit>=0?'pos':'neg'}">${canSeeProfit()?money(summaryTT.netProfit):moneyOrHidden(0)}</div></div>
+      </div>
+    </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales', scoped)}</div>
     ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit', scoped)}</div>`:''}
     <div class="panel">
@@ -1745,6 +1760,8 @@ function renderReports(){
     </div>`;
   document.getElementById('reportPrintBtn').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
   document.getElementById('reportExcelBtn').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
+  document.getElementById('reportPrintBtnTop').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
+  document.getElementById('reportExcelBtnTop').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
   document.getElementById('reportGroupBySel').onchange = (e)=>{ reportGroupBy = e.target.value; renderReports(); };
   document.getElementById('reportSearchInput').oninput = (e)=>{ reportSearchTerm = e.target.value; renderReports(); };
   document.getElementById('repSupplier').onchange = (e)=>{ reportSupplierFilter = e.target.value; renderReports(); };
