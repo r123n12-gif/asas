@@ -180,6 +180,7 @@ const T = {
     branchDeleteNote:'لا يمكن حذف فرع مرتبط بحجوزات أو قيود سابقة.', branchDeleteError:'تعذر حذف الفرع لوجود بيانات مرتبطة به.',
     confirmDeleteBranch:'هل أنت متأكد من حذف هذا الفرع؟ لا يمكن التراجع عن هذا الإجراء.',
     manualExpensesListTitle:'المصاريف المسجّلة', fieldExpenseDesc:'الوصف', confirmDeleteExpense:'هل أنت متأكد من حذف هذا المصروف؟ سيُحذف قيده من دفتر الحسابات أيضًا.',
+    ticketDetailsTitle:'تفاصيل التذاكر (كل تذكرة لحالها)', ticketDetailsNote:'قائمة تفصيلية بكل تذكرة مطابقة للفلاتر أعلاه — اسم العميل، رقم التذكرة، النظام فير (التكلفة)، بدون الربح.',
     resetTitle:'ملاحظة', resetNote:'حذف البيانات هنا نهائي ويتم مباشرة على قاعدة البيانات الحقيقية — تصرف بحذر.',
     modalNewBranch:'إضافة فرع جديد', fieldBranchName:'اسم الفرع', add:'إضافة',
     usersTitle:'المستخدمون', addUser:'+ إضافة مستخدم', colUserName:'الاسم', colUsername:'اسم المستخدم',
@@ -317,6 +318,7 @@ const T = {
     branchDeleteNote:'A branch with existing bookings or entries cannot be deleted.', branchDeleteError:'Could not delete: this branch has linked records.',
     confirmDeleteBranch:'Are you sure you want to delete this branch? This cannot be undone.',
     manualExpensesListTitle:'Recorded expenses', fieldExpenseDesc:'Description', confirmDeleteExpense:'Are you sure you want to delete this expense? Its journal entry will be deleted too.',
+    ticketDetailsTitle:'Ticket details (each ticket individually)', ticketDetailsNote:'A detailed list of every ticket matching the filters above — customer name, ticket number, System Fare (cost), without profit.',
     resetTitle:'Note', resetNote:'Deletions here are permanent and happen directly on your real database — proceed carefully.',
     modalNewBranch:'Add new branch', fieldBranchName:'Branch name', add:'Add',
     usersTitle:'Users', addUser:'+ Add user', colUserName:'Name', colUsername:'Username',
@@ -1797,6 +1799,11 @@ function renderReports(){
       <table><thead><tr><th>${nameHeader}</th>${groupBy==='employee'?`<th>${t('colUserBranch')}</th>`:''}<th>${t('colBookCount')}</th><th>${t('colSalesTotal')}</th><th>${t('colCostTotal')}</th><th>${t('colCommTotal')}</th>${groupBy==='branch'?`<th>${t('colExpTotal')}</th>`:''}<th>${t('colNetProfitCol')}</th><th>${t('colMargin')}</th></tr></thead>
         <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td class="num">${r.count}</td><td class="num">${canSeeSalesTotals()?money(r.sales):moneyOrHidden(0)}</td><td class="num">${money(r.cost)}</td>
           <td class="num">${money(r.commission)}</td>${groupBy==='branch'?`<td class="num">${money(r.expenses)}</td>`:''}<td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${moneyOrHidden(r.netProfit)}</td><td class="num">${canSeeProfit()?r.margin.toFixed(1)+'%':t('hiddenValue')}</td></tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('ticketDetailsTitle')}</h3></div>
+      <p class="note">${t('ticketDetailsNote')}</p>
+      ${scoped.length===0?`<div class="empty">${t('emptyData')}</div>`:bookingsTableHTML(scoped)}
     </div>`;
   document.getElementById('reportPrintBtn').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
   document.getElementById('reportExcelBtn').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
