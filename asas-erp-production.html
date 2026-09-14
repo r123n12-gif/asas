@@ -252,7 +252,7 @@ const T = {
     reconcileAllMatched:'✅ كل التذاكر بالملف موجودة بالنظام — ما فيه نواقص.', reconcileMissingNote:'هذي التذاكر موجودة بالتقرير الخارجي بس غير مسجّلة بالنظام — يحتمل الموظف نسيها.',
     reconcileFiltersTitle:'فلترة البحث قبل المطابقة', allSuppliersOpt:'كل الموردين', quickToday:'اليوم', quickMonth:'هذا الشهر', quickYear:'هذه السنة',
     matchingTicketsCount:'عدد التذاكر المطابقة للفلتر', reconcileModeLabel:'طريقة المطابقة', reconcileModeTicket:'برقم التذكرة', reconcileModeAmountName:'بالمبلغ + اسم العميل',
-    applySearchBtn:'بحث / تطبيق الفلاتر',
+    applySearchBtn:'بحث / تطبيق الفلاتر', navMySales:'مبيعاتي', subMySales:'مبيعاتك وربحك الشخصي — يومي، شهري، أو سنوي', filterPeriod:'الفترة', mySalesTitle:'تفاصيل مبيعاتي',
     reconcileAmountColLabel:'عمود المبلغ', reconcileNameColLabel:'عمود اسم العميل', exportExcelBtn:'⬇️ تصدير Excel',
     reconcileAirlineColLabel:'عمود شركة الطيران (اختياري)', reconcileNoneOpt:'بدون', reconcileOptionalNote:'اختياري',
     reconcileRouteColLabel:'عمود مسار الرحلة (اختياري)',
@@ -384,7 +384,7 @@ const T = {
     reconcileAllMatched:'✅ Every ticket in the file exists in the system — nothing missing.', reconcileMissingNote:'These tickets exist in the external report but are not recorded in the system — the employee may have forgotten them.',
     reconcileFiltersTitle:'Search filters before matching', allSuppliersOpt:'All suppliers', quickToday:'Today', quickMonth:'This month', quickYear:'This year',
     matchingTicketsCount:'Tickets matching the filter', reconcileModeLabel:'Matching method', reconcileModeTicket:'By ticket number', reconcileModeAmountName:'By amount + customer name',
-    applySearchBtn:'Search / Apply filters',
+    applySearchBtn:'Search / Apply filters', navMySales:'My Sales', subMySales:'Your personal sales and profit — daily, monthly, or yearly', filterPeriod:'Period', mySalesTitle:'My sales details',
     reconcileAmountColLabel:'Amount column', reconcileNameColLabel:'Customer name column', exportExcelBtn:'⬇️ Export Excel',
     reconcileAirlineColLabel:'Airline column (optional)', reconcileNoneOpt:'None', reconcileOptionalNote:'optional',
     reconcileRouteColLabel:'Flight route column (optional)',
@@ -840,6 +840,9 @@ function expensesForFilter(){
 function navItems(){
   const items = [ {route:'dashboard', label:t('navDashboard'), icon:'◆'}, {route:'bookings', label:t('navBookings'), icon:'🎫'},
     {route:'deposits', label:t('navDeposits'), icon:'💰'} ];
+  if(currentUser()?.role==='employee'){
+    items.push({route:'mysales', label:t('navMySales'), icon:'📊'});
+  }
   if(canSeeAllBranches()){
     items.push({route:'transfers', label:t('navTransfers'), icon:'🏦'});
     items.push({route:'ledger', label:t('navLedger'), icon:'≡'});
@@ -930,7 +933,7 @@ function render(){
   document.getElementById('myAccountBtn').onclick = openMyAccountModal;
 
   const routes = { dashboard:renderDashboard, bookings:renderBookings, ledger:renderLedger,
-    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile };
+    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile, mysales:renderMySales };
   (routes[route]||renderDashboard)();
 }
 
@@ -1039,6 +1042,57 @@ function branchBarsHTML(metric){
 }
 
 /* ===================== BOOKINGS ===================== */
+let mySalesDateFrom = null;
+let mySalesDateTo = null;
+function renderMySales(){
+  document.getElementById('pageSub').textContent = t('subMySales');
+  const u = currentUser();
+  const list = bookings.filter(b=> b.created_by===u.id && (!mySalesDateFrom||b.date>=mySalesDateFrom) && (!mySalesDateTo||b.date<=mySalesDateTo));
+  const tt = computeTotals(list, []);
+  document.getElementById('content').innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('filterPeriod')}</h3></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+        <button type="button" class="btn btn-ghost btn-sm" id="msToday">${t('quickToday')}</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="msMonth">${t('quickMonth')}</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="msYear">${t('quickYear')}</button>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" id="msDateFrom" value="${mySalesDateFrom||''}"></div>
+        <div class="field"><label>${t('fieldDateTo')}</label><input type="date" id="msDateTo" value="${mySalesDateTo||''}"></div>
+      </div>
+      <button type="button" class="btn btn-primary" id="msSearchBtn" style="margin-top:6px;">🔍 ${t('applySearchBtn')}</button>
+    </div>
+    <div class="kpi-row">
+      <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('kpiCount')}</div><div class="kpi-value">${tt.count}</div></div>
+      <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${money(tt.sales)}</div></div>
+      <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${tt.netProfit>=0?'pos':'neg'}">${money(tt.netProfit)}</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('mySalesTitle')}</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" id="msPrintBtn">${t('printReport')}</button>
+          <button class="btn btn-ghost btn-sm" id="msExcelBtn">${t('exportExcelBtn')}</button>
+        </div>
+      </div>
+      ${bookingsTable(list, 'employee')}
+    </div>`;
+  const setRange=(kind)=>{
+    const today=todayStr(); let from=today;
+    if(kind==='month') from=today.slice(0,8)+'01'; else if(kind==='year') from=today.slice(0,4)+'-01-01';
+    mySalesDateFrom=from; mySalesDateTo=today; renderMySales();
+  };
+  document.getElementById('msToday').onclick=()=>setRange('today');
+  document.getElementById('msMonth').onclick=()=>setRange('month');
+  document.getElementById('msYear').onclick=()=>setRange('year');
+  document.getElementById('msSearchBtn').onclick=()=>{
+    mySalesDateFrom = document.getElementById('msDateFrom').value||null;
+    mySalesDateTo = document.getElementById('msDateTo').value||null;
+    renderMySales();
+  };
+  document.getElementById('msPrintBtn').onclick=()=>generateBranchReport(u.branch_id, u.id, mySalesDateFrom, mySalesDateTo);
+  document.getElementById('msExcelBtn').onclick=()=>exportBookingsToExcel(list, 'employee');
+}
 function renderBookings(){
   document.getElementById('pageSub').textContent = t('subBookings');
   const mode = canSeeAllBranches() ? 'manage' : 'employee';
