@@ -258,6 +258,8 @@ const T = {
     reconcileRouteColLabel:'عمود مسار الرحلة (اختياري)',
     reconcileAmountMismatch:'نفس التذكرة، مبلغ مختلف', reconcileAmountMismatchNote:'⚠️ هذي التذاكر موجودة بالنظام وبنفس رقمها بالملف الخارجي، لكن المبلغ مختلف — يحتاج مراجعة.',
     reconcileSystemAmount:'المبلغ بالنظام', reconcileFileAmount:'المبلغ بالملف الخارجي',
+    reconcileDiagnosticNote:'كل التذاكر ما طلعت متطابقة — احتمال كبير يكون سبب المشكلة اختلاف صيغة رقم التذكرة بين النظام والملف (بادئة حروف زيادة أو فراغات). قارن العينة:',
+    reconcileDiagnosticSystem:'رقم بالنظام', reconcileDiagnosticFile:'رقم بالملف',
     payInstallment:'تابي/تمارا (تقسيط)', fieldInstallmentProvider:'المزود', installmentFeeNote:'يُخصم 7% رسوم تابي/تمارا تلقائيًا من المبلغ عند اعتماد المحاسب.',
     actualAmountPrompt:'أدخل المبلغ الفعلي اللي دخل البنك (لو مختلف عن سعر التذكرة، السعر يُصحَّح تلقائيًا):',
     refundedTag:'تم الرفند', refundPendingTag:'طلب رفند قيد المراجعة', refundRejectedTag:'رفض طلب الرفند', requestRefundBtn:'طلب رفند',
@@ -390,6 +392,8 @@ const T = {
     reconcileRouteColLabel:'Flight route column (optional)',
     reconcileAmountMismatch:'Same ticket, different amount', reconcileAmountMismatchNote:'⚠️ These tickets exist in the system with the same number as in the external file, but the amount differs — needs review.',
     reconcileSystemAmount:'Amount in system', reconcileFileAmount:'Amount in external file',
+    reconcileDiagnosticNote:"None of the tickets matched — this is likely because the ticket number format differs between the system and the file (extra letter prefix or spaces). Compare the sample:",
+    reconcileDiagnosticSystem:'System number', reconcileDiagnosticFile:'File number',
     payInstallment:'Tabby/Tamara (BNPL)', fieldInstallmentProvider:'Provider', installmentFeeNote:'A 7% Tabby/Tamara fee is deducted automatically once the accountant approves.',
     actualAmountPrompt:'Enter the actual amount that landed in the bank (if different from the ticket price, the price is corrected automatically):',
     refundedTag:'Refunded', refundPendingTag:'Refund request pending review', refundRejectedTag:'Refund request rejected', requestRefundBtn:'Request refund',
@@ -2292,13 +2296,24 @@ function renderReconcile(){
       const keyOf = (ticket, airline, route)=> String(ticket).trim().toUpperCase()
         + (airlineCol ? '|'+String(airline||'').trim().toUpperCase() : '')
         + (routeCol ? '|'+String(route||'').trim().toUpperCase() : '');
+      const digitsOnly = (s)=> String(s).replace(/[^0-9]/g,'');
       const systemMap = new Map();
-      scoped.filter(b=>b.ticket_no).forEach(b=>{ systemMap.set(keyOf(b.ticket_no, b.airline, b.flight_route), b); });
+      const digitsMap = new Map();
+      scoped.filter(b=>b.ticket_no).forEach(b=>{
+        systemMap.set(keyOf(b.ticket_no, b.airline, b.flight_route), b);
+        const d = digitsOnly(b.ticket_no);
+        if(d) digitsMap.set(d, b);
+      });
+      let fuzzyMatches = 0;
       reconcileRows.forEach(row=>{
         const raw = row[col];
         if(raw===undefined || raw===null || String(raw).trim()==='') return;
         const key = keyOf(raw, airlineCol ? row[airlineCol] : '', routeCol ? row[routeCol] : '');
-        const hit = systemMap.get(key);
+        let hit = systemMap.get(key);
+        if(!hit){
+          const d = digitsOnly(raw);
+          if(d && digitsMap.has(d)){ hit = digitsMap.get(d); fuzzyMatches++; }
+        }
         if(!hit){ missing.push(row); return; }
         if(amtCol){
           const fileAmt = +Number(row[amtCol]||0).toFixed(2);
@@ -2308,6 +2323,13 @@ function renderReconcile(){
         matched++;
       });
       otherCols = reconcileHeaders.filter(h=>h!==col && h!==airlineCol && h!==routeCol && h!==amtCol).slice(0,4);
+      if(matched===0 && missing.length>0 && fuzzyMatches===0){
+        const sampleSys = scoped.find(b=>b.ticket_no)?.ticket_no;
+        const sampleFile = reconcileRows.find(r=>r[col]!==undefined && String(r[col]).trim()!=='')?.[col];
+        if(sampleSys && sampleFile!==undefined){
+          missing._diagnostic = `${t('reconcileDiagnosticNote')} ${t('reconcileDiagnosticSystem')}: "${sampleSys}"  |  ${t('reconcileDiagnosticFile')}: "${sampleFile}"`;
+        }
+      }
     }else{
       const amtCol = document.getElementById('reconcileAmountColSel').value;
       const nameCol = document.getElementById('reconcileNameColSel').value;
@@ -2336,6 +2358,7 @@ function renderReconcile(){
       <div style="overflow-x:auto;margin-top:8px;margin-bottom:16px;"><table><thead><tr><th>${t('colTicketNo')}</th><th>${t('reconcileSystemAmount')}</th><th>${t('reconcileFileAmount')}</th></tr></thead>
         <tbody>${amountMismatches.map(m=>`<tr><td style="font-weight:700;color:#A8722C;">${m.ticket}</td><td>${money(m.sysAmt)}</td><td>${money(m.fileAmt)}</td></tr>`).join('')}</tbody>
       </table></div>`:''}
+      ${missing._diagnostic?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">🔎 ${missing._diagnostic}</div>`:''}
       ${missing.length===0?(amountMismatches.length===0?`<div class="empty">${t('reconcileAllMatched')}</div>`:''):`
       <div class="note" style="color:var(--red);font-weight:600;">⚠️ ${t('reconcileMissingNote')}</div>
       <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${col}</th>${otherCols.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
