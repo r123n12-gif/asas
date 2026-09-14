@@ -186,6 +186,7 @@ const T = {
     fieldPassword:'كلمة المرور', fieldRole:'الصلاحية', fieldUserBranch:'الفرع (لموظف المبيعات)', noBranch:'— بدون —',
     usernameTaken:'اسم المستخدم مستخدم بالفعل، اختر اسمًا آخر.', cannotDeleteSelf:'لا يمكنك حذف حسابك الحالي.',
     colStatus:'الحالة', statusActive:'نشط', statusInactive:'معطّل', deactivateBtn:'تعطيل', activateBtn:'تفعيل', modalEditUser:'تعديل المستخدم',
+    confirmDeleteUser:'هل أنت متأكد من حذف هذا المستخدم؟ لا يمكن التراجع عن هذا الإجراء (سجلاته المالية تبقى محفوظة).',
     loginTitle:'تسجيل الدخول', loginSubtitle:'أدخل بيانات حسابك للمتابعة', fieldUsernameLogin:'اسم المستخدم',
     fieldPasswordLogin:'كلمة المرور', loginBtn:'دخول', loginError:'اسم المستخدم أو كلمة المرور غير صحيحة.',
     loginDemo:'حساب المدير التجريبي: admin / admin123', langBtn:'English',
@@ -309,6 +310,7 @@ const T = {
     fieldPassword:'Password', fieldRole:'Role', fieldUserBranch:'Branch (for sales employee)', noBranch:'— none —',
     usernameTaken:'This username is already taken, please choose another.', cannotDeleteSelf:'You cannot delete your own account.',
     colStatus:'Status', statusActive:'Active', statusInactive:'Inactive', deactivateBtn:'Deactivate', activateBtn:'Activate', modalEditUser:'Edit user',
+    confirmDeleteUser:'Are you sure you want to delete this user? This cannot be undone (their financial records remain intact).',
     loginTitle:'Sign in', loginSubtitle:'Enter your account details to continue', fieldUsernameLogin:'Username',
     fieldPasswordLogin:'Password', loginBtn:'Sign in', loginError:'Incorrect username or password.',
     loginDemo:'Demo admin account: admin / admin123', langBtn:'العربية',
@@ -1805,7 +1807,8 @@ function renderUsers(){
           <td><span class="tag ${u.active===false?'rejected':'collected'}">${u.active===false?t('statusInactive'):t('statusActive')}</span></td>
           <td style="display:flex;gap:5px;flex-wrap:wrap;">
             <button class="btn btn-ghost btn-sm" onclick="uiEditUser('${u.id}')">${t('edit')}</button>
-            ${u.id!==currentUser().id?`<button class="btn btn-gold btn-sm" onclick="uiToggleUserActive('${u.id}')">${u.active===false?t('activateBtn'):t('deactivateBtn')}</button>`:''}
+            ${u.id!==currentUser().id?`<button class="btn btn-gold btn-sm" onclick="uiToggleUserActive('${u.id}')">${u.active===false?t('activateBtn'):t('deactivateBtn')}</button>
+            <button class="btn btn-danger btn-sm" onclick="uiDeleteUser('${u.id}')">${t('delete')}</button>`:''}
           </td></tr>`).join('')}</tbody></table>
     </div>`;
   document.getElementById('addUserBtn').onclick = openUserModal;
@@ -1907,6 +1910,7 @@ function openUserModal(){
 }
 window.uiDeleteUser = async function(id){
   if(id===currentUser().id){ alert(t('cannotDeleteSelf')); return; }
+  if(!confirm(t('confirmDeleteUser'))) return;
   try{ const {error} = await sb.from('app_users').delete().eq('id', id); if(error) throw error; users = users.filter(u=>u.id!==id); render(); }
   catch(e){ alert(t('connError')); }
 };
