@@ -185,6 +185,7 @@ const T = {
     modalNewUser:'إضافة مستخدم جديد', fieldFullName:'الاسم الكامل', fieldUsername:'اسم المستخدم (تسجيل الدخول)',
     fieldPassword:'كلمة المرور', fieldRole:'الصلاحية', fieldUserBranch:'الفرع (لموظف المبيعات)', noBranch:'— بدون —',
     usernameTaken:'اسم المستخدم مستخدم بالفعل، اختر اسمًا آخر.', cannotDeleteSelf:'لا يمكنك حذف حسابك الحالي.',
+    colStatus:'الحالة', statusActive:'نشط', statusInactive:'معطّل', deactivateBtn:'تعطيل', activateBtn:'تفعيل', modalEditUser:'تعديل المستخدم',
     loginTitle:'تسجيل الدخول', loginSubtitle:'أدخل بيانات حسابك للمتابعة', fieldUsernameLogin:'اسم المستخدم',
     fieldPasswordLogin:'كلمة المرور', loginBtn:'دخول', loginError:'اسم المستخدم أو كلمة المرور غير صحيحة.',
     loginDemo:'حساب المدير التجريبي: admin / admin123', langBtn:'English',
@@ -307,6 +308,7 @@ const T = {
     modalNewUser:'Add new user', fieldFullName:'Full name', fieldUsername:'Username (login)',
     fieldPassword:'Password', fieldRole:'Role', fieldUserBranch:'Branch (for sales employee)', noBranch:'— none —',
     usernameTaken:'This username is already taken, please choose another.', cannotDeleteSelf:'You cannot delete your own account.',
+    colStatus:'Status', statusActive:'Active', statusInactive:'Inactive', deactivateBtn:'Deactivate', activateBtn:'Activate', modalEditUser:'Edit user',
     loginTitle:'Sign in', loginSubtitle:'Enter your account details to continue', fieldUsernameLogin:'Username',
     fieldPasswordLogin:'Password', loginBtn:'Sign in', loginError:'Incorrect username or password.',
     loginDemo:'Demo admin account: admin / admin123', langBtn:'العربية',
@@ -400,7 +402,7 @@ let branchFilter = 'all';
 async function fetchAll(){
   const [b, u, bk, jr, ex, dp, ph] = await Promise.all([
     sb.from('branches').select('*').order('created_at'),
-    sb.from('app_users').select('id,name,username,role,branch_id').order('created_at'),
+    sb.from('app_users').select('id,name,username,role,branch_id,active').order('created_at'),
     sb.from('bookings').select('*').order('created_at', {ascending:false}),
     sb.from('journal').select('*').order('created_at', {ascending:false}),
     sb.from('manual_expenses').select('*').order('created_at', {ascending:false}),
@@ -1796,14 +1798,73 @@ function renderUsers(){
   document.getElementById('pageSub').textContent = t('subUsers');
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('usersTitle')}</h3><button class="btn btn-primary btn-sm" id="addUserBtn">${t('addUser')}</button></div>
-      <table><thead><tr><th>${t('colUserName')}</th><th>${t('colUsername')}</th><th>${t('colRole')}</th><th>${t('colUserBranch')}</th><th></th></tr></thead>
+      <table><thead><tr><th>${t('colUserName')}</th><th>${t('colUsername')}</th><th>${t('colRole')}</th><th>${t('colUserBranch')}</th><th>${t('colStatus')}</th><th></th></tr></thead>
         <tbody>${users.map(u=>`<tr><td>${u.name}</td><td class="num">${u.username}</td>
           <td><span class="tag ${u.role}">${u.role==='admin'?t('roleAdmin'):u.role==='accountant'?t('roleAccountant'):t('roleEmployee')}</span></td>
           <td>${u.branch_id?branchName(u.branch_id):'—'}</td>
-          <td>${u.id!==currentUser().id?`<button class="btn btn-danger btn-sm" onclick="uiDeleteUser('${u.id}')">${t('delete')}</button>`:''}</td></tr>`).join('')}</tbody></table>
+          <td><span class="tag ${u.active===false?'rejected':'collected'}">${u.active===false?t('statusInactive'):t('statusActive')}</span></td>
+          <td style="display:flex;gap:5px;flex-wrap:wrap;">
+            <button class="btn btn-ghost btn-sm" onclick="uiEditUser('${u.id}')">${t('edit')}</button>
+            ${u.id!==currentUser().id?`<button class="btn btn-gold btn-sm" onclick="uiToggleUserActive('${u.id}')">${u.active===false?t('activateBtn'):t('deactivateBtn')}</button>
+            <button class="btn btn-danger btn-sm" onclick="uiDeleteUser('${u.id}')">${t('delete')}</button>`:''}
+          </td></tr>`).join('')}</tbody></table>
     </div>`;
   document.getElementById('addUserBtn').onclick = openUserModal;
 }
+window.uiToggleUserActive = async function(id){
+  const u = users.find(x=>x.id===id);
+  if(!u) return;
+  const newActive = !(u.active!==false);
+  try{
+    const {error} = await sb.from('app_users').update({active:newActive}).eq('id', id);
+    if(error) throw error;
+    u.active = newActive; render();
+  }catch(e){ console.error(e); alert(t('connError')); }
+};
+window.uiEditUser = function(id){
+  const u = users.find(x=>x.id===id);
+  if(!u) return;
+  showModal(`
+    <div class="modal-head"><h3>${t('modalEditUser')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="editUserForm">
+      <div class="field"><label>${t('fieldFullName')}</label><input name="name" value="${u.name}" required></div>
+      <div class="field"><label>${t('fieldUsername')}</label><input name="username" value="${u.username}" required></div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldRole')}</label><select name="role">
+          <option value="employee" ${u.role==='employee'?'selected':''}>${t('roleEmployee')}</option>
+          <option value="accountant" ${u.role==='accountant'?'selected':''}>${t('roleAccountant')}</option>
+          <option value="admin" ${u.role==='admin'?'selected':''}>${t('roleAdmin')}</option>
+        </select></div>
+        <div class="field"><label>${t('fieldUserBranch')}</label><select name="branchId"><option value="" ${!u.branch_id?'selected':''}>${t('noBranch')}</option>${branches.map(b=>`<option value="${b.id}" ${u.branch_id===b.id?'selected':''}>${b.name}</option>`).join('')}</select></div>
+      </div>
+      <div id="editUserErrorBox"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;">
+        <button type="submit" class="btn btn-primary" id="editUserSaveBtn">${t('save')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  document.getElementById('editUserForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('editUserSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
+    const f = new FormData(e.target);
+    const role = f.get('role'); const branchId = f.get('branchId')||null;
+    if(role==='employee' && !branchId){
+      document.getElementById('editUserErrorBox').innerHTML = `<div class="login-error">${t('employeeMustHaveBranch')}</div>`;
+      btn.disabled=false; btn.textContent=t('save'); return;
+    }
+    try{
+      const {error} = await sb.from('app_users').update({name:f.get('name'), username:f.get('username'), role, branch_id:branchId}).eq('id', id);
+      if(error) throw error;
+      Object.assign(u, {name:f.get('name'), username:f.get('username'), role, branch_id:branchId});
+      closeModal(); render();
+    }catch(err){
+      console.error(err);
+      const msg = String(err.message||'').toLowerCase().includes('duplicate') ? t('usernameTaken') : t('connError');
+      document.getElementById('editUserErrorBox').innerHTML = `<div class="login-error">${msg}</div>`;
+      btn.disabled=false; btn.textContent=t('save');
+    }
+  };
+};
 function openUserModal(){
   showModal(`
     <div class="modal-head"><h3>${t('modalNewUser')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
