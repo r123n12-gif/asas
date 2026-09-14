@@ -1679,14 +1679,16 @@ function renderReports(){
   const suppliers = [...new Set(bookings.map(b=>b.supplier).filter(Boolean))];
   let rows = [];
   if(groupBy==='employee'){
-    rows = users.map(u=>{
+    const userList = reportEmployeeFilter!=='all' ? users.filter(u=>u.id===reportEmployeeFilter) : users;
+    rows = userList.map(u=>{
       const bl = scoped.filter(x=>x.created_by===u.id);
       const tt = computeTotals(bl, []);
       const margin = tt.sales>0 ? (tt.netProfit/tt.sales*100) : 0;
       return {name:u.name, sub:branchName(u.branch_id), ...tt, margin};
     }).filter(r=>r.count>0 || !reportSearchTerm);
   }else{
-    rows = branches.map(b=>{
+    const branchList = reportBranchFilter!=='all' ? branches.filter(b=>b.id===reportBranchFilter) : branches;
+    rows = branchList.map(b=>{
       const bl = scoped.filter(x=>x.branch_id===b.id);
       const exp = manualExpenses.filter(e=>e.branch_id===b.id && (!reportDateFrom||e.date>=reportDateFrom) && (!reportDateTo||e.date<=reportDateTo));
       const tt = computeTotals(bl, exp);
