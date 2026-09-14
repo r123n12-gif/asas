@@ -194,7 +194,7 @@ const T = {
     connError:'تعذر الاتصال بقاعدة البيانات. تأكد من صحة مفاتيح Supabase وأن الجداول تم إنشاؤها.',
     setupTitle:'الإعداد غير مكتمل', setupBody:'لازم تعدّل مفاتيح Supabase أولًا داخل ملف الكود قبل استخدام البرنامج.',
     setupStep:'افتح الملف بمحرر نصوص، وابحث عن السطرين اللي فيهم YOUR_SUPABASE_URL و YOUR_SUPABASE_ANON_KEY في أول الكود، واستبدلهم بمفاتيح مشروعك من Project Settings → API في Supabase.',
-    roleAccountant:'محاسب', fieldAirline:'شركة الطيران', fieldTicketNo:'رقم التذكرة', fieldInvoiceNo:'رقم الفاتورة',
+    roleAccountant:'محاسب', fieldAirline:'شركة الطيران', fieldTicketNo:'رقم التذكرة', fieldInvoiceNo:'رقم الفاتورة', fieldFlightRoute:'مسار الرحلة', flightRoutePlaceholder:'مثل: ELQ-JED',
     fieldNet:'الصافي / التكلفة من المورد (ر.س)', fieldSellPrice:'سعر البيع المحصّل من العميل (ر.س)', fieldProfit:'الربح (ر.س)', fieldOpenTicket:'تذكرة مفتوحة', tagOpen:'تذكرة مفتوحة',
     colAirline:'شركة الطيران', colTicketNo:'رقم التذكرة', colInvoiceNo:'رقم الفاتورة', colNet:'الصافي', colProfit:'الربح',
     navDeposits:'الإيداعات النقدية', subDeposits:'تسجيل واعتماد إيداعات الكاش وتأكيد التحويلات البنكية',
@@ -252,8 +252,10 @@ const T = {
     reconcileAllMatched:'✅ كل التذاكر بالملف موجودة بالنظام — ما فيه نواقص.', reconcileMissingNote:'هذي التذاكر موجودة بالتقرير الخارجي بس غير مسجّلة بالنظام — يحتمل الموظف نسيها.',
     reconcileFiltersTitle:'فلترة البحث قبل المطابقة', allSuppliersOpt:'كل الموردين', quickToday:'اليوم', quickMonth:'هذا الشهر', quickYear:'هذه السنة',
     matchingTicketsCount:'عدد التذاكر المطابقة للفلتر', reconcileModeLabel:'طريقة المطابقة', reconcileModeTicket:'برقم التذكرة', reconcileModeAmountName:'بالمبلغ + اسم العميل',
+    applySearchBtn:'بحث / تطبيق الفلاتر',
     reconcileAmountColLabel:'عمود المبلغ', reconcileNameColLabel:'عمود اسم العميل', exportExcelBtn:'⬇️ تصدير Excel',
     reconcileAirlineColLabel:'عمود شركة الطيران (اختياري)', reconcileNoneOpt:'بدون', reconcileOptionalNote:'اختياري',
+    reconcileRouteColLabel:'عمود مسار الرحلة (اختياري)',
     reconcileAmountMismatch:'نفس التذكرة، مبلغ مختلف', reconcileAmountMismatchNote:'⚠️ هذي التذاكر موجودة بالنظام وبنفس رقمها بالملف الخارجي، لكن المبلغ مختلف — يحتاج مراجعة.',
     reconcileSystemAmount:'المبلغ بالنظام', reconcileFileAmount:'المبلغ بالملف الخارجي',
     payInstallment:'تابي/تمارا (تقسيط)', fieldInstallmentProvider:'المزود', installmentFeeNote:'يُخصم 7% رسوم تابي/تمارا تلقائيًا من المبلغ عند اعتماد المحاسب.',
@@ -324,7 +326,7 @@ const T = {
     connError:'Could not connect to the database. Check your Supabase keys and that the tables were created.',
     setupTitle:'Setup incomplete', setupBody:'You need to configure your Supabase keys inside the code file before using the app.',
     setupStep:'Open the file in a text editor, find the two lines with YOUR_SUPABASE_URL and YOUR_SUPABASE_ANON_KEY near the top of the script, and replace them with your project keys from Project Settings → API in Supabase.',
-    roleAccountant:'Accountant', fieldAirline:'Airline', fieldTicketNo:'Ticket number', fieldInvoiceNo:'Invoice number',
+    roleAccountant:'Accountant', fieldAirline:'Airline', fieldTicketNo:'Ticket number', fieldInvoiceNo:'Invoice number', fieldFlightRoute:'Flight route', flightRoutePlaceholder:'e.g. ELQ-JED',
     fieldNet:'Net / cost from supplier (SAR)', fieldSellPrice:'Sell price charged to customer (SAR)', fieldProfit:'Profit (SAR)', fieldOpenTicket:'Open ticket', tagOpen:'Open ticket',
     colAirline:'Airline', colTicketNo:'Ticket No.', colInvoiceNo:'Invoice No.', colNet:'Net', colProfit:'Profit',
     navDeposits:'Cash Deposits', subDeposits:'Record and approve cash deposits, confirm bank transfers',
@@ -382,8 +384,10 @@ const T = {
     reconcileAllMatched:'✅ Every ticket in the file exists in the system — nothing missing.', reconcileMissingNote:'These tickets exist in the external report but are not recorded in the system — the employee may have forgotten them.',
     reconcileFiltersTitle:'Search filters before matching', allSuppliersOpt:'All suppliers', quickToday:'Today', quickMonth:'This month', quickYear:'This year',
     matchingTicketsCount:'Tickets matching the filter', reconcileModeLabel:'Matching method', reconcileModeTicket:'By ticket number', reconcileModeAmountName:'By amount + customer name',
+    applySearchBtn:'Search / Apply filters',
     reconcileAmountColLabel:'Amount column', reconcileNameColLabel:'Customer name column', exportExcelBtn:'⬇️ Export Excel',
     reconcileAirlineColLabel:'Airline column (optional)', reconcileNoneOpt:'None', reconcileOptionalNote:'optional',
+    reconcileRouteColLabel:'Flight route column (optional)',
     reconcileAmountMismatch:'Same ticket, different amount', reconcileAmountMismatchNote:'⚠️ These tickets exist in the system with the same number as in the external file, but the amount differs — needs review.',
     reconcileSystemAmount:'Amount in system', reconcileFileAmount:'Amount in external file',
     payInstallment:'Tabby/Tamara (BNPL)', fieldInstallmentProvider:'Provider', installmentFeeNote:'A 7% Tabby/Tamara fee is deducted automatically once the accountant approves.',
@@ -676,7 +680,7 @@ async function addBooking(data){
   const net = +(sell-profit).toFixed(2);
   const row = {
     date: data.date||todayStr(), customer: data.customer, branch_id: data.branchId,
-    airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null,
+    airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, commission_rate: 0, commission: 0, profit_amount: profit,
     margin: profit, net_profit: profit, payment_status:'pending', cost_reviewed: true,
@@ -701,7 +705,7 @@ async function updateBooking(id, data){
   const net = +(sell-profit).toFixed(2);
   const row = {
     date: data.date, customer: data.customer, branch_id: data.branchId,
-    airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null,
+    airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, profit_amount: profit, margin: profit, net_profit: profit, cost_reviewed: true,
     payment_method: data.paymentMethod,
@@ -826,6 +830,8 @@ function computeTotals(bookingsList, expensesList){
   return {sales,cost,commission,expenses,revenue,netProfit,pendingCommission,pendingReviewCount:pendingReview.length,pendingReviewSales,count:active.length};
 }
 function expensesForFilter(){
+  const u = currentUser();
+  if(u && u.role==='employee') return [];
   const bf = effectiveBranchFilter();
   return bf==='all' ? manualExpenses : manualExpenses.filter(e=>e.branch_id===bf);
 }
@@ -997,9 +1003,9 @@ function bookingsTable(list, mode){
         <th>${t('colNet')}</th><th>${t('colProfit')}</th><th>${t('colSell')}</th><th>${t('colSupplier')}</th><th>${t('colInvoiceNo')}</th><th>${t('colPayStatus')}</th><th>${t('colPaymentMethod')}</th>${showActions?'<th></th>':''}</tr></thead>
       <tbody>${list.map(b=>`
         <tr><td class="num">${b.booking_no}</td><td><b>${b.airline||'—'}</b></td><td>${b.customer}</td>
-          <td>${b.is_open_ticket?`<span class="tag pending">${t('tagOpen')}</span>`:(b.ticket_no||'—')}</td>
+          <td>${b.is_open_ticket?`<span class="tag pending">${t('tagOpen')}</span>`:(b.ticket_no||'—')}${b.flight_route?`<br><span style="font-size:10.5px;color:var(--ink-soft)">${b.flight_route}</span>`:''}</td>
           <td>${branchName(b.branch_id)}</td>
-          <td class="num">${b.cost_reviewed?money(b.cost):`<span class="tag pending">${t('pendingReviewTag')}</span>`}</td><td class="num">${(isAdmin()||mode==='employee')?(b.cost_reviewed?money(b.profit_amount):`<span class="tag pending">${t('pendingReviewTag')}</span>`):moneyOrHidden(0)}</td>
+          <td class="num">${b.cost_reviewed?money(b.cost):`<span class="tag pending">${t('pendingReviewTag')}</span>`}</td><td class="num">${canSeeOwnProfit()?(b.cost_reviewed?money(b.profit_amount):`<span class="tag pending">${t('pendingReviewTag')}</span>`):moneyOrHidden(0)}</td>
           <td class="num" style="font-weight:600">${canSeeSell()?money(b.sell):moneyOrHidden(0)}</td>
           <td>${b.supplier||'—'}${(Number(b.cost)>0)?`<br><span class="tag ${b.supplier_settled?'collected':'pending'}">${b.supplier_settled?t('supplierSettledTag'):t('supplierUnsettledTag')}</span>`:''}</td><td>${b.invoice_no||'—'}</td>
           <td>${b.refunded?`<span class="tag rejected">${t('refundedTag')}</span>`:b.refund_status==='pending'?`<span class="tag pending">${t('refundPendingTag')}</span>`:b.refund_status==='rejected'?`<span class="tag rejected">${t('refundRejectedTag')}</span>`:`<span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span>`}</td>
@@ -1159,7 +1165,7 @@ function exportBookingsToExcel(list, mode){
   const showSell = canSeeSell();
   const rows = list.map(b=>({
     [t('colNo')]: b.booking_no, [t('jDate')]: b.date, [t('colAirline')]: b.airline||'', [t('colCustomer')]: b.customer,
-    [t('colTicketNo')]: b.ticket_no||'', [t('colBranch')]: branchName(b.branch_id), [t('colEmployee')]: userName(b.created_by),
+    [t('colTicketNo')]: b.ticket_no||'', [t('fieldFlightRoute')]: b.flight_route||'', [t('colBranch')]: branchName(b.branch_id), [t('colEmployee')]: userName(b.created_by),
     [t('colSupplier')]: b.supplier||'', [t('colNet')]: Number(b.cost)||0,
     [t('colProfit')]: showProfit ? (Number(b.profit_amount)||0) : t('hiddenValue'),
     [t('colSell')]: showSell ? (Number(b.sell)||0) : t('hiddenValue'),
@@ -1320,9 +1326,10 @@ function openBookingModal(existing){
         <div class="field"><label>${t('fieldInvoiceNo')}</label><input name="invoiceNo" value="${v.invoice_no||''}"></div>
       </div>
       <div class="grid-2">
+        <div class="field"><label>${t('fieldFlightRoute')}</label><input name="flightRoute" placeholder="${t('flightRoutePlaceholder')}" value="${v.flight_route||''}"></div>
         <div class="field"><label>${t('fieldSupplier')}</label><select name="source">${SOURCE_PRESETS.map(s=>`<option ${v.supplier===s?'selected':''}>${s}</option>`).join('')}</select></div>
-        <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${v.date||todayStr()}"></div>
       </div>
+      <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${v.date||todayStr()}"></div>
       <div class="grid-2">
         <div class="field"><label>${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell" required value="${v.sell??''}"></div>
         <div class="field"><label>${t('fieldProfit')}</label><input type="number" step="0.01" name="profit" required value="${v.profit_amount??''}"></div>
@@ -1361,7 +1368,7 @@ function openBookingModal(existing){
     const btn = document.getElementById('bookingSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
     const f = new FormData(e.target);
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
-      ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), source:f.get('source'), date:f.get('date'),
+      ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
       sell:f.get('sell'), profit:f.get('profit'), isOpenTicket: f.get('isOpenTicket')==='on',
       paymentMethod:f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider') };
     if(isEdit && !existing.id){
@@ -1654,6 +1661,7 @@ function renderReports(){
         <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" id="repDateFrom" value="${reportDateFrom||''}"></div>
         <div class="field"><label>${t('fieldDateTo')}</label><input type="date" id="repDateTo" value="${reportDateTo||''}"></div>
       </div>
+      <button type="button" class="btn btn-primary" id="repSearchBtn" style="margin-top:6px;">🔍 ${t('applySearchBtn')}</button>
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales')}</div>
     ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit')}</div>`:''}
@@ -1686,6 +1694,14 @@ function renderReports(){
   document.getElementById('repToday').onclick = ()=>setReportQuickRange('today');
   document.getElementById('repMonth').onclick = ()=>setReportQuickRange('month');
   document.getElementById('repYear').onclick = ()=>setReportQuickRange('year');
+  document.getElementById('repSearchBtn').onclick = ()=>{
+    reportSupplierFilter = document.getElementById('repSupplier').value;
+    reportBranchFilter = document.getElementById('repBranch').value;
+    reportEmployeeFilter = document.getElementById('repEmployee').value;
+    reportDateFrom = document.getElementById('repDateFrom').value||null;
+    reportDateTo = document.getElementById('repDateTo').value||null;
+    renderReports();
+  };
 }
 
 /* ===================== CASH DEPOSITS PAGE ===================== */
@@ -2159,6 +2175,7 @@ function renderReconcile(){
         <div id="reconcileModeTicketBox" class="grid-2">
           <div class="field"><label>${t('reconcileColLabel')}</label><select id="reconcileColSel"></select></div>
           <div class="field"><label>${t('reconcileAirlineColLabel')}</label><select id="reconcileAirlineColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
+          <div class="field"><label>${t('reconcileRouteColLabel')}</label><select id="reconcileRouteColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
           <div class="field"><label>${t('reconcileAmountColLabel')} (${t('reconcileOptionalNote')})</label><select id="reconcileTicketAmountColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
         </div>
         <div id="reconcileModeAmountNameBox" class="grid-2" style="display:none;">
@@ -2191,6 +2208,7 @@ function renderReconcile(){
         const optsWithNone = `<option value="">${t('reconcileNoneOpt')}</option>`+opts;
         document.getElementById('reconcileColSel').innerHTML = opts;
         document.getElementById('reconcileAirlineColSel').innerHTML = optsWithNone;
+        document.getElementById('reconcileRouteColSel').innerHTML = optsWithNone;
         document.getElementById('reconcileTicketAmountColSel').innerHTML = optsWithNone;
         document.getElementById('reconcileAmountColSel').innerHTML = opts;
         document.getElementById('reconcileNameColSel').innerHTML = opts;
@@ -2215,14 +2233,17 @@ function renderReconcile(){
     if(mode==='ticket'){
       col = document.getElementById('reconcileColSel').value;
       const airlineCol = document.getElementById('reconcileAirlineColSel').value;
+      const routeCol = document.getElementById('reconcileRouteColSel').value;
       const amtCol = document.getElementById('reconcileTicketAmountColSel').value;
-      const keyOf = (ticket, airline)=> String(ticket).trim().toUpperCase() + (airlineCol ? '|'+String(airline||'').trim().toUpperCase() : '');
+      const keyOf = (ticket, airline, route)=> String(ticket).trim().toUpperCase()
+        + (airlineCol ? '|'+String(airline||'').trim().toUpperCase() : '')
+        + (routeCol ? '|'+String(route||'').trim().toUpperCase() : '');
       const systemMap = new Map();
-      scoped.filter(b=>b.ticket_no).forEach(b=>{ systemMap.set(keyOf(b.ticket_no, b.airline), b); });
+      scoped.filter(b=>b.ticket_no).forEach(b=>{ systemMap.set(keyOf(b.ticket_no, b.airline, b.flight_route), b); });
       reconcileRows.forEach(row=>{
         const raw = row[col];
         if(raw===undefined || raw===null || String(raw).trim()==='') return;
-        const key = keyOf(raw, airlineCol ? row[airlineCol] : '');
+        const key = keyOf(raw, airlineCol ? row[airlineCol] : '', routeCol ? row[routeCol] : '');
         const hit = systemMap.get(key);
         if(!hit){ missing.push(row); return; }
         if(amtCol){
@@ -2232,7 +2253,7 @@ function renderReconcile(){
         }
         matched++;
       });
-      otherCols = reconcileHeaders.filter(h=>h!==col && h!==airlineCol && h!==amtCol).slice(0,4);
+      otherCols = reconcileHeaders.filter(h=>h!==col && h!==airlineCol && h!==routeCol && h!==amtCol).slice(0,4);
     }else{
       const amtCol = document.getElementById('reconcileAmountColSel').value;
       const nameCol = document.getElementById('reconcileNameColSel').value;
