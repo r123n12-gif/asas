@@ -1032,9 +1032,10 @@ function bookingsTable(list, mode){
           </td>`:''}
         </tr>${mode==='employee' && b.edit_requested && b.edit_note?`<tr><td colspan="13" style="background:#FBEFE0;font-size:11.5px;color:#A8722C;">📝 ${t('editNoteLabel')}: ${b.edit_note}</td></tr>`:''}`).join('')}</tbody></table></div>`;
 }
-function branchBarsHTML(metric){
+function branchBarsHTML(metric, sourceBookings){
+  const list = sourceBookings || bookings;
   const rows = branches.map(b=>{
-    const bl = bookings.filter(x=>x.branch_id===b.id);
+    const bl = list.filter(x=>x.branch_id===b.id);
     const tt = computeTotals(bl, manualExpenses.filter(e=>e.branch_id===b.id));
     return {name:b.name, val: metric==='sales'?tt.sales:tt.netProfit};
   });
@@ -1721,8 +1722,8 @@ function renderReports(){
       </div>
       <button type="button" class="btn btn-primary" id="repSearchBtn" style="margin-top:6px;">🔍 ${t('applySearchBtn')}</button>
     </div>
-    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales')}</div>
-    ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit')}</div>`:''}
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales', scoped)}</div>
+    ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit', scoped)}</div>`:''}
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('branchTable')}</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
