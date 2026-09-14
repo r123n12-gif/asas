@@ -179,6 +179,7 @@ const T = {
     branchesTitle:'الفروع', addBranch:'+ إضافة فرع', colBranchOnly:'اسم الفرع', delete:'حذف',
     branchDeleteNote:'لا يمكن حذف فرع مرتبط بحجوزات أو قيود سابقة.', branchDeleteError:'تعذر حذف الفرع لوجود بيانات مرتبطة به.',
     confirmDeleteBranch:'هل أنت متأكد من حذف هذا الفرع؟ لا يمكن التراجع عن هذا الإجراء.',
+    manualExpensesListTitle:'المصاريف المسجّلة', fieldExpenseDesc:'الوصف', confirmDeleteExpense:'هل أنت متأكد من حذف هذا المصروف؟ سيُحذف قيده من دفتر الحسابات أيضًا.',
     resetTitle:'ملاحظة', resetNote:'حذف البيانات هنا نهائي ويتم مباشرة على قاعدة البيانات الحقيقية — تصرف بحذر.',
     modalNewBranch:'إضافة فرع جديد', fieldBranchName:'اسم الفرع', add:'إضافة',
     usersTitle:'المستخدمون', addUser:'+ إضافة مستخدم', colUserName:'الاسم', colUsername:'اسم المستخدم',
@@ -315,6 +316,7 @@ const T = {
     branchesTitle:'Branches', addBranch:'+ Add branch', colBranchOnly:'Branch name', delete:'Delete',
     branchDeleteNote:'A branch with existing bookings or entries cannot be deleted.', branchDeleteError:'Could not delete: this branch has linked records.',
     confirmDeleteBranch:'Are you sure you want to delete this branch? This cannot be undone.',
+    manualExpensesListTitle:'Recorded expenses', fieldExpenseDesc:'Description', confirmDeleteExpense:'Are you sure you want to delete this expense? Its journal entry will be deleted too.',
     resetTitle:'Note', resetNote:'Deletions here are permanent and happen directly on your real database — proceed carefully.',
     modalNewBranch:'Add new branch', fieldBranchName:'Branch name', add:'Add',
     usersTitle:'Users', addUser:'+ Add user', colUserName:'Name', colUsername:'Username',
@@ -661,6 +663,7 @@ function canSeeAllBranches(){ return isAdmin() || isAccountant(); }
 function canSeeProfit(){ return isAdmin(); }
 function canSeeOwnProfit(){ return isAdmin() || (currentUser()?.role==='employee'); }
 function canSeeSell(){ return isAdmin() || (currentUser()?.role==='employee'); }
+function canSeeSalesTotals(){ return canSeeSell() || isAccountant(); }
 function moneyOrHidden(n){ return canSeeProfit() ? money(n) : `<span style="color:var(--ink-soft)">${t('hiddenValue')}</span>`; }
 function effectiveBranchFilter(){
   const u = currentUser();
@@ -810,10 +813,16 @@ async function addManualExpense(data){
   const {data:ins, error} = await sb.from('manual_expenses').insert({ date:data.date||todayStr(), branch_id:data.branchId, description:data.desc, amount }).select().single();
   if(error) throw error;
   manualExpenses.unshift(ins);
-  const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:ins.date, branch_id:ins.branch_id,
+  const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:ins.date, branch_id:ins.branch_id, expense_id:ins.id,
     desc_key:'jExpense', desc_args:[data.desc], debit_key:'accExpenses', credit_key:'accCashOnHand', amount }).select().single();
   if(jErr) throw jErr;
   journal.unshift(jIns);
+}
+async function deleteManualExpense(id){
+  const {error} = await sb.from('manual_expenses').delete().eq('id', id);
+  if(error) throw error;
+  manualExpenses = manualExpenses.filter(e=>e.id!==id);
+  journal = journal.filter(j=>j.expense_id!==id);
 }
 async function addManualJournalEntry(data){
   const amount = Number(data.amount)||0;
@@ -1001,10 +1010,10 @@ function renderDashboard(){
   const c = document.getElementById('content');
   c.innerHTML = `
     <div class="kpi-row">
-      <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${canSeeSell()?money(tt.sales):moneyOrHidden(0)}</div></div>
+      <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${canSeeSalesTotals()?money(tt.sales):moneyOrHidden(0)}</div></div>
       <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${tt.netProfit>=0?'pos':'neg'}">${canSeeOwnProfit()?money(tt.netProfit):moneyOrHidden(0)}</div></div>
       <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${t('kpiCount')}</div><div class="kpi-value">${tt.count}</div></div>
-      <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('kpiPendingAmounts')}</div><div class="kpi-value">${canSeeSell()?money(pendingAmt):moneyOrHidden(0)}</div></div>
+      <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('kpiPendingAmounts')}</div><div class="kpi-value">${canSeeSalesTotals()?money(pendingAmt):moneyOrHidden(0)}</div></div>
       <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('kpiPendingProfit')}</div><div class="kpi-value">${canSeeOwnProfit()?money(pendingProfitAmt):moneyOrHidden(0)}</div></div>
     </div>
     <div class="section-flex">
@@ -1277,14 +1286,14 @@ function bookingsTableHTML(list){
 }
 function totalsKpisHTML(tt){
   return `<div class="kpis">
-      <div class="kpi"><div>${t('kpiSales')}</div><div>${canSeeSell()?money(tt.sales):t('hiddenValue')}</div></div>
+      <div class="kpi"><div>${t('kpiSales')}</div><div>${canSeeSalesTotals()?money(tt.sales):t('hiddenValue')}</div></div>
       ${canSeeOwnProfit()?`<div class="kpi"><div>${t('kpiProfit')}</div><div>${money(tt.netProfit)}</div></div>`:''}
       <div class="kpi"><div>${t('kpiCount')}</div><div>${tt.count}</div></div>
       <div class="kpi"><div>${t('expenseOp')}</div><div>${money(tt.expenses)}</div></div>
     </div>`;
 }
 function exportReportsToExcel(rows, groupBy, nameHeader){
-  const showSell = canSeeSell(), showProfit = canSeeProfit();
+  const showSell = canSeeSalesTotals(), showProfit = canSeeProfit();
   const exportRows = rows.map(r=>{
     const row = { [nameHeader]: r.name };
     if(groupBy==='employee') row[t('colUserBranch')] = r.sub||'';
@@ -1309,7 +1318,7 @@ function printBranchEmployeeReport(rows, groupBy, nameHeader){
   if(reportEmployeeFilter!=='all') filters.push(`${t('fieldEmployeeFilter')}: ${userName(reportEmployeeFilter)}`);
   const periodLabel = (reportDateFrom||reportDateTo) ? `${reportDateFrom||'…'} → ${reportDateTo||'…'}` : t('reportAllPeriod');
   filters.push(`${t('reportPeriodLabel')}: ${periodLabel}`);
-  const showSell = canSeeSell(), showProfit = canSeeProfit();
+  const showSell = canSeeSalesTotals(), showProfit = canSeeProfit();
   const html = `<!DOCTYPE html><html lang="${lang}" dir="${lang==='ar'?'rtl':'ltr'}"><head><meta charset="UTF-8">
     <title>${t('navReports')}</title>
     <style>
@@ -1511,7 +1520,7 @@ function renderLedger(){
     <div class="section-flex">
       <div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('incomeStatement')}</h3></div>
         <table><tbody>
-          <tr><td>${t('incomeSales')}</td><td class="num">${canSeeSell()?money(tt.sales):moneyOrHidden(0)}</td></tr>
+          <tr><td>${t('incomeSales')}</td><td class="num">${canSeeSalesTotals()?money(tt.sales):moneyOrHidden(0)}</td></tr>
           <tr><td>${t('incomeComm')}</td><td class="num">${money(tt.commission)}</td></tr>
           <tr><td>${t('expenseCost')}</td><td class="num neg">${money(tt.cost)}</td></tr>
           <tr><td>${t('expenseOp')}</td><td class="num neg">${money(tt.expenses)}</td></tr>
@@ -1529,9 +1538,14 @@ function renderLedger(){
       <tbody>${names.map(n=>`<tr><td>${n}</td><td class="num neg" style="font-weight:600">${money(map[n].owed)}</td><td class="num">${money(map[n].settled)}</td></tr>`).join('')}</tbody></table></div>`; })()}
     </div>
     <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('manualExpensesListTitle')}</h3><button class="btn btn-ghost btn-sm" id="addExpenseBtn">${t('addExpense')}</button></div>
+      ${expList.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colBranch')}</th><th>${t('fieldExpenseDesc')}</th><th>${t('colAmount')}</th><th></th></tr></thead>
+      <tbody>${expList.map(e=>`<tr><td>${e.date}</td><td>${branchName(e.branch_id)}</td><td>${e.description||'—'}</td><td class="num" style="font-weight:600">${money(e.amount)}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="uiDeleteExpense('${e.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('journalTitle')}</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-ghost btn-sm" id="addExpenseBtn">${t('addExpense')}</button>
           <button class="btn btn-primary btn-sm" id="addManualJournalBtn">${t('addManualJournal')}</button>
         </div></div>
       ${jrnl.length===0?`<div class="empty">${t('journalEmpty')}</div>`:`<div style="overflow-x:auto;"><table>
@@ -1761,7 +1775,7 @@ function renderReports(){
       </div>
       <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);">
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('kpiCount')}</div><div class="kpi-value">${summaryTT.count}</div></div>
-        <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${canSeeSell()?money(summaryTT.sales):moneyOrHidden(0)}</div></div>
+        <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${canSeeSalesTotals()?money(summaryTT.sales):moneyOrHidden(0)}</div></div>
         <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${summaryTT.netProfit>=0?'pos':'neg'}">${canSeeProfit()?money(summaryTT.netProfit):moneyOrHidden(0)}</div></div>
       </div>
     </div>
@@ -1781,7 +1795,7 @@ function renderReports(){
       </div>
       ${rows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;">
       <table><thead><tr><th>${nameHeader}</th>${groupBy==='employee'?`<th>${t('colUserBranch')}</th>`:''}<th>${t('colBookCount')}</th><th>${t('colSalesTotal')}</th><th>${t('colCostTotal')}</th><th>${t('colCommTotal')}</th>${groupBy==='branch'?`<th>${t('colExpTotal')}</th>`:''}<th>${t('colNetProfitCol')}</th><th>${t('colMargin')}</th></tr></thead>
-        <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td class="num">${r.count}</td><td class="num">${canSeeSell()?money(r.sales):moneyOrHidden(0)}</td><td class="num">${money(r.cost)}</td>
+        <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td class="num">${r.count}</td><td class="num">${canSeeSalesTotals()?money(r.sales):moneyOrHidden(0)}</td><td class="num">${money(r.cost)}</td>
           <td class="num">${money(r.commission)}</td>${groupBy==='branch'?`<td class="num">${money(r.expenses)}</td>`:''}<td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${moneyOrHidden(r.netProfit)}</td><td class="num">${canSeeProfit()?r.margin.toFixed(1)+'%':t('hiddenValue')}</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
   document.getElementById('reportPrintBtn').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
@@ -2178,6 +2192,10 @@ function renderSettings(){
     };
   };
 }
+window.uiDeleteExpense = async function(id){
+  if(!confirm(t('confirmDeleteExpense'))) return;
+  try{ await deleteManualExpense(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
 window.uiRemoveBranch = async function(id){
   if(!confirm(t('confirmDeleteBranch'))) return;
   try{
