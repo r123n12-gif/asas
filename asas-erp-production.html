@@ -264,6 +264,10 @@ const T = {
     reconcileSystemAmount:'المبلغ بالنظام', reconcileFileAmount:'المبلغ بالملف الخارجي',
     reconcileDiagnosticNote:'كل التذاكر ما طلعت متطابقة — احتمال كبير يكون سبب المشكلة اختلاف صيغة رقم التذكرة بين النظام والملف (بادئة حروف زيادة أو فراغات). قارن العينة:',
     reconcileDiagnosticSystem:'رقم بالنظام', reconcileDiagnosticFile:'رقم بالملف',
+    reconcileEmptyColWarning:'⚠️ العمود اللي حددته فاضي تمامًا بكل صفوف الملف (٠ صف فيه قيمة) — لهذا ما انفحص أي تذكرة فعليًا. تأكد إنك اخترت العمود الصحيح',
+    reconcileModeBankStatement:'مطابقة كشف حساب البنك', reconcileBankAmountColLabel:'عمود المبلغ بكشف الحساب', reconcileBankMethodLabel:'نوع الدفع',
+    reconcileBankMethodBoth:'تحويل + سبان معًا', reconcileBankVerifiedCount:'إجمالي المؤكّدة بالنظام', reconcileBankNotFound:'لم تُلقَ بالبنك 🚩',
+    reconcileBankNotFoundNote:'هذي التحويلات/السبانات مؤكّدة بالنظام، لكن ما لقينا مبلغ مطابق لها بكشف حساب البنك اللي رفعته — يحتاج مراجعة فورية.',
     payInstallment:'تابي/تمارا (تقسيط)', fieldInstallmentProvider:'المزود', installmentFeeNote:'يُخصم 7% رسوم تابي/تمارا تلقائيًا من المبلغ عند اعتماد المحاسب.',
     actualAmountPrompt:'أدخل المبلغ الفعلي اللي دخل البنك (لو مختلف عن سعر التذكرة، السعر يُصحَّح تلقائيًا):',
     refundedTag:'تم الرفند', refundPendingTag:'طلب رفند قيد المراجعة', refundRejectedTag:'رفض طلب الرفند', requestRefundBtn:'طلب رفند',
@@ -402,6 +406,10 @@ const T = {
     reconcileSystemAmount:'Amount in system', reconcileFileAmount:'Amount in external file',
     reconcileDiagnosticNote:"None of the tickets matched — this is likely because the ticket number format differs between the system and the file (extra letter prefix or spaces). Compare the sample:",
     reconcileDiagnosticSystem:'System number', reconcileDiagnosticFile:'File number',
+    reconcileEmptyColWarning:"⚠️ The column you selected is completely empty across every row in the file (0 rows had a value) — so no ticket was actually checked. Make sure you picked the right column",
+    reconcileModeBankStatement:'Bank statement reconciliation', reconcileBankAmountColLabel:'Amount column in bank statement', reconcileBankMethodLabel:'Payment type',
+    reconcileBankMethodBoth:'Transfer + Span together', reconcileBankVerifiedCount:'Total confirmed in system', reconcileBankNotFound:'Not found in bank 🚩',
+    reconcileBankNotFoundNote:"These transfers/span payments are confirmed in the system, but no matching amount was found in the bank statement you uploaded — needs immediate review.",
     payInstallment:'Tabby/Tamara (BNPL)', fieldInstallmentProvider:'Provider', installmentFeeNote:'A 7% Tabby/Tamara fee is deducted automatically once the accountant approves.',
     actualAmountPrompt:'Enter the actual amount that landed in the bank (if different from the ticket price, the price is corrected automatically):',
     refundedTag:'Refunded', refundPendingTag:'Refund request pending review', refundRejectedTag:'Refund request rejected', requestRefundBtn:'Request refund',
@@ -2332,6 +2340,7 @@ function renderReconcile(){
         <div class="field"><label>${t('reconcileModeLabel')}</label><select id="reconcileModeSel">
           <option value="ticket">${t('reconcileModeTicket')}</option>
           <option value="amountName">${t('reconcileModeAmountName')}</option>
+          <option value="bankStatement">${t('reconcileModeBankStatement')}</option>
         </select></div>
         <div id="reconcileModeTicketBox" class="grid-2">
           <div class="field"><label>${t('reconcileColLabel')}</label><select id="reconcileColSel"></select></div>
@@ -2342,6 +2351,14 @@ function renderReconcile(){
         <div id="reconcileModeAmountNameBox" class="grid-2" style="display:none;">
           <div class="field"><label>${t('reconcileAmountColLabel')}</label><select id="reconcileAmountColSel"></select></div>
           <div class="field"><label>${t('reconcileNameColLabel')}</label><select id="reconcileNameColSel"></select></div>
+        </div>
+        <div id="reconcileModeBankBox" class="grid-2" style="display:none;">
+          <div class="field"><label>${t('reconcileBankAmountColLabel')}</label><select id="reconcileBankAmountColSel"></select></div>
+          <div class="field"><label>${t('reconcileBankMethodLabel')}</label><select id="reconcileBankMethodSel">
+            <option value="both">${t('reconcileBankMethodBoth')}</option>
+            <option value="transfer">${t('payTransfer')}</option>
+            <option value="span">${t('paySpan')}</option>
+          </select></div>
         </div>
         <button class="btn btn-primary btn-sm" id="reconcileRunBtn" style="margin-top:8px;">${t('reconcileRunBtn')}</button>
       </div>
@@ -2373,6 +2390,7 @@ function renderReconcile(){
         document.getElementById('reconcileTicketAmountColSel').innerHTML = optsWithNone;
         document.getElementById('reconcileAmountColSel').innerHTML = opts;
         document.getElementById('reconcileNameColSel').innerHTML = opts;
+        document.getElementById('reconcileBankAmountColSel').innerHTML = opts;
         document.getElementById('reconcileColumnBox').style.display = '';
         document.getElementById('reconcileResultBox').innerHTML = '';
       }catch(err){ console.error(err); alert(t('reconcileParseError')); }
@@ -2380,9 +2398,10 @@ function renderReconcile(){
     reader.readAsBinaryString(file);
   };
   document.getElementById('reconcileModeSel').onchange = (e)=>{
-    const isAmountName = e.target.value==='amountName';
-    document.getElementById('reconcileModeTicketBox').style.display = isAmountName?'none':'';
-    document.getElementById('reconcileModeAmountNameBox').style.display = isAmountName?'':'none';
+    const mode = e.target.value;
+    document.getElementById('reconcileModeTicketBox').style.display = mode==='ticket'?'':'none';
+    document.getElementById('reconcileModeAmountNameBox').style.display = mode==='amountName'?'':'none';
+    document.getElementById('reconcileModeBankBox').style.display = mode==='bankStatement'?'':'none';
   };
   document.getElementById('reconcileRunBtn').onclick = ()=>{
     const mode = document.getElementById('reconcileModeSel').value;
@@ -2408,9 +2427,10 @@ function renderReconcile(){
         if(d) digitsMap.set(d, b);
       });
       let fuzzyMatches = 0;
+      let emptyValCount = 0;
       reconcileRows.forEach(row=>{
         const raw = row[col];
-        if(raw===undefined || raw===null || String(raw).trim()==='') return;
+        if(raw===undefined || raw===null || String(raw).trim()===''){ emptyValCount++; return; }
         const key = keyOf(raw, airlineCol ? row[airlineCol] : '', routeCol ? row[routeCol] : '');
         let hit = systemMap.get(key);
         if(!hit){
@@ -2426,29 +2446,67 @@ function renderReconcile(){
         matched++;
       });
       otherCols = reconcileHeaders.filter(h=>h!==col && h!==airlineCol && h!==routeCol && h!==amtCol).slice(0,4);
-      if(matched===0 && missing.length>0 && fuzzyMatches===0){
+      if(emptyValCount===reconcileRows.length && reconcileRows.length>0){
+        missing._emptyColWarning = `${t('reconcileEmptyColWarning')} ("${col}")`;
+      }else if(matched===0 && missing.length>0 && fuzzyMatches===0){
         const sampleSys = scoped.find(b=>b.ticket_no)?.ticket_no;
         const sampleFile = reconcileRows.find(r=>r[col]!==undefined && String(r[col]).trim()!=='')?.[col];
         if(sampleSys && sampleFile!==undefined){
           missing._diagnostic = `${t('reconcileDiagnosticNote')} ${t('reconcileDiagnosticSystem')}: "${sampleSys}"  |  ${t('reconcileDiagnosticFile')}: "${sampleFile}"`;
         }
       }
+    }else if(mode==='bankStatement'){
+      const amtCol = document.getElementById('reconcileBankAmountColSel').value;
+      const methodFilter = document.getElementById('reconcileBankMethodSel').value;
+      const verifiedList = scoped.filter(b=> b.payment_status==='paid' &&
+        (methodFilter==='both' ? (b.payment_method==='transfer'||b.payment_method==='span') : b.payment_method===methodFilter));
+      const bankAmounts = [];
+      reconcileRows.forEach(row=>{
+        const raw = row[amtCol];
+        if(raw===undefined || raw===null || String(raw).trim()==='') return;
+        bankAmounts.push(+Number(raw).toFixed(2));
+      });
+      verifiedList.forEach(b=>{
+        const amt = +Number(b.sell||0).toFixed(2);
+        const idx = bankAmounts.findIndex(a=>Math.abs(a-amt)<0.01);
+        if(idx>-1){ bankAmounts.splice(idx,1); matched++; }
+        else{ missing.push(b); }
+      });
     }else{
       const amtCol = document.getElementById('reconcileAmountColSel').value;
       const nameCol = document.getElementById('reconcileNameColSel').value;
       col = nameCol;
       const systemPairs = scoped.map(b=>({name:String(b.customer||'').trim().toUpperCase(), amt:+Number(b.sell||0).toFixed(2), emp:userName(b.created_by)}));
+      let emptyValCount2 = 0;
       reconcileRows.forEach(row=>{
         const rawName = row[nameCol], rawAmt = row[amtCol];
-        if((rawName===undefined||String(rawName).trim()==='') && (rawAmt===undefined||String(rawAmt).trim()==='')) return;
+        if((rawName===undefined||String(rawName).trim()==='') && (rawAmt===undefined||String(rawAmt).trim()==='')){ emptyValCount2++; return; }
         const name = String(rawName||'').trim().toUpperCase();
         const amt = +Number(rawAmt||0).toFixed(2);
         const hit = systemPairs.find(p=>p.name===name && Math.abs(p.amt-amt)<0.01);
         if(hit) matched++; else missing.push(row);
       });
       otherCols = reconcileHeaders.filter(h=>h!==nameCol && h!==amtCol).slice(0,4);
+      if(emptyValCount2===reconcileRows.length && reconcileRows.length>0){
+        missing._emptyColWarning = `${t('reconcileEmptyColWarning')} ("${nameCol}" / "${amtCol}")`;
+      }
     }
     const box = document.getElementById('reconcileResultBox');
+    if(mode==='bankStatement'){
+      box.innerHTML = `
+        <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:14px;">
+          <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('reconcileBankVerifiedCount')}</div><div class="kpi-value">${matched+missing.length}</div></div>
+          <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('reconcileMatched')}</div><div class="kpi-value">${matched}</div></div>
+          <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('reconcileBankNotFound')}</div><div class="kpi-value neg">${missing.length}</div></div>
+        </div>
+        ${missing.length===0?`<div class="empty">${t('reconcileAllMatched')}</div>`:`
+        <div class="note" style="color:var(--red);font-weight:600;">🚩 ${t('reconcileBankNotFoundNote')}</div>
+        <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colPaymentMethod')}</th><th>${t('colAmount')}</th><th>${t('colBranch')}</th></tr></thead>
+          <tbody>${missing.map(b=>`<tr><td style="font-weight:700;color:var(--red);">${b.booking_no}</td><td>${b.customer}</td><td>${b.ticket_no||'—'}</td>
+            <td>${b.payment_method==='span'?t('paySpan'):t('payTransfer')}</td><td class="num">${money(b.sell)}</td><td>${branchName(b.branch_id)}</td></tr>`).join('')}</tbody>
+        </table></div>`}`;
+      return;
+    }
     box.innerHTML = `
       <div class="kpi-row" style="grid-template-columns:repeat(${amountMismatches.length>0?4:3},1fr);margin-bottom:14px;">
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('reconcileTotalRows')}</div><div class="kpi-value">${reconcileRows.length}</div></div>
@@ -2461,12 +2519,13 @@ function renderReconcile(){
       <div style="overflow-x:auto;margin-top:8px;margin-bottom:16px;"><table><thead><tr><th>${t('colTicketNo')}</th><th>${t('reconcileSystemAmount')}</th><th>${t('reconcileFileAmount')}</th></tr></thead>
         <tbody>${amountMismatches.map(m=>`<tr><td style="font-weight:700;color:#A8722C;">${m.ticket}</td><td>${money(m.sysAmt)}</td><td>${money(m.fileAmt)}</td></tr>`).join('')}</tbody>
       </table></div>`:''}
+      ${missing._emptyColWarning?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">⚠️ ${missing._emptyColWarning}</div>`:''}
       ${missing._diagnostic?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">🔎 ${missing._diagnostic}</div>`:''}
-      ${missing.length===0?(amountMismatches.length===0?`<div class="empty">${t('reconcileAllMatched')}</div>`:''):`
+      ${missing._emptyColWarning?'':(missing.length===0?(amountMismatches.length===0?`<div class="empty">${t('reconcileAllMatched')}</div>`:''):`
       <div class="note" style="color:var(--red);font-weight:600;">⚠️ ${t('reconcileMissingNote')}</div>
       <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${col}</th>${otherCols.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
         <tbody>${missing.map(row=>`<tr><td style="font-weight:700;color:var(--red);">${row[col]}</td>${otherCols.map(c=>`<td>${row[c]??''}</td>`).join('')}</tr>`).join('')}</tbody>
-      </table></div>`}`;
+      </table></div>`)}`;
   };
 }
 
