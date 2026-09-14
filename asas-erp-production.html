@@ -1805,8 +1805,7 @@ function renderUsers(){
           <td><span class="tag ${u.active===false?'rejected':'collected'}">${u.active===false?t('statusInactive'):t('statusActive')}</span></td>
           <td style="display:flex;gap:5px;flex-wrap:wrap;">
             <button class="btn btn-ghost btn-sm" onclick="uiEditUser('${u.id}')">${t('edit')}</button>
-            ${u.id!==currentUser().id?`<button class="btn btn-gold btn-sm" onclick="uiToggleUserActive('${u.id}')">${u.active===false?t('activateBtn'):t('deactivateBtn')}</button>
-            <button class="btn btn-danger btn-sm" onclick="uiDeleteUser('${u.id}')">${t('delete')}</button>`:''}
+            ${u.id!==currentUser().id?`<button class="btn btn-gold btn-sm" onclick="uiToggleUserActive('${u.id}')">${u.active===false?t('activateBtn'):t('deactivateBtn')}</button>`:''}
           </td></tr>`).join('')}</tbody></table>
     </div>`;
   document.getElementById('addUserBtn').onclick = openUserModal;
