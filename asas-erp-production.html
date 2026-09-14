@@ -1695,8 +1695,8 @@ function renderTransfers(){
   const pendingTransfers = bookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && !b.transfer_verified);
   const verifiedTransfers = bookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && b.transfer_verified);
   let html = `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingVerifyTitle')}</h3></div>
-      ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${t('colFee')}</th><th></th></tr></thead>
-      <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td>
+      ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${t('colFee')}</th><th></th></tr></thead>
+      <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
         <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payTransfer')}</td>
         <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
         <td class="num">${money(b.sell)}</td>
@@ -1704,8 +1704,8 @@ function renderTransfers(){
         <td><button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('verifiedTransfersTitle')}</h3></div>
-      ${verifiedTransfers.length===0?`<div class="empty">${t('noVerifiedTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th></tr></thead>
-      <tbody>${verifiedTransfers.slice(0,50).map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td>
+      ${verifiedTransfers.length===0?`<div class="empty">${t('noVerifiedTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th></tr></thead>
+      <tbody>${verifiedTransfers.slice(0,50).map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
         <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payTransfer')}</td>
         <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
         <td class="num">${money(b.sell)}</td></tr>`).join('')}</tbody></table></div>`}
