@@ -1313,6 +1313,31 @@ function exportReportsToExcel(rows, groupBy, nameHeader){
   XLSX.utils.book_append_sheet(wb, ws, 'Report');
   XLSX.writeFile(wb, `branch-employee-report-${todayStr()}.xlsx`);
 }
+function printTicketDetails(list){
+  const filters = [];
+  if(reportSupplierFilter!=='all') filters.push(`${t('colSupplier')}: ${reportSupplierFilter}`);
+  if(reportBranchFilter!=='all') filters.push(`${t('fieldBranch')}: ${branchName(reportBranchFilter)}`);
+  if(reportEmployeeFilter!=='all') filters.push(`${t('fieldEmployeeFilter')}: ${userName(reportEmployeeFilter)}`);
+  const periodLabel = (reportDateFrom||reportDateTo) ? `${reportDateFrom||'…'} → ${reportDateTo||'…'}` : t('reportAllPeriod');
+  filters.push(`${t('reportPeriodLabel')}: ${periodLabel}`);
+  const html = `<!DOCTYPE html><html lang="${lang}" dir="${lang==='ar'?'rtl':'ltr'}"><head><meta charset="UTF-8">
+    <title>${t('ticketDetailsTitle')}</title>
+    <style>
+      body{font-family:'IBM Plex Sans Arabic',system-ui,sans-serif;color:#1C1C1C;padding:24px;}
+      h1{font-size:18px;margin:0 0 10px;}
+      .meta{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-bottom:16px;background:#FBF7EE;padding:10px 14px;border-radius:8px;}
+      table{width:100%;border-collapse:collapse;font-size:11px;}
+      th{background:#0F2A3D;color:#fff;padding:6px 5px;text-align:${lang==='ar'?'right':'left'};} td{padding:5px;border-bottom:1px solid #E4DECB;}
+    </style></head><body>
+    <h1>${t('agencyAr')} — ${t('ticketDetailsTitle')}</h1>
+    <div class="meta">${filters.map(f=>`<div>${f}</div>`).join('')}</div>
+    ${list.length===0?`<p>${t('emptyData')}</p>`:bookingsTableHTML(list)}
+    </body></html>`;
+  const w = window.open('', '_blank');
+  if(!w){ alert(t('connError')); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+  setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
+}
 function printBranchEmployeeReport(rows, groupBy, nameHeader){
   const filters = [];
   if(reportSupplierFilter!=='all') filters.push(`${t('colSupplier')}: ${reportSupplierFilter}`);
@@ -1784,6 +1809,16 @@ function renderReports(){
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales', scoped)}</div>
     ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit', scoped)}</div>`:''}
     <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('ticketDetailsTitle')}</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" id="ticketDetailsPrintBtn">${t('printReport')}</button>
+          <button class="btn btn-ghost btn-sm" id="ticketDetailsExcelBtn">${t('exportExcelBtn')}</button>
+        </div>
+      </div>
+      <p class="note">${t('ticketDetailsNote')}</p>
+      ${scoped.length===0?`<div class="empty">${t('emptyData')}</div>`:bookingsTableHTML(scoped)}
+    </div>
+    <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('branchTable')}</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <select class="select-ctrl" id="reportGroupBySel">
@@ -1799,12 +1834,9 @@ function renderReports(){
       <table><thead><tr><th>${nameHeader}</th>${groupBy==='employee'?`<th>${t('colUserBranch')}</th>`:''}<th>${t('colBookCount')}</th><th>${t('colSalesTotal')}</th><th>${t('colCostTotal')}</th><th>${t('colCommTotal')}</th>${groupBy==='branch'?`<th>${t('colExpTotal')}</th>`:''}<th>${t('colNetProfitCol')}</th><th>${t('colMargin')}</th></tr></thead>
         <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td class="num">${r.count}</td><td class="num">${canSeeSalesTotals()?money(r.sales):moneyOrHidden(0)}</td><td class="num">${money(r.cost)}</td>
           <td class="num">${money(r.commission)}</td>${groupBy==='branch'?`<td class="num">${money(r.expenses)}</td>`:''}<td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${moneyOrHidden(r.netProfit)}</td><td class="num">${canSeeProfit()?r.margin.toFixed(1)+'%':t('hiddenValue')}</td></tr>`).join('')}</tbody></table></div>`}
-    </div>
-    <div class="panel">
-      <div class="panel-head"><h3 class="panel-title">${t('ticketDetailsTitle')}</h3></div>
-      <p class="note">${t('ticketDetailsNote')}</p>
-      ${scoped.length===0?`<div class="empty">${t('emptyData')}</div>`:bookingsTableHTML(scoped)}
     </div>`;
+  document.getElementById('ticketDetailsPrintBtn').onclick = ()=>printTicketDetails(scoped);
+  document.getElementById('ticketDetailsExcelBtn').onclick = ()=>exportBookingsToExcel(scoped, 'manage');
   document.getElementById('reportPrintBtn').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
   document.getElementById('reportExcelBtn').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
   document.getElementById('reportPrintBtnTop').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
