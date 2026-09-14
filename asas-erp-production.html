@@ -178,6 +178,7 @@ const T = {
     colCommTotal:'العمولات', colExpTotal:'المصروفات', colNetProfitCol:'صافي الربح', colMargin:'هامش الربح',
     branchesTitle:'الفروع', addBranch:'+ إضافة فرع', colBranchOnly:'اسم الفرع', delete:'حذف',
     branchDeleteNote:'لا يمكن حذف فرع مرتبط بحجوزات أو قيود سابقة.', branchDeleteError:'تعذر حذف الفرع لوجود بيانات مرتبطة به.',
+    confirmDeleteBranch:'هل أنت متأكد من حذف هذا الفرع؟ لا يمكن التراجع عن هذا الإجراء.',
     resetTitle:'ملاحظة', resetNote:'حذف البيانات هنا نهائي ويتم مباشرة على قاعدة البيانات الحقيقية — تصرف بحذر.',
     modalNewBranch:'إضافة فرع جديد', fieldBranchName:'اسم الفرع', add:'إضافة',
     usersTitle:'المستخدمون', addUser:'+ إضافة مستخدم', colUserName:'الاسم', colUsername:'اسم المستخدم',
@@ -208,6 +209,8 @@ const T = {
     colDepositStatus:'الحالة', pendingTransfersTitle:'تحويلات بانتظار التأكيد', noPendingTransfers:'لا توجد تحويلات معلّقة.',
     noPendingDeposits:'لا توجد إيداعات معلّقة.', uploading:'جاري الرفع...', receiptRequired:'يجب إرفاق صورة الإيصال.',
     depositHistory:'سجل الإيداعات', myBranchCash:'رصيد الكاش الحالي لفرعك (غير مودّع بعد)', allBranchesCash:'كاش غير مودّع حسب الفرع',
+    myPersonalCash:'رصيدك النقدي الشخصي (غير مودّع بعد)', employeeCashBreakdownTitle:'رصيد الكاش لكل موظف',
+    employeeCashBreakdownNote:'كل موظف مسؤول عن رصيده الشخصي فقط (مبيعاته الكاش ناقص إيداعاته المعتمدة) — لا يرتبط برصيد زملائه بنفس الفرع.',
     depositSaved:'تم إرسال الإيداع للمحاسب للاعتماد.', rejectReason:'سبب الرفض (اختياري)',
     printReport:'🖨️ طباعة / حفظ تقرير', modalPrintReport:'طباعة تقرير المبيعات', fieldDateFrom:'من تاريخ', fieldDateTo:'إلى تاريخ',
     printNow:'طباعة / حفظ PDF', reportTitle:'تقرير المبيعات', reportBranchLabel:'الفرع', reportPeriodLabel:'الفترة',
@@ -302,6 +305,7 @@ const T = {
     colCommTotal:'Commission', colExpTotal:'Expenses', colNetProfitCol:'Net profit', colMargin:'Margin',
     branchesTitle:'Branches', addBranch:'+ Add branch', colBranchOnly:'Branch name', delete:'Delete',
     branchDeleteNote:'A branch with existing bookings or entries cannot be deleted.', branchDeleteError:'Could not delete: this branch has linked records.',
+    confirmDeleteBranch:'Are you sure you want to delete this branch? This cannot be undone.',
     resetTitle:'Note', resetNote:'Deletions here are permanent and happen directly on your real database — proceed carefully.',
     modalNewBranch:'Add new branch', fieldBranchName:'Branch name', add:'Add',
     usersTitle:'Users', addUser:'+ Add user', colUserName:'Name', colUsername:'Username',
@@ -332,6 +336,8 @@ const T = {
     colDepositStatus:'Status', pendingTransfersTitle:'Transfers awaiting confirmation', noPendingTransfers:'No pending transfers.',
     noPendingDeposits:'No pending deposits.', uploading:'Uploading...', receiptRequired:'Please attach a receipt photo.',
     depositHistory:'Deposit history', myBranchCash:"Your branch's current cash balance (not yet deposited)", allBranchesCash:'Undeposited cash by branch',
+    myPersonalCash:'Your personal cash balance (not yet deposited)', employeeCashBreakdownTitle:'Cash balance per employee',
+    employeeCashBreakdownNote:"Each employee is responsible only for their own balance (their cash sales minus their approved deposits) — not linked to colleagues' balances in the same branch.",
     depositSaved:'Deposit submitted to the accountant for approval.', rejectReason:'Rejection reason (optional)',
     printReport:'🖨️ Print / save report', modalPrintReport:'Print sales report', fieldDateFrom:'From date', fieldDateTo:'To date',
     printNow:'Print / Save PDF', reportTitle:'Sales report', reportBranchLabel:'Branch', reportPeriodLabel:'Period',
@@ -423,6 +429,21 @@ function branchCashOnHand(branchId){
   const handedOverCashProfit = bookings.filter(b=>b.branch_id===branchId && b.payment_method==='cash' && approvedHandoverIds.has(b.id)).reduce((s,b)=>s+Number(b.profit_amount||0),0);
   return +(collectedCash-approvedDeposits-handedOverCashProfit).toFixed(2);
 }
+function employeeCashOnHand(employeeId){
+  const collectedCash = bookings.filter(b=>b.created_by===employeeId && b.payment_method==='cash').reduce((s,b)=>s+Number(b.sell||0),0);
+  const approvedDeposits = deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
+  const approvedHandoverIds = new Set();
+  profitHandovers.filter(h=>h.status==='approved' && h.employee_id===employeeId).forEach(h=>(h.booking_ids||[]).forEach(id=>approvedHandoverIds.add(id)));
+  const handedOverCashProfit = bookings.filter(b=>b.created_by===employeeId && b.payment_method==='cash' && approvedHandoverIds.has(b.id)).reduce((s,b)=>s+Number(b.profit_amount||0),0);
+  return +(collectedCash-approvedDeposits-handedOverCashProfit).toFixed(2);
+}
+function employeeCashBreakdownHTML(){
+  const employees = users.filter(u=>u.role==='employee');
+  const rows = employees.map(u=>({name:u.name, branch:branchName(u.branch_id), bal:employeeCashOnHand(u.id)})).filter(r=>r.bal!==0 || true);
+  if(rows.length===0) return `<div class="empty">${t('emptyData')}</div>`;
+  return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('colUserName')}</th><th>${t('fieldBranch')}</th><th>${t('colAmount')}</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td>${r.name}</td><td>${r.branch}</td><td class="num" style="font-weight:600">${money(r.bal)}</td></tr>`).join('')}</tbody></table></div>`;
+}
 async function uploadReceiptFile(file){
   const extMatch = /\.([a-zA-Z0-9]+)$/.exec(file.name||'');
   const ext = extMatch ? extMatch[1].toLowerCase() : 'jpg';
@@ -435,7 +456,7 @@ async function uploadReceiptFile(file){
 async function submitDeposit(data){
   const receiptUrl = await uploadReceiptFile(data.file);
   const row = { branch_id:data.branchId, amount:Number(data.amount)||0, destination:data.destination,
-    receipt_url:receiptUrl, status:'pending', submitted_by:currentUser()?.id||null };
+    receipt_url:receiptUrl, status:'pending', submitted_by:data.onBehalfOf||currentUser()?.id||null };
   const {data:ins, error} = await sb.from('cash_deposits').insert(row).select().single();
   if(error) throw error;
   deposits.unshift(ins);
@@ -1652,14 +1673,18 @@ function renderDeposits(){
   const canManage = canSeeAllBranches();
   let html = '';
   if(!canManage){
-    const bal = branchCashOnHand(u.branch_id);
+    const bal = employeeCashOnHand(u.id);
     html += `<div class="kpi-row" style="grid-template-columns:1fr;"><div class="kpi" style="--accent:var(--gold)">
-      <div class="kpi-label">${t('myBranchCash')}</div><div class="kpi-value">${money(bal)}</div></div></div>`;
+      <div class="kpi-label">${t('myPersonalCash')}</div><div class="kpi-value">${money(bal)}</div></div></div>`;
   }else{
     const rows = branches.map(b=>({name:b.name, bal:branchCashOnHand(b.id)}));
     html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('allBranchesCash')}</h3></div>
       ${rows.length===0?`<div class="empty">${t('emptyBranches')}</div>`:`<table><thead><tr><th>${t('colBranchName')}</th><th>${t('colAmount')}</th></tr></thead>
       <tbody>${rows.map(r=>`<tr><td>${r.name}</td><td class="num" style="font-weight:600">${money(r.bal)}</td></tr>`).join('')}</tbody></table>`}
+    </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('employeeCashBreakdownTitle')}</h3></div>
+      <p class="note">${t('employeeCashBreakdownNote')}</p>
+      ${employeeCashBreakdownHTML()}
     </div>`;
     const pendingRefunds = bookings.filter(b=>b.refund_status==='pending');
     html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingRefundsTitle')}</h3></div>
@@ -1669,7 +1694,7 @@ function renderDeposits(){
         <td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveRefund('${b.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectRefund('${b.id}')">${t('reject')}</button></td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
   }
-  const myDeposits = canManage ? deposits : deposits.filter(d=>d.branch_id===u.branch_id);
+  const myDeposits = canManage ? deposits : deposits.filter(d=>d.submitted_by===u.id);
   const pendingDeposits = myDeposits.filter(d=>d.status==='pending');
   const historyDeposits = myDeposits.filter(d=>d.status!=='pending');
   html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('depositsTitle')}</h3><button class="btn btn-primary btn-sm" id="addDepositBtn">${t('addDeposit')}</button></div>
@@ -1683,8 +1708,8 @@ function renderDeposits(){
 }
 function depositsTableHTML(list, showApprove){
   if(list.length===0) return `<div class="empty">${t('noPendingDeposits')}</div>`;
-  return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colBranch')}</th><th>${t('colDestination')}</th><th>${t('colAmount')}</th><th>${t('colReceipt')}</th><th>${t('colDepositStatus')}</th>${showApprove?'<th></th>':''}</tr></thead>
-    <tbody>${list.map(d=>`<tr><td>${(d.created_at||'').slice(0,10)}</td><td>${branchName(d.branch_id)}</td><td>${destLabel(d.destination)}</td><td class="num">${money(d.amount)}</td>
+  return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colDestination')}</th><th>${t('colAmount')}</th><th>${t('colReceipt')}</th><th>${t('colDepositStatus')}</th>${showApprove?'<th></th>':''}</tr></thead>
+    <tbody>${list.map(d=>`<tr><td>${(d.created_at||'').slice(0,10)}</td><td>${userName(d.submitted_by)}</td><td>${branchName(d.branch_id)}</td><td>${destLabel(d.destination)}</td><td class="num">${money(d.amount)}</td>
       <td><a href="${d.receipt_url}" target="_blank">${t('viewReceipt')}</a></td>
       <td><span class="tag ${d.status==='approved'?'collected':d.status==='rejected'?'rejected':'pending'}">${d.status==='approved'?t('depositApproved'):d.status==='rejected'?t('depositRejected'):t('depositPending')}</span></td>
       ${showApprove?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveDeposit('${d.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectDeposit('${d.id}')">${t('reject')}</button></td>`:''}
@@ -1736,11 +1761,14 @@ function openDepositModal(){
   const canManage = canSeeAllBranches();
   const branchOptions = canManage ? branches : branches.filter(b=>b.id===u.branch_id);
   const defaultBranch = u.branch_id || (branchOptions[0]?.id||'');
-  const suggestedAmount = defaultBranch ? branchCashOnHand(defaultBranch) : 0;
+  const employeesInBranch = (branchId)=> users.filter(x=>x.role==='employee' && x.branch_id===branchId);
+  const suggestedAmount = canManage ? 0 : employeeCashOnHand(u.id);
   showModal(`
     <div class="modal-head"><h3>${t('addDeposit')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="depositForm">
-      ${canManage ? `<div class="field"><label>${t('fieldBranch')}</label><select name="branchId" id="depositBranchSel">${branchOptions.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>` : `<input type="hidden" name="branchId" value="${defaultBranch}">`}
+      ${canManage ? `<div class="field"><label>${t('fieldBranch')}</label><select name="branchId" id="depositBranchSel">${branchOptions.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldEmployeeFilter')}</label><select name="employeeId" id="depositEmployeeSel"></select></div>`
+        : `<input type="hidden" name="branchId" value="${defaultBranch}"><input type="hidden" name="employeeId" value="${u.id}">`}
       <div class="field"><label>${t('fieldDepositDestination')}</label><select name="destination">${DEPOSIT_DESTINATIONS.map(d=>`<option value="${d}">${destLabel(d)}</option>`).join('')}</select></div>
       <div class="field"><label>${t('fieldDepositAmount')}</label><input type="number" step="0.01" name="amount" id="depositAmountInput" value="${suggestedAmount}" required></div>
       <div class="field"><label>${t('fieldDepositReceipt')}</label><input type="file" name="receipt" accept="image/*" required></div>
@@ -1751,7 +1779,17 @@ function openDepositModal(){
       </div>
     </form>`);
   const branchSel = document.getElementById('depositBranchSel');
-  if(branchSel) branchSel.onchange = (e)=>{ document.getElementById('depositAmountInput').value = branchCashOnHand(e.target.value); };
+  const empSel = document.getElementById('depositEmployeeSel');
+  if(branchSel && empSel){
+    const refreshEmployees = (branchId)=>{
+      const opts = employeesInBranch(branchId);
+      empSel.innerHTML = opts.map(x=>`<option value="${x.id}">${x.name}</option>`).join('');
+      document.getElementById('depositAmountInput').value = opts[0] ? employeeCashOnHand(opts[0].id) : 0;
+    };
+    refreshEmployees(defaultBranch || branchOptions[0]?.id);
+    branchSel.onchange = (e)=>refreshEmployees(e.target.value);
+    empSel.onchange = (e)=>{ document.getElementById('depositAmountInput').value = employeeCashOnHand(e.target.value); };
+  }
   document.getElementById('depositForm').onsubmit = async (e)=>{
     e.preventDefault();
     const btn = document.getElementById('depositSaveBtn');
@@ -1760,7 +1798,7 @@ function openDepositModal(){
     if(!file || !file.size){ document.getElementById('depositErrorBox').innerHTML = `<div class="login-error">${t('receiptRequired')}</div>`; return; }
     btn.disabled=true; btn.textContent=t('uploading');
     try{
-      await submitDeposit({ branchId:f.get('branchId'), destination:f.get('destination'), amount:f.get('amount'), file });
+      await submitDeposit({ branchId:f.get('branchId'), destination:f.get('destination'), amount:f.get('amount'), file, onBehalfOf:f.get('employeeId') });
       closeModal(); render();
     }catch(err){
       console.error(err);
@@ -1976,6 +2014,7 @@ function renderSettings(){
   };
 }
 window.uiRemoveBranch = async function(id){
+  if(!confirm(t('confirmDeleteBranch'))) return;
   try{
     const {error} = await sb.from('branches').delete().eq('id', id);
     if(error) throw error;
