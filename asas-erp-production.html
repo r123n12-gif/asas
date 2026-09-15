@@ -282,6 +282,7 @@ const T = {
     confirmApproveRefund:'اعتماد الرفند يعكس كل القيود المحاسبية الخاصة بهذا الحجز (البيع، التكلفة، التحصيل). هل أنت متأكد؟',
     refundsReportTitle:'تقرير الاسترجاعات (الرفندات)', refundsReportNote:'كل طلبات الاسترجاع المطابقة للفلاتر أعلاه — الموظف يسوي الطلب، والمحاسب يعتمد أو يرفض. الربح مخفي عن المحاسب، يظهر للأدمن فقط.',
     fieldRefundMethod:'طريقة استرجاع المبلغ للعميل', fieldRefundProof:'إثبات التحويل (إيصال)', modalApproveRefund:'اعتماد طلب الاسترجاع', refundProofRequired:'لازم ترفق إثبات التحويل.',
+    refundCashHint:'كاش: تعطي العميل المبلغ نقدًا بنفسك الآن — ينخصم فورًا من مبيعاتك.', refundTransferHint:'تحويل: يبقى الطلب معلّقًا لين المحاسب يسوي التحويل الفعلي من البنك ويرفق إيصاله.',
     colRefundStatus:'حالة الاسترجاع',
     profitHandoverBtn:'📋 تسليم الربح', modalProfitHandover:'تقرير وتسليم الربح', previewBtn:'معاينة', noEligibleProfit:'لا توجد تذاكر مؤهلة (مدقّقة التكلفة) بهذي الفترة.',
     totalProfitLabel:'إجمالي الربح المسلَّم', submitHandoverBtn:'تسليم للأدمن', myHandoverHistory:'سجل تسليماتي',
@@ -432,6 +433,7 @@ const T = {
     confirmApproveRefund:'Approving the refund will reverse all ledger entries for this booking (sale, cost, collection). Are you sure?',
     refundsReportTitle:'Refunds report', refundsReportNote:'All refund requests matching the filters above — the employee submits the request, the accountant approves or rejects it. Profit stays hidden from the accountant, visible to admin only.',
     fieldRefundMethod:'Method to refund the customer', fieldRefundProof:'Transfer proof (receipt)', modalApproveRefund:'Approve refund request', refundProofRequired:'You must attach transfer proof.',
+    refundCashHint:'Cash: you hand the amount to the customer yourself right now — deducted immediately from your sales.', refundTransferHint:'Transfer: the request stays pending until the accountant makes the actual bank transfer and attaches the receipt.',
     colRefundStatus:'Refund status',
     profitHandoverBtn:'📋 Hand over profit', modalProfitHandover:'Profit report & handover', previewBtn:'Preview', noEligibleProfit:'No eligible (cost-reviewed) tickets in this period.',
     totalProfitLabel:'Total profit handed over', submitHandoverBtn:'Submit to admin', myHandoverHistory:'My handover history',
@@ -614,24 +616,30 @@ async function rejectProfitHandover(id, note){
   if(error) throw error;
   const h = profitHandovers.find(x=>x.id===id); if(h){ h.status='rejected'; h.notes=note||null; }
 }
-async function requestRefund(bookingId, file, note){
+async function requestRefund(bookingId, file, note, refundMethod){
   const receiptUrl = await uploadReceiptFile(file);
-  const {data:updated, error} = await sb.from('bookings').update({ refund_status:'pending', refund_receipt_url:receiptUrl, refund_note:note||null,
-    refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString() }).eq('id', bookingId).select().single();
-  if(error) throw error;
-  const idx = bookings.findIndex(b=>b.id===bookingId); if(idx>-1) bookings[idx]=updated;
+  if(refundMethod==='cash'){
+    const {data:updated, error} = await sb.from('bookings').update({ refund_status:'approved', refunded:true, refund_method:'cash',
+      refund_receipt_url:receiptUrl, refund_note:note||null, refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString(),
+      refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString() }).eq('id', bookingId).select().single();
+    if(error) throw error;
+    const idx = bookings.findIndex(b=>b.id===bookingId); if(idx>-1) bookings[idx]=updated;
+    await postRefundReversal(bookingId);
+  }else{
+    const {data:updated, error} = await sb.from('bookings').update({ refund_status:'pending', refund_method:'transfer', refund_receipt_url:receiptUrl, refund_note:note||null,
+      refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString() }).eq('id', bookingId).select().single();
+    if(error) throw error;
+    const idx = bookings.findIndex(b=>b.id===bookingId); if(idx>-1) bookings[idx]=updated;
+  }
 }
 async function rejectRefund(bookingId, note){
   const {error} = await sb.from('bookings').update({refund_status:'rejected', refund_note:note||null, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}).eq('id', bookingId);
   if(error) throw error;
   const b = bookings.find(x=>x.id===bookingId); if(b){ b.refund_status='rejected'; b.refund_note=note||null; }
 }
-async function approveRefund(bookingId, refundMethod, refundProofUrl){
+async function postRefundReversal(bookingId){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) return;
-  const {error} = await sb.from('bookings').update({refund_status:'approved', refunded:true, refund_method:refundMethod||null, refund_proof_url:refundProofUrl||null, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}).eq('id', bookingId);
-  if(error) throw error;
-  b.refund_status='approved'; b.refunded=true; b.refund_method=refundMethod||null; b.refund_proof_url=refundProofUrl||null;
   const origRows = journal.filter(j=>j.booking_id===bookingId);
   if(origRows.length>0){
     const reversedRows = origRows.map(j=>({ date:todayStr(), branch_id:j.branch_id, booking_id:bookingId,
@@ -640,6 +648,14 @@ async function approveRefund(bookingId, refundMethod, refundProofUrl){
     if(jErr) throw jErr;
     journal.unshift(...jIns.reverse());
   }
+}
+async function approveRefund(bookingId, refundMethod, refundProofUrl){
+  const b = bookings.find(x=>x.id===bookingId);
+  if(!b) return;
+  const {error} = await sb.from('bookings').update({refund_status:'approved', refunded:true, refund_method:refundMethod||b.refund_method||null, refund_proof_url:refundProofUrl||null, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}).eq('id', bookingId);
+  if(error) throw error;
+  b.refund_status='approved'; b.refunded=true; b.refund_method=refundMethod||null; b.refund_proof_url=refundProofUrl||null;
+  await postRefundReversal(bookingId);
 }
 async function settleSupplierPayment(bookingId){
   const b = bookings.find(x=>x.id===bookingId);
@@ -2002,6 +2018,11 @@ function openRefundRequestModal(bookingId){
     <div class="modal-head"><h3>${t('modalRequestRefund')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="refundRequestForm">
       <div class="note">${t('refundRequestNote')} (${t('colNo')}: ${b.booking_no} — ${esc(b.customer)})</div>
+      <div class="field"><label>${t('fieldRefundMethod')}</label><select name="refundMethod" id="refundReqMethodSel">
+        <option value="cash">${t('payCash')}</option>
+        <option value="transfer">${t('payTransfer')}</option>
+      </select></div>
+      <p class="note" id="refundMethodHint">${t('refundCashHint')}</p>
       <div class="field"><label>${t('fieldRefundReceipt')}</label><input type="file" name="receipt" accept="image/*,.pdf" required></div>
       <div class="field"><label>${t('fieldRefundNote')}</label><input name="note" placeholder="${t('refundNotePlaceholder')}"></div>
       <div id="refundErrorBox"></div>
@@ -2010,6 +2031,9 @@ function openRefundRequestModal(bookingId){
         <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
       </div>
     </form>`);
+  document.getElementById('refundReqMethodSel').onchange = (e)=>{
+    document.getElementById('refundMethodHint').textContent = e.target.value==='cash' ? t('refundCashHint') : t('refundTransferHint');
+  };
   document.getElementById('refundRequestForm').onsubmit = async (e)=>{
     e.preventDefault();
     const btn = document.getElementById('refundSaveBtn');
@@ -2018,7 +2042,7 @@ function openRefundRequestModal(bookingId){
     if(!file || !file.size){ document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${t('receiptRequired')}</div>`; return; }
     btn.disabled=true; btn.textContent=t('uploading');
     try{
-      await requestRefund(bookingId, file, f.get('note'));
+      await requestRefund(bookingId, file, f.get('note'), f.get('refundMethod'));
       closeModal(); render();
     }catch(err){
       console.error(err);
@@ -2034,36 +2058,28 @@ window.uiApproveRefund = function(id){
   showModal(`
     <div class="modal-head"><h3>${t('modalApproveRefund')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <p class="note">${t('colNo')}: ${b.booking_no} — ${esc(b.customer)}${canSeeSalesTotals()?` — ${money(b.sell)}`:''}</p>
+    <p class="note">${t('fieldRefundMethod')}: <strong>${t('payTransfer')}</strong></p>
     <form id="approveRefundForm">
-      <div class="field"><label>${t('fieldRefundMethod')}</label><select name="refundMethod" id="refundMethodSel">
-        <option value="cash">${t('payCash')}</option>
-        <option value="transfer">${t('payTransfer')}</option>
-      </select></div>
-      <div class="field" id="refundProofField"><label>${t('fieldRefundProof')}</label><input type="file" name="refundProof" accept="image/*"></div>
+      <div class="field"><label>${t('fieldRefundProof')}</label><input type="file" name="refundProof" accept="image/*" required></div>
       <div id="approveRefundErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
         <button type="submit" class="btn btn-primary" id="approveRefundBtn">${t('approve')}</button>
         <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
       </div>
     </form>`);
-  document.getElementById('refundMethodSel').onchange = (e)=>{
-    document.getElementById('refundProofField').style.display = e.target.value==='transfer' ? '' : 'none';
-  };
   document.getElementById('approveRefundForm').onsubmit = async (e)=>{
     e.preventDefault();
     const btn = document.getElementById('approveRefundBtn');
     const f = new FormData(e.target);
-    const method = f.get('refundMethod');
     const file = f.get('refundProof');
-    if(method==='transfer' && (!file || !file.size)){
+    if(!file || !file.size){
       document.getElementById('approveRefundErrorBox').innerHTML = `<div class="login-error">${t('refundProofRequired')}</div>`;
       return;
     }
     btn.disabled=true; btn.textContent=t('saving');
     try{
-      let proofUrl = null;
-      if(file && file.size) proofUrl = await uploadReceiptFile(file);
-      await approveRefund(id, method, proofUrl);
+      const proofUrl = await uploadReceiptFile(file);
+      await approveRefund(id, 'transfer', proofUrl);
       closeModal(); render();
     }catch(err){
       console.error(err);
