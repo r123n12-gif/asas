@@ -199,7 +199,7 @@ const T = {
     setupStep:'افتح الملف بمحرر نصوص، وابحث عن السطرين اللي فيهم YOUR_SUPABASE_URL و YOUR_SUPABASE_ANON_KEY في أول الكود، واستبدلهم بمفاتيح مشروعك من Project Settings → API في Supabase.',
     roleAccountant:'محاسب', fieldAirline:'شركة الطيران', fieldTicketNo:'رقم التذكرة', fieldInvoiceNo:'رقم الفاتورة', fieldFlightRoute:'مسار الرحلة', flightRoutePlaceholder:'مثل: ELQ-JED',
     fieldNet:'الصافي / التكلفة من المورد (ر.س)', fieldSellPrice:'سعر البيع المحصّل من العميل (ر.س)', fieldProfit:'الربح (ر.س)', fieldOpenTicket:'تذكرة مفتوحة', tagOpen:'تذكرة مفتوحة',
-    fieldSystemFare:'سعر السستم فير / التكلفة الفعلية (ر.س)', calculatedProfitLabel:'الربح المحسوب تلقائيًا',
+    fieldSystemFare:'سعر السستم فير / التكلفة الفعلية (ر.س)', calculatedProfitLabel:'الربح المحسوب تلقائيًا', paymentMethodLockedNote:'🔒 طريقة الدفع مقفلة لأن التحويل تأكّد من البنك بالفعل. لو تحتاج تغييرها، اعمل استرجاع للتذكرة وسجّلها من جديد.',
     colAirline:'شركة الطيران', colTicketNo:'رقم التذكرة', colInvoiceNo:'رقم الفاتورة', colNet:'الصافي', colProfit:'الربح',
     navDeposits:'الإيداعات النقدية', subDeposits:'تسجيل واعتماد إيداعات الكاش وتأكيد التحويلات البنكية',
     fieldPaymentMethod:'طريقة الدفع من العميل', payCash:'كاش', payTransfer:'تحويل بنكي',
@@ -283,6 +283,8 @@ const T = {
     fieldRefundReceipt:'نموذج/إيصال الرفند', fieldRefundNote:'ملاحظة (اختياري)', refundNotePlaceholder:'سبب الرفند...',
     submitRefundBtn:'إرسال طلب الرفند', pendingRefundsTitle:'طلبات الرفند بانتظار المراجعة', noPendingRefunds:'لا توجد طلبات رفند معلّقة.',
     navRefunds:'الاسترجاعات', subRefunds:'كل طلبات الاسترجاع — بانتظار المراجعة، ومعتمدة أو مرفوضة سابقًا', refundHistoryTitle:'سجل الاسترجاعات (معتمدة/مرفوضة)',
+    navProfits:'الأرباح', subProfits:'كل طلبات تسليم الربح وتفاصيل ربح كل تذكرة — للأدمن فقط', totalHandedOverProfit:'إجمالي الربح المسلَّم (كل الوقت)',
+    profitHandoverHistoryTitle:'سجل تسليمات الربح', profitTicketDetailsTitle:'تفاصيل الربح لكل تذكرة (من التسليمات المعتمدة)', profitTicketDetailsNote:'قائمة كل تذكرة ضمن أي تسليم ربح معتمد، مع ربحها الفردي — مطابقة لفلاتر البحث أعلاه.',
     fieldRefundAmount:'المبلغ الفعلي المسترجع للعميل', originalAmountLabel:'المبلغ الأصلي', refundAmountHint:'لو فيه رسوم إلغاء من شركة الطيران، عدّل المبلغ هنا للمبلغ الفعلي اللي يرجع للعميل (أقل من الأصلي).',
     invalidRefundAmount:'المبلغ غير صحيح — لازم يكون أكبر من صفر وما يتجاوز المبلغ الأصلي.',
     resubmitRefundBtn:'إعادة طلب الاسترجاع', refundRejectReasonLabel:'سبب الرفض', searchByEmployeeName:'بحث باسم الموظف...',
@@ -357,7 +359,7 @@ const T = {
     setupStep:'Open the file in a text editor, find the two lines with YOUR_SUPABASE_URL and YOUR_SUPABASE_ANON_KEY near the top of the script, and replace them with your project keys from Project Settings → API in Supabase.',
     roleAccountant:'Accountant', fieldAirline:'Airline', fieldTicketNo:'Ticket number', fieldInvoiceNo:'Invoice number', fieldFlightRoute:'Flight route', flightRoutePlaceholder:'e.g. ELQ-JED',
     fieldNet:'Net / cost from supplier (SAR)', fieldSellPrice:'Sell price charged to customer (SAR)', fieldProfit:'Profit (SAR)', fieldOpenTicket:'Open ticket', tagOpen:'Open ticket',
-    fieldSystemFare:'System Fare / actual cost (SAR)', calculatedProfitLabel:'Auto-calculated profit',
+    fieldSystemFare:'System Fare / actual cost (SAR)', calculatedProfitLabel:'Auto-calculated profit', paymentMethodLockedNote:"🔒 Payment method is locked because the transfer is already confirmed with the bank. If you need to change it, process a refund for this ticket and re-enter it.",
     colAirline:'Airline', colTicketNo:'Ticket No.', colInvoiceNo:'Invoice No.', colNet:'Net', colProfit:'Profit',
     navDeposits:'Cash Deposits', subDeposits:'Record and approve cash deposits, confirm bank transfers',
     fieldPaymentMethod:'Customer payment method', payCash:'Cash', payTransfer:'Bank transfer',
@@ -441,6 +443,8 @@ const T = {
     fieldRefundReceipt:'Refund form/receipt', fieldRefundNote:'Note (optional)', refundNotePlaceholder:'Reason for refund...',
     submitRefundBtn:'Submit refund request', pendingRefundsTitle:'Refund requests awaiting review', noPendingRefunds:'No pending refund requests.',
     navRefunds:'Refunds', subRefunds:'All refund requests — pending review, previously approved or rejected', refundHistoryTitle:'Refund history (approved/rejected)',
+    navProfits:'Profits', subProfits:'All profit handover requests and per-ticket profit details — admin only', totalHandedOverProfit:'Total profit handed over (all-time)',
+    profitHandoverHistoryTitle:'Profit handover history', profitTicketDetailsTitle:'Per-ticket profit details (from approved handovers)', profitTicketDetailsNote:'Every ticket within any approved profit handover, with its individual profit — matching the search filters above.',
     fieldRefundAmount:'Actual amount refunded to customer', originalAmountLabel:'Original amount', refundAmountHint:'If the airline charges a cancellation fee, adjust this to the actual amount going back to the customer (less than the original).',
     invalidRefundAmount:'Invalid amount — must be greater than zero and not exceed the original amount.',
     resubmitRefundBtn:'Resubmit refund request', refundRejectReasonLabel:'Rejection reason', searchByEmployeeName:'Search by employee name...',
@@ -748,13 +752,14 @@ function bankLabel(b){ return b==='RAJHI'?t('bankRajhi'):b==='AHLI'?t('bankAhli'
 async function addBooking(data){
   const sell = Number(data.sell)||0, net = Number(data.cost)||0;
   const profit = +(sell-net).toFixed(2);
+  const method = data.paymentMethod||'cash';
   const row = {
     date: data.date||todayStr(), customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, commission_rate: 0, commission: 0, profit_amount: profit,
-    margin: profit, net_profit: profit, payment_status:'pending', cost_reviewed: true,
-    payment_method: data.paymentMethod||'cash', bank_name: data.paymentMethod==='transfer' ? (data.bankName||null) : data.paymentMethod==='installment' ? (data.installmentProvider||null) : null,
+    margin: profit, net_profit: profit, payment_status: method==='cash' ? 'paid' : 'pending', cost_reviewed: true,
+    payment_method: method, bank_name: method==='transfer' ? (data.bankName||null) : method==='installment' ? (data.installmentProvider||null) : null,
     transfer_verified: false,
     commission_status:'pending', created_by: currentUser()?.id||null
   };
@@ -763,7 +768,7 @@ async function addBooking(data){
   bookings.unshift(inserted);
   const jRows = [{ date:inserted.date, branch_id:inserted.branch_id, booking_id:inserted.id, desc_key:'jSale',
     desc_args:[inserted.booking_no, inserted.airline||'-', inserted.customer],
-    debit_key:'accCustomers', credit_key:'accSalesRev', amount: sell }];
+    debit_key: method==='cash' ? 'accCashOnHand' : 'accCustomers', credit_key:'accSalesRev', amount: sell }];
   if(net>0) jRows.push({ date:inserted.date, branch_id:inserted.branch_id, booking_id:inserted.id, desc_key:'jCost',
     desc_args:[inserted.booking_no, inserted.airline||'-'], debit_key:'accCogs', credit_key:'accSuppliers', amount: net });
   const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
@@ -773,13 +778,14 @@ async function addBooking(data){
 async function updateBooking(id, data){
   const sell = Number(data.sell)||0, net = Number(data.cost)||0;
   const profit = +(sell-net).toFixed(2);
+  const method = data.paymentMethod;
   const row = {
     date: data.date, customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, profit_amount: profit, margin: profit, net_profit: profit, cost_reviewed: true,
-    payment_method: data.paymentMethod,
-    bank_name: data.paymentMethod==='transfer' ? (data.bankName||null) : data.paymentMethod==='installment' ? (data.installmentProvider||null) : null,
+    payment_method: method, payment_status: method==='cash' ? 'paid' : 'pending',
+    bank_name: method==='transfer' ? (data.bankName||null) : method==='installment' ? (data.installmentProvider||null) : null,
     edit_requested:false, edit_note:null
   };
   const {data:updated, error} = await sb.from('bookings').update(row).eq('id', id).select().single();
@@ -792,12 +798,13 @@ async function updateBooking(id, data){
   const existingCost = existingRows.find(j=>j.desc_key==='jCost');
   const saleArgs = [updated.booking_no, updated.airline||'-', updated.customer];
   const costArgs = [updated.booking_no, updated.airline||'-'];
+  const saleDebitKey = method==='cash' ? 'accCashOnHand' : 'accCustomers';
   if(existingSale){
-    const {data:u1, error:e1} = await sb.from('journal').update({date:updated.date, branch_id:updated.branch_id, desc_args:saleArgs, amount:sell}).eq('id', existingSale.id).select().single();
+    const {data:u1, error:e1} = await sb.from('journal').update({date:updated.date, branch_id:updated.branch_id, desc_args:saleArgs, debit_key:saleDebitKey, amount:sell}).eq('id', existingSale.id).select().single();
     if(e1) throw e1;
     const jIdx = journal.findIndex(j=>j.id===existingSale.id); if(jIdx>-1) journal[jIdx]=u1;
   }else{
-    const {data:insS, error:eS} = await sb.from('journal').insert({date:updated.date, branch_id:updated.branch_id, booking_id:id, desc_key:'jSale', desc_args:saleArgs, debit_key:'accCustomers', credit_key:'accSalesRev', amount:sell}).select().single();
+    const {data:insS, error:eS} = await sb.from('journal').insert({date:updated.date, branch_id:updated.branch_id, booking_id:id, desc_key:'jSale', desc_args:saleArgs, debit_key:saleDebitKey, credit_key:'accSalesRev', amount:sell}).select().single();
     if(eS) throw eS;
     journal.unshift(insS);
   }
@@ -933,6 +940,7 @@ function navItems(){
     items.push({route:'refunds', label:t('navRefunds'), icon:'↩️'});
   }
   if(isAdmin()){
+    items.push({route:'profits', label:t('navProfits'), icon:'💎'});
     items.push({route:'users', label:t('navUsers'), icon:'👤'});
     items.push({route:'settings', label:t('navSettings'), icon:'⚙'});
   }
@@ -1016,7 +1024,7 @@ function render(){
   document.getElementById('myAccountBtn').onclick = openMyAccountModal;
 
   const routes = { dashboard:renderDashboard, bookings:renderBookings, ledger:renderLedger,
-    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile, mysales:renderMySales, refunds:renderRefunds };
+    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile, mysales:renderMySales, refunds:renderRefunds, profits:renderProfits };
   (routes[route]||renderDashboard)();
 }
 
@@ -1572,7 +1580,8 @@ function openBookingModal(existing){
         <label for="isOpenTicket" style="margin:0;">${t('fieldOpenTicket')}</label>
       </div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="paymentMethod" id="paymentMethodSel"><option value="cash" ${v.payment_method==='cash'?'selected':''}>${t('payCash')}</option><option value="transfer" ${v.payment_method==='transfer'?'selected':''}>${t('payTransfer')}</option><option value="span" ${v.payment_method==='span'?'selected':''}>${t('paySpan')}</option><option value="installment" ${v.payment_method==='installment'?'selected':''}>${t('payInstallment')}</option></select></div>
+        <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="paymentMethod" id="paymentMethodSel" ${v.transfer_verified?'disabled':''}><option value="cash" ${v.payment_method==='cash'?'selected':''}>${t('payCash')}</option><option value="transfer" ${v.payment_method==='transfer'?'selected':''}>${t('payTransfer')}</option><option value="span" ${v.payment_method==='span'?'selected':''}>${t('paySpan')}</option><option value="installment" ${v.payment_method==='installment'?'selected':''}>${t('payInstallment')}</option></select>
+          ${v.transfer_verified?`<p class="note">${t('paymentMethodLockedNote')}</p><input type="hidden" name="paymentMethod" value="${v.payment_method}">`:''}</div>
         <div class="field" id="bankNameField" style="display:${v.payment_method==='transfer'?'':'none'};"><label>${t('fieldBankName')}</label><select name="bankName">
           <option value="RAJHI" ${v.bank_name==='RAJHI'?'selected':''}>${t('bankRajhi')}</option><option value="AHLI" ${v.bank_name==='AHLI'?'selected':''}>${t('bankAhli')}</option><option value="OTHER" ${v.bank_name==='OTHER'?'selected':''}>${t('bankOther')}</option>
         </select></div>
@@ -2364,19 +2373,64 @@ window.uiDeleteUser = async function(id){
 };
 
 /* ===================== SETTINGS ===================== */
-function profitHandoverAdminPanelHTML(){
-  if(!isAdmin()) return '';
+let profitsSearchTerm = '';
+let profitsDateFrom = null;
+let profitsDateTo = null;
+function renderProfits(){
+  document.getElementById('pageSub').textContent = t('subProfits');
   const pending = profitHandovers.filter(h=>h.status==='pending');
-  const history = profitHandovers.filter(h=>h.status!=='pending');
-  return `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitHandoversTitle')}</h3></div>
-    ${pending.length===0?`<div class="empty">${t('noPendingHandovers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('reportPeriodLabel')}</th><th>${t('colAmount')}</th><th></th></tr></thead>
-    <tbody>${pending.map(h=>`<tr><td>${userName(h.employee_id)}</td><td>${branchName(h.branch_id)}</td><td>${h.date_from||'—'} → ${h.date_to||'—'}</td><td class="num" style="font-weight:700">${money(h.total_profit)}</td>
-      <td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveProfitHandover('${h.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectProfitHandover('${h.id}')">${t('reject')}</button></td></tr>`).join('')}</tbody></table></div>`}
-    ${history.length>0?`<div style="margin-top:14px;overflow-x:auto;"><table><thead><tr><th>${t('colEmployee')}</th><th>${t('reportPeriodLabel')}</th><th>${t('colAmount')}</th><th>${t('colDepositStatus')}</th></tr></thead>
-    <tbody>${history.map(h=>`<tr><td>${userName(h.employee_id)}</td><td>${h.date_from||'—'} → ${h.date_to||'—'}</td><td class="num">${money(h.total_profit)}</td>
-      <td><span class="tag ${h.status==='approved'?'collected':'rejected'}">${h.status==='approved'?t('depositApproved'):t('depositRejected')}</span></td></tr>`).join('')}</tbody></table></div>`:''}
-  </div>`;
+  let history = profitHandovers.filter(h=>h.status!=='pending')
+    .sort((a,b)=>(b.reviewed_at||b.created_at||'').localeCompare(a.reviewed_at||a.created_at||''));
+  if(profitsSearchTerm){
+    const term = profitsSearchTerm.trim().toLowerCase();
+    history = history.filter(h=> userName(h.employee_id).toLowerCase().includes(term));
+  }
+  if(profitsDateFrom) history = history.filter(h=> (h.date_to||h.date_from||'') >= profitsDateFrom);
+  if(profitsDateTo) history = history.filter(h=> (h.date_from||h.date_to||'') <= profitsDateTo);
+  const approvedHistory = history.filter(h=>h.status==='approved');
+  const ticketRows = [];
+  approvedHistory.forEach(h=>{
+    (h.booking_ids||[]).forEach(id=>{
+      const b = bookings.find(x=>x.id===id);
+      if(b) ticketRows.push({b, h});
+    });
+  });
+  const totalHandedOver = approvedHistory.reduce((s,h)=>s+Number(h.total_profit||0),0);
+  document.getElementById('content').innerHTML = `
+    <div class="kpi-row" style="grid-template-columns:repeat(1,1fr);">
+      <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('totalHandedOverProfit')}</div><div class="kpi-value">${money(totalHandedOver)}</div></div>
+    </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitHandoversTitle')}</h3></div>
+      ${pending.length===0?`<div class="empty">${t('noPendingHandovers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('reportPeriodLabel')}</th><th>${t('colAmount')}</th><th></th></tr></thead>
+      <tbody>${pending.map(h=>`<tr><td>${esc(userName(h.employee_id))}</td><td>${branchName(h.branch_id)}</td><td>${h.date_from||'—'} → ${h.date_to||'—'}</td><td class="num" style="font-weight:700">${money(h.total_profit)}</td>
+        <td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveProfitHandover('${h.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectProfitHandover('${h.id}')">${t('reject')}</button></td></tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('profitHandoverHistoryTitle')}</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" id="profitsHistoryPrintBtn">${t('printReport')}</button>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldEmployeeFilter')}</label><input type="text" id="profitsSearchInput" placeholder="${t('searchByEmployeeName')}" value="${esc(profitsSearchTerm)}"></div>
+        <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" id="profitsDateFromInput" value="${profitsDateFrom||''}"></div>
+      </div>
+      <div class="field"><label>${t('fieldDateTo')}</label><input type="date" id="profitsDateToInput" value="${profitsDateTo||''}"></div>
+      ${history.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;margin-top:10px;"><table><thead><tr><th>${t('colEmployee')}</th><th>${t('reportPeriodLabel')}</th><th>${t('colAmount')}</th><th>${t('colDepositStatus')}</th></tr></thead>
+      <tbody>${history.map(h=>`<tr><td>${esc(userName(h.employee_id))}</td><td>${h.date_from||'—'} → ${h.date_to||'—'}</td><td class="num">${money(h.total_profit)}</td>
+        <td><span class="tag ${h.status==='approved'?'collected':'rejected'}">${h.status==='approved'?t('depositApproved'):t('depositRejected')}</span></td></tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitTicketDetailsTitle')}</h3></div>
+      <p class="note">${t('profitTicketDetailsNote')}</p>
+      ${ticketRows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('jDate')}</th><th>${t('colProfit')}</th></tr></thead>
+      <tbody>${ticketRows.map(({b,h})=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(h.employee_id))}</td><td>${b.date}</td><td class="num" style="font-weight:600">${money(b.profit_amount)}</td></tr>`).join('')}</tbody></table></div>`}
+    </div>`;
+  document.getElementById('profitsSearchInput').oninput = (e)=>{ profitsSearchTerm = e.target.value; renderProfits(); };
+  document.getElementById('profitsDateFromInput').onchange = (e)=>{ profitsDateFrom = e.target.value||null; renderProfits(); };
+  document.getElementById('profitsDateToInput').onchange = (e)=>{ profitsDateTo = e.target.value||null; renderProfits(); };
+  document.getElementById('profitsHistoryPrintBtn').onclick = ()=>printTicketDetails(ticketRows.map(r=>r.b));
 }
+
 window.uiApproveProfitHandover = async function(id){
   if(!confirm(t('confirmApproveHandover'))) return;
   try{ await approveProfitHandover(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
@@ -2393,7 +2447,6 @@ function renderSettings(){
         <tbody>${branches.map(b=>`<tr><td>${esc(b.name)}</td><td><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
       <div class="note">${t('branchDeleteNote')}</div>
     </div>
-    ${profitHandoverAdminPanelHTML()}
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('backupTitle')}</h3></div>
       <p class="note">${t('backupNote')}</p>
       <button class="btn btn-primary btn-sm" id="exportBackupBtn">${t('exportBackupBtn')}</button>
