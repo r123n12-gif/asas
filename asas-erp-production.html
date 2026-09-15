@@ -199,6 +199,7 @@ const T = {
     setupStep:'افتح الملف بمحرر نصوص، وابحث عن السطرين اللي فيهم YOUR_SUPABASE_URL و YOUR_SUPABASE_ANON_KEY في أول الكود، واستبدلهم بمفاتيح مشروعك من Project Settings → API في Supabase.',
     roleAccountant:'محاسب', fieldAirline:'شركة الطيران', fieldTicketNo:'رقم التذكرة', fieldInvoiceNo:'رقم الفاتورة', fieldFlightRoute:'مسار الرحلة', flightRoutePlaceholder:'مثل: ELQ-JED',
     fieldNet:'الصافي / التكلفة من المورد (ر.س)', fieldSellPrice:'سعر البيع المحصّل من العميل (ر.س)', fieldProfit:'الربح (ر.س)', fieldOpenTicket:'تذكرة مفتوحة', tagOpen:'تذكرة مفتوحة',
+    fieldSystemFare:'سعر السستم فير / التكلفة الفعلية (ر.س)', calculatedProfitLabel:'الربح المحسوب تلقائيًا',
     colAirline:'شركة الطيران', colTicketNo:'رقم التذكرة', colInvoiceNo:'رقم الفاتورة', colNet:'الصافي', colProfit:'الربح',
     navDeposits:'الإيداعات النقدية', subDeposits:'تسجيل واعتماد إيداعات الكاش وتأكيد التحويلات البنكية',
     fieldPaymentMethod:'طريقة الدفع من العميل', payCash:'كاش', payTransfer:'تحويل بنكي',
@@ -356,6 +357,7 @@ const T = {
     setupStep:'Open the file in a text editor, find the two lines with YOUR_SUPABASE_URL and YOUR_SUPABASE_ANON_KEY near the top of the script, and replace them with your project keys from Project Settings → API in Supabase.',
     roleAccountant:'Accountant', fieldAirline:'Airline', fieldTicketNo:'Ticket number', fieldInvoiceNo:'Invoice number', fieldFlightRoute:'Flight route', flightRoutePlaceholder:'e.g. ELQ-JED',
     fieldNet:'Net / cost from supplier (SAR)', fieldSellPrice:'Sell price charged to customer (SAR)', fieldProfit:'Profit (SAR)', fieldOpenTicket:'Open ticket', tagOpen:'Open ticket',
+    fieldSystemFare:'System Fare / actual cost (SAR)', calculatedProfitLabel:'Auto-calculated profit',
     colAirline:'Airline', colTicketNo:'Ticket No.', colInvoiceNo:'Invoice No.', colNet:'Net', colProfit:'Profit',
     navDeposits:'Cash Deposits', subDeposits:'Record and approve cash deposits, confirm bank transfers',
     fieldPaymentMethod:'Customer payment method', payCash:'Cash', payTransfer:'Bank transfer',
@@ -482,20 +484,14 @@ async function fetchAll(){
 }
 /* ===================== CASH DEPOSITS ===================== */
 function branchCashOnHand(branchId){
-  const collectedCash = bookings.filter(b=>b.branch_id===branchId && b.payment_method==='cash' && !b.refunded).reduce((s,b)=>s+Number(b.sell||0),0);
+  const costOfCash = bookings.filter(b=>b.branch_id===branchId && b.payment_method==='cash' && !b.refunded).reduce((s,b)=>s+Number(b.cost||0),0);
   const approvedDeposits = deposits.filter(d=>d.branch_id===branchId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
-  const approvedHandoverIds = new Set();
-  profitHandovers.filter(h=>h.status==='approved' && h.branch_id===branchId).forEach(h=>(h.booking_ids||[]).forEach(id=>approvedHandoverIds.add(id)));
-  const handedOverCashProfit = bookings.filter(b=>b.branch_id===branchId && b.payment_method==='cash' && !b.refunded && approvedHandoverIds.has(b.id)).reduce((s,b)=>s+Number(b.profit_amount||0),0);
-  return +(collectedCash-approvedDeposits-handedOverCashProfit).toFixed(2);
+  return +(costOfCash-approvedDeposits).toFixed(2);
 }
 function employeeCashOnHand(employeeId){
-  const collectedCash = bookings.filter(b=>b.created_by===employeeId && b.payment_method==='cash' && !b.refunded).reduce((s,b)=>s+Number(b.sell||0),0);
+  const costOfCash = bookings.filter(b=>b.created_by===employeeId && b.payment_method==='cash' && !b.refunded).reduce((s,b)=>s+Number(b.cost||0),0);
   const approvedDeposits = deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
-  const approvedHandoverIds = new Set();
-  profitHandovers.filter(h=>h.status==='approved' && h.employee_id===employeeId).forEach(h=>(h.booking_ids||[]).forEach(id=>approvedHandoverIds.add(id)));
-  const handedOverCashProfit = bookings.filter(b=>b.created_by===employeeId && b.payment_method==='cash' && !b.refunded && approvedHandoverIds.has(b.id)).reduce((s,b)=>s+Number(b.profit_amount||0),0);
-  return +(collectedCash-approvedDeposits-handedOverCashProfit).toFixed(2);
+  return +(costOfCash-approvedDeposits).toFixed(2);
 }
 function employeeCashBreakdownHTML(){
   const employees = users.filter(u=>u.role==='employee');
@@ -750,8 +746,8 @@ function bankLabel(b){ return b==='RAJHI'?t('bankRajhi'):b==='AHLI'?t('bankAhli'
 
 /* ===================== ACCOUNTING ENGINE (Supabase-backed) ===================== */
 async function addBooking(data){
-  const sell = Number(data.sell)||0, profit = Number(data.profit)||0;
-  const net = +(sell-profit).toFixed(2);
+  const sell = Number(data.sell)||0, net = Number(data.cost)||0;
+  const profit = +(sell-net).toFixed(2);
   const row = {
     date: data.date||todayStr(), customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
@@ -775,8 +771,8 @@ async function addBooking(data){
   journal.unshift(...jIns.reverse());
 }
 async function updateBooking(id, data){
-  const sell = Number(data.sell)||0, profit = Number(data.profit)||0;
-  const net = +(sell-profit).toFixed(2);
+  const sell = Number(data.sell)||0, net = Number(data.cost)||0;
+  const profit = +(sell-net).toFixed(2);
   const row = {
     date: data.date, customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
@@ -860,17 +856,6 @@ async function collectCommission(bookingId){
   if(jErr) throw jErr;
   journal.unshift(jIns);
 }
-async function markPaid(bookingId){
-  const b = bookings.find(x=>x.id===bookingId);
-  if(!b || b.payment_method!=='cash' || b.payment_status==='paid') return;
-  const {error} = await sb.from('bookings').update({payment_status:'paid'}).eq('id', bookingId);
-  if(error) throw error;
-  b.payment_status='paid';
-  const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
-    desc_key:'jCollectCash', desc_args:[b.booking_no, b.customer], debit_key:'accCashOnHand', credit_key:'accCustomers', amount:b.sell }).select().single();
-  if(jErr) throw jErr;
-  journal.unshift(jIns);
-}
 async function addManualExpense(data){
   const amount = Number(data.amount)||0;
   const {data:ins, error} = await sb.from('manual_expenses').insert({ date:data.date||todayStr(), branch_id:data.branchId, description:data.desc, amount }).select().single();
@@ -899,13 +884,12 @@ function employeeFinancialSummary(employeeId){
   const totalSales = myBookings.reduce((s,b)=>s+Number(b.sell||0),0);
   const totalDeposited = deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
   const totalTransferred = myBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span') && b.payment_status==='paid').reduce((s,b)=>s+Number(b.sell||0),0);
-  const totalCashCollected = myBookings.filter(b=>b.payment_method==='cash' && b.payment_status==='paid').reduce((s,b)=>s+Number(b.sell||0),0);
-  const pendingAmt = pendingConfirmationAmount(myBookings);
   const cashOnHand = employeeCashOnHand(employeeId);
-  return {totalSales, totalDeposited, totalTransferred, totalCashCollected, pendingAmt, cashOnHand};
+  const pendingAmt = +(pendingConfirmationAmount(myBookings) + cashOnHand).toFixed(2);
+  return {totalSales, totalDeposited, totalTransferred, pendingAmt, cashOnHand};
 }
 function pendingConfirmationAmount(list){
-  return +list.filter(b=>b.payment_status==='pending' && !b.refunded).reduce((s,b)=>s+Number(b.sell||0),0).toFixed(2);
+  return +list.filter(b=>b.payment_method!=='cash' && b.payment_status==='pending' && !b.refunded).reduce((s,b)=>s+Number(b.sell||0),0).toFixed(2);
 }
 function pendingProfitHandoverAmount(list){
   const lockedIds = new Set();
@@ -1079,7 +1063,14 @@ function renderDashboard(){
   document.getElementById('pageSub').textContent = t('subDashboard');
   const list = filteredBookings();
   const tt = computeTotals(list, expensesForFilter());
-  const pendingAmt = pendingConfirmationAmount(list);
+  const u = currentUser();
+  let pendingAmt = pendingConfirmationAmount(list);
+  if(u.role==='employee') pendingAmt = +(pendingAmt + employeeCashOnHand(u.id)).toFixed(2);
+  else if(canSeeAllBranches()){
+    const bf = effectiveBranchFilter();
+    const scopeEmployees = users.filter(e=>e.role==='employee' && (bf==='all'||e.branch_id===bf));
+    pendingAmt = +(pendingAmt + scopeEmployees.reduce((s,e)=>s+employeeCashOnHand(e.id),0)).toFixed(2);
+  }
   const pendingProfitAmt = pendingProfitHandoverAmount(list);
   const c = document.getElementById('content');
   c.innerHTML = `
@@ -1120,7 +1111,7 @@ function bookingsTable(list, mode){
             :t('payCash')}</td>
           ${showActions?`<td style="display:flex;gap:5px;flex-wrap:wrap;">
             ${isAdmin() && !b.cost_reviewed?`<button class="btn btn-gold btn-sm" onclick="uiReviewCost('${b.id}')">${t('reviewCostBtn')}</button>`:''}
-            ${mode==='manage' && b.payment_method==='cash' && b.payment_status!=='paid'?`<button class="btn btn-ghost btn-sm" onclick="uiMarkPaid('${b.id}')">${t('collectPayment')}</button>`:''}
+            
             ${mode==='manage' && Number(b.cost)>0 && !b.supplier_settled?`<button class="btn btn-gold btn-sm" onclick="uiSettleSupplier('${b.id}')">${t('settleSupplierBtn')}</button>`:''}
             ${mode==='manage'?`<button class="btn btn-ghost btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>
               ${isAdmin()?`<button class="btn btn-danger btn-sm" onclick="uiDeleteBooking('${b.id}')">${t('delete')}</button>`:''}
@@ -1153,7 +1144,7 @@ function renderMySales(){
   const list = bookings.filter(b=> b.created_by===u.id && (!mySalesDateFrom||b.date>=mySalesDateFrom) && (!mySalesDateTo||b.date<=mySalesDateTo));
   const allMine = bookings.filter(b=>b.created_by===u.id);
   const tt = computeTotals(list, []);
-  const pendingAmt = pendingConfirmationAmount(allMine);
+  const pendingAmt = +(pendingConfirmationAmount(allMine) + employeeCashOnHand(u.id)).toFixed(2);
   const pendingProfitAmt = pendingProfitHandoverAmount(allMine);
   document.getElementById('content').innerHTML = `
     <div class="panel">
@@ -1572,10 +1563,10 @@ function openBookingModal(existing){
       </div>
       <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${v.date||todayStr()}"></div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell" required value="${v.sell??''}"></div>
-        <div class="field"><label>${t('fieldProfit')}</label><input type="number" step="0.01" name="profit" required value="${v.profit_amount??''}"></div>
+        <div class="field"><label>${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell" id="sellPriceInput" required value="${v.sell??''}"></div>
+        <div class="field"><label>${t('fieldSystemFare')}</label><input type="number" step="0.01" name="cost" id="costPriceInput" required value="${v.cost??''}"></div>
       </div>
-      <div class="note">${t('profitEntryNote')}</div>
+      <div class="note" id="autoProfitNote">${t('profitEntryNote')}</div>
       <div class="field" style="display:flex;align-items:center;gap:8px;">
         <input type="checkbox" name="isOpenTicket" id="isOpenTicket" style="width:auto;" ${v.is_open_ticket?'checked':''}>
         <label for="isOpenTicket" style="margin:0;">${t('fieldOpenTicket')}</label>
@@ -1604,13 +1595,22 @@ function openBookingModal(existing){
     document.getElementById('installmentProviderField').style.display = e.target.value==='installment' ? '' : 'none';
     document.getElementById('installmentNoteBox').style.display = e.target.value==='installment' ? '' : 'none';
   };
+  const updateProfitPreview = ()=>{
+    const sellVal = Number(document.getElementById('sellPriceInput').value)||0;
+    const costVal = Number(document.getElementById('costPriceInput').value)||0;
+    const profitVal = +(sellVal-costVal).toFixed(2);
+    document.getElementById('autoProfitNote').textContent = `${t('calculatedProfitLabel')}: ${money(profitVal)}`;
+  };
+  document.getElementById('sellPriceInput').oninput = updateProfitPreview;
+  document.getElementById('costPriceInput').oninput = updateProfitPreview;
+  updateProfitPreview();
   document.getElementById('bookingForm').onsubmit = async (e)=>{
     e.preventDefault();
     const btn = document.getElementById('bookingSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
     const f = new FormData(e.target);
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
       ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
-      sell:f.get('sell'), profit:f.get('profit'), isOpenTicket: f.get('isOpenTicket')==='on',
+      sell:f.get('sell'), cost:f.get('cost'), isOpenTicket: f.get('isOpenTicket')==='on',
       paymentMethod:f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider') };
     if(isEdit && !existing.id){
       console.error('Missing booking id on edit. existing =', existing);
@@ -1628,10 +1628,6 @@ function openBookingModal(existing){
     }
   };
 }
-window.uiMarkPaid = async function(id){
-  if(!canSeeAllBranches()){ alert(t('notAllowedAction')); return; }
-  try{ await markPaid(id); render(); }catch(e){ alert(t('connError')); }
-};
 window.uiCollectCommission = async function(id){ try{ await collectCommission(id); render(); }catch(e){ alert(t('connError')); } };
 window.uiEditBooking = function(id){
   const b = bookings.find(x=>x.id===id);
