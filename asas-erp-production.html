@@ -2373,7 +2373,7 @@ window.uiDeleteUser = async function(id){
 };
 
 /* ===================== SETTINGS ===================== */
-let profitsSearchTerm = '';
+let profitsSearchTerm = 'all';
 let profitsDateFrom = null;
 let profitsDateTo = null;
 function renderProfits(){
@@ -2381,9 +2381,8 @@ function renderProfits(){
   const pending = profitHandovers.filter(h=>h.status==='pending');
   let history = profitHandovers.filter(h=>h.status!=='pending')
     .sort((a,b)=>(b.reviewed_at||b.created_at||'').localeCompare(a.reviewed_at||a.created_at||''));
-  if(profitsSearchTerm){
-    const term = profitsSearchTerm.trim().toLowerCase();
-    history = history.filter(h=> userName(h.employee_id).toLowerCase().includes(term));
+  if(profitsSearchTerm!=='all'){
+    history = history.filter(h=> h.employee_id===profitsSearchTerm);
   }
   if(profitsDateFrom) history = history.filter(h=> (h.date_to||h.date_from||'') >= profitsDateFrom);
   if(profitsDateTo) history = history.filter(h=> (h.date_from||h.date_to||'') <= profitsDateTo);
@@ -2412,7 +2411,7 @@ function renderProfits(){
         </div>
       </div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldEmployeeFilter')}</label><input type="text" id="profitsSearchInput" placeholder="${t('searchByEmployeeName')}" value="${esc(profitsSearchTerm)}"></div>
+        <div class="field"><label>${t('fieldEmployeeFilter')}</label><select id="profitsSearchInput"><option value="all" ${profitsSearchTerm==='all'?'selected':''}>${t('allEmployeesOpt')}</option>${users.map(u=>`<option value="${u.id}" ${profitsSearchTerm===u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select></div>
         <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" id="profitsDateFromInput" value="${profitsDateFrom||''}"></div>
       </div>
       <div class="field"><label>${t('fieldDateTo')}</label><input type="date" id="profitsDateToInput" value="${profitsDateTo||''}"></div>
@@ -2425,7 +2424,7 @@ function renderProfits(){
       ${ticketRows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('jDate')}</th><th>${t('colProfit')}</th></tr></thead>
       <tbody>${ticketRows.map(({b,h})=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(h.employee_id))}</td><td>${b.date}</td><td class="num" style="font-weight:600">${money(b.profit_amount)}</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
-  document.getElementById('profitsSearchInput').oninput = (e)=>{ profitsSearchTerm = e.target.value; renderProfits(); };
+  document.getElementById('profitsSearchInput').onchange = (e)=>{ profitsSearchTerm = e.target.value; renderProfits(); };
   document.getElementById('profitsDateFromInput').onchange = (e)=>{ profitsDateFrom = e.target.value||null; renderProfits(); };
   document.getElementById('profitsDateToInput').onchange = (e)=>{ profitsDateTo = e.target.value||null; renderProfits(); };
   document.getElementById('profitsHistoryPrintBtn').onclick = ()=>printTicketDetails(ticketRows.map(r=>r.b));
@@ -2543,7 +2542,7 @@ function setReconcileQuickRange(kind){
   document.getElementById('rfDateTo').value = today;
   updateReconcileCount();
 }
-let refundsSearchTerm = '';
+let refundsSearchTerm = 'all';
 let refundsDateFrom = null;
 let refundsDateTo = null;
 function renderRefunds(){
@@ -2553,9 +2552,8 @@ function renderRefunds(){
   const pending = scoped.filter(b=>b.refund_status==='pending');
   let history = scoped.filter(b=>b.refund_status==='approved'||b.refund_status==='rejected')
     .sort((a,b)=>(b.refund_reviewed_at||'').localeCompare(a.refund_reviewed_at||''));
-  if(refundsSearchTerm){
-    const term = refundsSearchTerm.trim().toLowerCase();
-    history = history.filter(b=> userName(b.created_by).toLowerCase().includes(term));
+  if(refundsSearchTerm!=='all'){
+    history = history.filter(b=> b.created_by===refundsSearchTerm);
   }
   if(refundsDateFrom) history = history.filter(b=> (b.refund_reviewed_at||'').slice(0,10) >= refundsDateFrom);
   if(refundsDateTo) history = history.filter(b=> (b.refund_reviewed_at||'').slice(0,10) <= refundsDateTo);
@@ -2578,14 +2576,14 @@ function renderRefunds(){
         </div>
       </div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldEmployeeFilter')}</label><input type="text" id="refundsSearchInput" placeholder="${t('searchByEmployeeName')}" value="${esc(refundsSearchTerm)}"></div>
+        <div class="field"><label>${t('fieldEmployeeFilter')}</label><select id="refundsSearchInput"><option value="all" ${refundsSearchTerm==='all'?'selected':''}>${t('allEmployeesOpt')}</option>${users.map(u=>`<option value="${u.id}" ${refundsSearchTerm===u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select></div>
         <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" id="refundsDateFromInput" value="${refundsDateFrom||''}"></div>
       </div>
       <div class="field"><label>${t('fieldDateTo')}</label><input type="date" id="refundsDateToInput" value="${refundsDateTo||''}"></div>
       ${history.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;margin-top:10px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('originalAmountLabel')}</th><th>${t('fieldRefundAmount')}</th><th>${t('fieldRefundMethod')}</th><th>${t('colReceipt')}</th><th>${t('colRefundStatus')}</th></tr></thead>
       <tbody>${history.slice(0,200).map(b=>rowHTML(b,false)).join('')}</tbody></table></div>`}
     </div>`;
-  document.getElementById('refundsSearchInput').oninput = (e)=>{ refundsSearchTerm = e.target.value; renderRefunds(); };
+  document.getElementById('refundsSearchInput').onchange = (e)=>{ refundsSearchTerm = e.target.value; renderRefunds(); };
   document.getElementById('refundsDateFromInput').onchange = (e)=>{ refundsDateFrom = e.target.value||null; renderRefunds(); };
   document.getElementById('refundsDateToInput').onchange = (e)=>{ refundsDateTo = e.target.value||null; renderRefunds(); };
   document.getElementById('refundsHistoryPrintBtn').onclick = ()=>printTicketDetails(history);
