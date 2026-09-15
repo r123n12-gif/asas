@@ -248,6 +248,8 @@ const T = {
     invalidNumber:'رقم غير صحيح.', hiddenValue:'••••', adminOnlyAction:'هذا الإجراء متاح للمدير (الأدمن) فقط.', notAllowedAction:'ما عندك صلاحية لهذا الإجراء.',
     navReconcile:'المطابقة الخارجية', subReconcile:'رفع تقرير خارجي (Galileo / B2B / إكسل) ومطابقته مع تذاكر النظام',
     reconcileTitle:'مطابقة التذاكر', reconcileNote:'رفّع ملف إكسل أو CSV من نظام الحجز (Galileo) أو بوابة المورد (B2B)، واختر عمود رقم التذكرة — سنطلع لك فورًا أي تذكرة موجودة بالملف الخارجي وناسي الموظف يسجّلها بالنظام.',
+    reconcileTitleAmountName:'مطابقة التذاكر بالمبلغ والاسم', reconcileNoteAmountName:'رفّع ملف إكسل أو CSV، واختر عمود المبلغ وعمود اسم العميل — سنطابقهم مع حجوزات النظام.',
+    reconcileTitleBank:'مطابقة كشف حساب البنك', reconcileNoteBank:'رفّع كشف حساب بنكي (Excel أو CSV)، واختر عمود المبلغ (عادة "دائن") — سنطابقه مع كل التحويلات/السبانات المؤكّدة بالنظام، ونطلع لك أي مبلغ مؤكّد بالنظام بس ما لقيناه بكشف البنك.',
     reconcileFileLabel:'اختر الملف (Excel أو CSV)', reconcileColLabel:'عمود رقم التذكرة', reconcileRunBtn:'🔍 طابق الآن',
     reconcileEmptyFile:'الملف فاضي أو غير مقروء.', reconcileParseError:'تعذر قراءة الملف، تأكد إنه إكسل أو CSV صحيح.',
     reconcileTotalRows:'إجمالي صفوف الملف', reconcileMatched:'مطابقة (موجودة بالنظام)', reconcileMissing:'غير موجودة بالنظام',
@@ -266,6 +268,7 @@ const T = {
     reconcileDiagnosticSystem:'رقم بالنظام', reconcileDiagnosticFile:'رقم بالملف',
     reconcileEmptyColWarning:'⚠️ العمود اللي حددته فاضي تمامًا بكل صفوف الملف (٠ صف فيه قيمة) — لهذا ما انفحص أي تذكرة فعليًا. تأكد إنك اخترت العمود الصحيح',
     reconcileNoVerifiedTransfers:'لا توجد تحويلات أو سبانات مؤكّدة (مدفوعة) مطابقة للفلاتر المحددة فوق — جرّب تغيير الفرع/الموظف/الفترة.',
+    reconcilePrintMatched:'🖨️ طباعة المتطابقة', reconcileExcelMatched:'⬇️ تصدير المتطابقة (Excel)', reconcilePrintNotFound:'🖨️ طباعة المشبوهة', reconcileExcelNotFound:'⬇️ تصدير المشبوهة (Excel)',
     reconcileModeBankStatement:'مطابقة كشف حساب البنك', reconcileBankAmountColLabel:'عمود المبلغ بكشف الحساب', reconcileBankMethodLabel:'نوع الدفع',
     reconcileBankMethodBoth:'تحويل + سبان معًا', reconcileBankVerifiedCount:'إجمالي المؤكّدة بالنظام', reconcileBankNotFound:'لم تُلقَ بالبنك 🚩',
     reconcileBankNotFoundNote:'هذي التحويلات/السبانات مؤكّدة بالنظام، لكن ما لقينا مبلغ مطابق لها بكشف حساب البنك اللي رفعته — يحتاج مراجعة فورية.',
@@ -391,6 +394,8 @@ const T = {
     invalidNumber:'Invalid number.', hiddenValue:'••••', adminOnlyAction:'This action is available to the admin only.', notAllowedAction:"You don't have permission for this action.",
     navReconcile:'External Reconciliation', subReconcile:'Upload an external report (Galileo / B2B / Excel) and match it against system tickets',
     reconcileTitle:'Ticket reconciliation', reconcileNote:'Upload an Excel or CSV file from the GDS (Galileo) or supplier portal (B2B), pick the ticket-number column — we will immediately show any ticket that exists in the external file but was never recorded in the system.',
+    reconcileTitleAmountName:'Ticket matching by amount and name', reconcileNoteAmountName:'Upload an Excel or CSV file, and pick the amount column and customer name column — we will match them against system bookings.',
+    reconcileTitleBank:'Bank statement reconciliation', reconcileNoteBank:'Upload a bank statement (Excel or CSV), and pick the amount column (usually "Credit") — we will match it against all confirmed transfers/span payments in the system, and flag any confirmed amount we could not find in the bank statement.',
     reconcileFileLabel:'Choose file (Excel or CSV)', reconcileColLabel:'Ticket number column', reconcileRunBtn:'🔍 Match now',
     reconcileEmptyFile:'The file is empty or unreadable.', reconcileParseError:'Could not read the file, make sure it is a valid Excel or CSV file.',
     reconcileTotalRows:'Total file rows', reconcileMatched:'Matched (found in system)', reconcileMissing:'Not found in system',
@@ -409,6 +414,7 @@ const T = {
     reconcileDiagnosticSystem:'System number', reconcileDiagnosticFile:'File number',
     reconcileEmptyColWarning:"⚠️ The column you selected is completely empty across every row in the file (0 rows had a value) — so no ticket was actually checked. Make sure you picked the right column",
     reconcileNoVerifiedTransfers:'There are no confirmed (paid) transfers or span payments matching the filters above — try changing the branch/employee/period.',
+    reconcilePrintMatched:'🖨️ Print matched', reconcileExcelMatched:'⬇️ Export matched (Excel)', reconcilePrintNotFound:'🖨️ Print flagged', reconcileExcelNotFound:'⬇️ Export flagged (Excel)',
     reconcileModeBankStatement:'Bank statement reconciliation', reconcileBankAmountColLabel:'Amount column in bank statement', reconcileBankMethodLabel:'Payment type',
     reconcileBankMethodBoth:'Transfer + Span together', reconcileBankVerifiedCount:'Total confirmed in system', reconcileBankNotFound:'Not found in bank 🚩',
     reconcileBankNotFoundNote:"These transfers/span payments are confirmed in the system, but no matching amount was found in the bank statement you uploaded — needs immediate review.",
@@ -2335,8 +2341,8 @@ function renderReconcile(){
       <div class="note" style="font-weight:700;">${t('matchingTicketsCount')}: <span id="rfCount">${bookings.length}</span></div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3 class="panel-title">${t('reconcileTitle')}</h3></div>
-      <p class="note">${t('reconcileNote')}</p>
+      <div class="panel-head"><h3 class="panel-title" id="reconcileTitleText">${t('reconcileTitle')}</h3></div>
+      <p class="note" id="reconcileNoteText">${t('reconcileNote')}</p>
       <div class="field"><label>${t('reconcileFileLabel')}</label><input type="file" id="reconcileFileInput" accept=".xlsx,.xls,.csv"></div>
       <div id="reconcileColumnBox" style="display:none;margin-top:10px;">
         <div class="field"><label>${t('reconcileModeLabel')}</label><select id="reconcileModeSel">
@@ -2413,6 +2419,11 @@ function renderReconcile(){
     document.getElementById('reconcileModeTicketBox').style.display = mode==='ticket'?'':'none';
     document.getElementById('reconcileModeAmountNameBox').style.display = mode==='amountName'?'':'none';
     document.getElementById('reconcileModeBankBox').style.display = mode==='bankStatement'?'':'none';
+    const titleMap = {ticket:t('reconcileTitle'), amountName:t('reconcileTitleAmountName'), bankStatement:t('reconcileTitleBank')};
+    const noteMap = {ticket:t('reconcileNote'), amountName:t('reconcileNoteAmountName'), bankStatement:t('reconcileNoteBank')};
+    document.getElementById('reconcileTitleText').textContent = titleMap[mode];
+    document.getElementById('reconcileNoteText').textContent = noteMap[mode];
+    document.getElementById('reconcileResultBox').innerHTML = '';
   };
   document.getElementById('reconcileRunBtn').onclick = ()=>{
     const mode = document.getElementById('reconcileModeSel').value;
@@ -2478,16 +2489,18 @@ function renderReconcile(){
         bankAmounts.push(+Number(raw).toFixed(2));
       });
       const bankColEmpty = bankAmounts.length===0 && reconcileRows.length>0;
+      const matchedList = [];
       if(!bankColEmpty){
         verifiedList.forEach(b=>{
           const amt = +Number(b.sell||0).toFixed(2);
           const idx = bankAmounts.findIndex(a=>Math.abs(a-amt)<0.01);
-          if(idx>-1){ bankAmounts.splice(idx,1); matched++; }
+          if(idx>-1){ bankAmounts.splice(idx,1); matched++; matchedList.push(b); }
           else{ missing.push(b); }
         });
       }
       missing._bankColEmpty = bankColEmpty ? `${t('reconcileEmptyColWarning')} ("${amtCol}")` : null;
       missing._verifiedTotal = verifiedList.length;
+      missing._matchedList = matchedList;
     }else{
       const amtCol = document.getElementById('reconcileAmountColSel').value;
       const nameCol = document.getElementById('reconcileNameColSel').value;
@@ -2523,12 +2536,23 @@ function renderReconcile(){
           <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('reconcileMatched')}</div><div class="kpi-value">${matched}</div></div>
           <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('reconcileBankNotFound')}</div><div class="kpi-value neg">${missing.length}</div></div>
         </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+          <button class="btn btn-ghost btn-sm" id="bankPrintMatchedBtn">${t('reconcilePrintMatched')}</button>
+          <button class="btn btn-ghost btn-sm" id="bankExcelMatchedBtn">${t('reconcileExcelMatched')}</button>
+          <button class="btn btn-ghost btn-sm" id="bankPrintMissingBtn">${t('reconcilePrintNotFound')}</button>
+          <button class="btn btn-ghost btn-sm" id="bankExcelMissingBtn">${t('reconcileExcelNotFound')}</button>
+        </div>
         ${missing.length===0?`<div class="empty">${t('reconcileAllMatched')}</div>`:`
         <div class="note" style="color:var(--red);font-weight:600;">🚩 ${t('reconcileBankNotFoundNote')}</div>
         <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colPaymentMethod')}</th><th>${t('colAmount')}</th><th>${t('colBranch')}</th></tr></thead>
           <tbody>${missing.map(b=>`<tr><td style="font-weight:700;color:var(--red);">${b.booking_no}</td><td>${b.customer}</td><td>${b.ticket_no||'—'}</td>
             <td>${b.payment_method==='span'?t('paySpan'):t('payTransfer')}</td><td class="num">${money(b.sell)}</td><td>${branchName(b.branch_id)}</td></tr>`).join('')}</tbody>
         </table></div>`}`;
+      const matchedList = missing._matchedList||[];
+      document.getElementById('bankPrintMatchedBtn').onclick = ()=>printTicketDetails(matchedList);
+      document.getElementById('bankExcelMatchedBtn').onclick = ()=>exportBookingsToExcel(matchedList, 'manage');
+      document.getElementById('bankPrintMissingBtn').onclick = ()=>printTicketDetails(missing);
+      document.getElementById('bankExcelMissingBtn').onclick = ()=>exportBookingsToExcel(missing, 'manage');
       return;
     }
     box.innerHTML = `
