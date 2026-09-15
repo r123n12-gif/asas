@@ -279,6 +279,9 @@ const T = {
     modalRequestRefund:'طلب رفند', refundRequestNote:'أرفق نموذج/إيصال الرفند (من شركة الطيران أو المورد) ليقدَّم للمحاسب للمراجعة.',
     fieldRefundReceipt:'نموذج/إيصال الرفند', fieldRefundNote:'ملاحظة (اختياري)', refundNotePlaceholder:'سبب الرفند...',
     submitRefundBtn:'إرسال طلب الرفند', pendingRefundsTitle:'طلبات الرفند بانتظار المراجعة', noPendingRefunds:'لا توجد طلبات رفند معلّقة.',
+    navRefunds:'الاسترجاعات', subRefunds:'كل طلبات الاسترجاع — بانتظار المراجعة، ومعتمدة أو مرفوضة سابقًا', refundHistoryTitle:'سجل الاسترجاعات (معتمدة/مرفوضة)',
+    fieldRefundAmount:'المبلغ الفعلي المسترجع للعميل', originalAmountLabel:'المبلغ الأصلي', refundAmountHint:'لو فيه رسوم إلغاء من شركة الطيران، عدّل المبلغ هنا للمبلغ الفعلي اللي يرجع للعميل (أقل من الأصلي).',
+    invalidRefundAmount:'المبلغ غير صحيح — لازم يكون أكبر من صفر وما يتجاوز المبلغ الأصلي.',
     confirmApproveRefund:'اعتماد الرفند يعكس كل القيود المحاسبية الخاصة بهذا الحجز (البيع، التكلفة، التحصيل). هل أنت متأكد؟',
     refundsReportTitle:'تقرير الاسترجاعات (الرفندات)', refundsReportNote:'كل طلبات الاسترجاع المطابقة للفلاتر أعلاه — الموظف يسوي الطلب، والمحاسب يعتمد أو يرفض. الربح مخفي عن المحاسب، يظهر للأدمن فقط.',
     fieldRefundMethod:'طريقة استرجاع المبلغ للعميل', fieldRefundProof:'إثبات التحويل (إيصال)', modalApproveRefund:'اعتماد طلب الاسترجاع', refundProofRequired:'لازم ترفق إثبات التحويل.',
@@ -430,6 +433,9 @@ const T = {
     modalRequestRefund:'Request refund', refundRequestNote:'Attach the refund form/receipt (from the airline or supplier) to submit it for accountant review.',
     fieldRefundReceipt:'Refund form/receipt', fieldRefundNote:'Note (optional)', refundNotePlaceholder:'Reason for refund...',
     submitRefundBtn:'Submit refund request', pendingRefundsTitle:'Refund requests awaiting review', noPendingRefunds:'No pending refund requests.',
+    navRefunds:'Refunds', subRefunds:'All refund requests — pending review, previously approved or rejected', refundHistoryTitle:'Refund history (approved/rejected)',
+    fieldRefundAmount:'Actual amount refunded to customer', originalAmountLabel:'Original amount', refundAmountHint:'If the airline charges a cancellation fee, adjust this to the actual amount going back to the customer (less than the original).',
+    invalidRefundAmount:'Invalid amount — must be greater than zero and not exceed the original amount.',
     confirmApproveRefund:'Approving the refund will reverse all ledger entries for this booking (sale, cost, collection). Are you sure?',
     refundsReportTitle:'Refunds report', refundsReportNote:'All refund requests matching the filters above — the employee submits the request, the accountant approves or rejects it. Profit stays hidden from the accountant, visible to admin only.',
     fieldRefundMethod:'Method to refund the customer', fieldRefundProof:'Transfer proof (receipt)', modalApproveRefund:'Approve refund request', refundProofRequired:'You must attach transfer proof.',
@@ -616,21 +622,12 @@ async function rejectProfitHandover(id, note){
   if(error) throw error;
   const h = profitHandovers.find(x=>x.id===id); if(h){ h.status='rejected'; h.notes=note||null; }
 }
-async function requestRefund(bookingId, file, note, refundMethod){
+async function requestRefund(bookingId, file, note, refundMethod, refundAmount){
   const receiptUrl = await uploadReceiptFile(file);
-  if(refundMethod==='cash'){
-    const {data:updated, error} = await sb.from('bookings').update({ refund_status:'approved', refunded:true, refund_method:'cash',
-      refund_receipt_url:receiptUrl, refund_note:note||null, refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString(),
-      refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString() }).eq('id', bookingId).select().single();
-    if(error) throw error;
-    const idx = bookings.findIndex(b=>b.id===bookingId); if(idx>-1) bookings[idx]=updated;
-    await postRefundReversal(bookingId);
-  }else{
-    const {data:updated, error} = await sb.from('bookings').update({ refund_status:'pending', refund_method:'transfer', refund_receipt_url:receiptUrl, refund_note:note||null,
-      refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString() }).eq('id', bookingId).select().single();
-    if(error) throw error;
-    const idx = bookings.findIndex(b=>b.id===bookingId); if(idx>-1) bookings[idx]=updated;
-  }
+  const {data:updated, error} = await sb.from('bookings').update({ refund_status:'pending', refund_method:refundMethod||'cash', refund_amount:refundAmount!=null?Number(refundAmount):null, refund_receipt_url:receiptUrl, refund_note:note||null,
+    refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString() }).eq('id', bookingId).select().single();
+  if(error) throw error;
+  const idx = bookings.findIndex(b=>b.id===bookingId); if(idx>-1) bookings[idx]=updated;
 }
 async function rejectRefund(bookingId, note){
   const {error} = await sb.from('bookings').update({refund_status:'rejected', refund_note:note||null, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}).eq('id', bookingId);
@@ -640,10 +637,27 @@ async function rejectRefund(bookingId, note){
 async function postRefundReversal(bookingId){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) return;
+  const sellAmt = +Number(b.sell||0).toFixed(2);
+  const refundAmt = b.refund_amount!=null ? +Number(b.refund_amount).toFixed(2) : sellAmt;
+  const fullRefund = refundAmt >= sellAmt - 0.01;
   const origRows = journal.filter(j=>j.booking_id===bookingId);
-  if(origRows.length>0){
-    const reversedRows = origRows.map(j=>({ date:todayStr(), branch_id:j.branch_id, booking_id:bookingId,
-      desc_key:'jRefund', desc_args:[b.booking_no], debit_key:j.credit_key, credit_key:j.debit_key, amount:j.amount }));
+  if(origRows.length===0) return;
+  let remaining = refundAmt;
+  const reversedRows = [];
+  origRows.forEach(j=>{
+    if(j.desc_key==='jCost'){
+      if(!fullRefund) return;
+      reversedRows.push({ date:todayStr(), branch_id:j.branch_id, booking_id:bookingId,
+        desc_key:'jRefund', desc_args:[b.booking_no], debit_key:j.credit_key, credit_key:j.debit_key, amount:j.amount });
+      return;
+    }
+    const amt = +Math.min(j.amount, remaining).toFixed(2);
+    if(amt<=0) return;
+    remaining = +(remaining-amt).toFixed(2);
+    reversedRows.push({ date:todayStr(), branch_id:j.branch_id, booking_id:bookingId,
+      desc_key:'jRefund', desc_args:[b.booking_no], debit_key:j.credit_key, credit_key:j.debit_key, amount:amt });
+  });
+  if(reversedRows.length>0){
     const {data:jIns, error:jErr} = await sb.from('journal').insert(reversedRows).select();
     if(jErr) throw jErr;
     journal.unshift(...jIns.reverse());
@@ -916,6 +930,7 @@ function navItems(){
     items.push({route:'ledger', label:t('navLedger'), icon:'≡'});
     items.push({route:'reports', label:t('navReports'), icon:'▤'});
     items.push({route:'reconcile', label:t('navReconcile'), icon:'🔍'});
+    items.push({route:'refunds', label:t('navRefunds'), icon:'↩️'});
   }
   if(isAdmin()){
     items.push({route:'users', label:t('navUsers'), icon:'👤'});
@@ -1001,7 +1016,7 @@ function render(){
   document.getElementById('myAccountBtn').onclick = openMyAccountModal;
 
   const routes = { dashboard:renderDashboard, bookings:renderBookings, ledger:renderLedger,
-    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile, mysales:renderMySales };
+    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile, mysales:renderMySales, refunds:renderRefunds };
   (routes[route]||renderDashboard)();
 }
 
@@ -1982,13 +1997,6 @@ function renderDeposits(){
       <p class="note">${t('employeeCashBreakdownNote')}</p>
       ${employeeCashBreakdownHTML()}
     </div>`;
-    const pendingRefunds = bookings.filter(b=>b.refund_status==='pending');
-    html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingRefundsTitle')}</h3></div>
-      ${pendingRefunds.length===0?`<div class="empty">${t('noPendingRefunds')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colSell')}</th><th>${t('colReceipt')}</th><th></th></tr></thead>
-      <tbody>${pendingRefunds.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${branchName(b.branch_id)}</td><td class="num">${canSeeSalesTotals()?money(b.sell):moneyOrHidden(0)}</td>
-        <td><a href="${b.refund_receipt_url}" target="_blank">${t('viewReceipt')}</a></td>
-        <td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveRefund('${b.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectRefund('${b.id}')">${t('reject')}</button></td></tr>`).join('')}</tbody></table></div>`}
-    </div>`;
   }
   const myDeposits = canManage ? deposits : deposits.filter(d=>d.submitted_by===u.id);
   const pendingDeposits = myDeposits.filter(d=>d.status==='pending');
@@ -2018,6 +2026,9 @@ function openRefundRequestModal(bookingId){
     <div class="modal-head"><h3>${t('modalRequestRefund')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="refundRequestForm">
       <div class="note">${t('refundRequestNote')} (${t('colNo')}: ${b.booking_no} — ${esc(b.customer)})</div>
+      <p class="note">${t('originalAmountLabel')}: <strong>${money(b.sell)}</strong></p>
+      <div class="field"><label>${t('fieldRefundAmount')}</label><input type="number" step="0.01" name="refundAmount" value="${b.sell}" max="${b.sell}" min="0.01" required></div>
+      <p class="note">${t('refundAmountHint')}</p>
       <div class="field"><label>${t('fieldRefundMethod')}</label><select name="refundMethod" id="refundReqMethodSel">
         <option value="cash">${t('payCash')}</option>
         <option value="transfer">${t('payTransfer')}</option>
@@ -2040,9 +2051,13 @@ function openRefundRequestModal(bookingId){
     const f = new FormData(e.target);
     const file = f.get('receipt');
     if(!file || !file.size){ document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${t('receiptRequired')}</div>`; return; }
+    const refundAmt = Number(f.get('refundAmount'));
+    if(!refundAmt || refundAmt<=0 || refundAmt>Number(b.sell)+0.01){
+      document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${t('invalidRefundAmount')}</div>`; return;
+    }
     btn.disabled=true; btn.textContent=t('uploading');
     try{
-      await requestRefund(bookingId, file, f.get('note'), f.get('refundMethod'));
+      await requestRefund(bookingId, file, f.get('note'), f.get('refundMethod'), refundAmt);
       closeModal(); render();
     }catch(err){
       console.error(err);
@@ -2055,12 +2070,14 @@ window.uiRequestRefund = function(id){ openRefundRequestModal(id); };
 window.uiApproveRefund = function(id){
   const b = bookings.find(x=>x.id===id);
   if(!b) return;
+  const isTransfer = b.refund_method==='transfer';
   showModal(`
     <div class="modal-head"><h3>${t('modalApproveRefund')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
-    <p class="note">${t('colNo')}: ${b.booking_no} — ${esc(b.customer)}${canSeeSalesTotals()?` — ${money(b.sell)}`:''}</p>
-    <p class="note">${t('fieldRefundMethod')}: <strong>${t('payTransfer')}</strong></p>
+    <p class="note">${t('colNo')}: ${b.booking_no} — ${esc(b.customer)}</p>
+    ${canSeeSalesTotals()?`<p class="note">${t('originalAmountLabel')}: ${money(b.sell)} — ${t('fieldRefundAmount')}: <strong>${money(b.refund_amount!=null?b.refund_amount:b.sell)}</strong></p>`:''}
+    <p class="note">${t('fieldRefundMethod')}: <strong>${isTransfer?t('payTransfer'):t('payCash')}</strong></p>
     <form id="approveRefundForm">
-      <div class="field"><label>${t('fieldRefundProof')}</label><input type="file" name="refundProof" accept="image/*" required></div>
+      ${isTransfer?`<div class="field"><label>${t('fieldRefundProof')}</label><input type="file" name="refundProof" accept="image/*" required></div>`:''}
       <div id="approveRefundErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
         <button type="submit" class="btn btn-primary" id="approveRefundBtn">${t('approve')}</button>
@@ -2072,14 +2089,14 @@ window.uiApproveRefund = function(id){
     const btn = document.getElementById('approveRefundBtn');
     const f = new FormData(e.target);
     const file = f.get('refundProof');
-    if(!file || !file.size){
+    if(isTransfer && (!file || !file.size)){
       document.getElementById('approveRefundErrorBox').innerHTML = `<div class="login-error">${t('refundProofRequired')}</div>`;
       return;
     }
     btn.disabled=true; btn.textContent=t('saving');
     try{
-      const proofUrl = await uploadReceiptFile(file);
-      await approveRefund(id, 'transfer', proofUrl);
+      const proofUrl = isTransfer ? await uploadReceiptFile(file) : null;
+      await approveRefund(id, b.refund_method, proofUrl);
       closeModal(); render();
     }catch(err){
       console.error(err);
@@ -2416,6 +2433,30 @@ function setReconcileQuickRange(kind){
   document.getElementById('rfDateFrom').value = from;
   document.getElementById('rfDateTo').value = today;
   updateReconcileCount();
+}
+function renderRefunds(){
+  document.getElementById('pageSub').textContent = t('subRefunds');
+  const bf = effectiveBranchFilter();
+  const scoped = bf==='all' ? bookings : bookings.filter(b=>b.branch_id===bf);
+  const pending = scoped.filter(b=>b.refund_status==='pending');
+  const history = scoped.filter(b=>b.refund_status==='approved'||b.refund_status==='rejected')
+    .sort((a,b)=>(b.refund_reviewed_at||'').localeCompare(a.refund_reviewed_at||''));
+  const rowHTML = (b, showActions)=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(b.created_by))}</td><td>${branchName(b.branch_id)}</td>
+      <td class="num">${canSeeSalesTotals()?money(b.sell):moneyOrHidden(0)}</td>
+      <td class="num" style="font-weight:600">${canSeeSalesTotals()?money(b.refund_amount!=null?b.refund_amount:b.sell):moneyOrHidden(0)}</td>
+      <td>${b.refund_method==='transfer'?t('payTransfer'):t('payCash')}</td>
+      <td><a href="${b.refund_receipt_url}" target="_blank">${t('viewReceipt')}</a></td>
+      ${showActions?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveRefund('${b.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectRefund('${b.id}')">${t('reject')}</button></td>`
+        :`<td><span class="tag ${b.refund_status==='approved'?'collected':'rejected'}">${b.refund_status==='approved'?t('approve'):t('reject')}</span></td>`}</tr>`;
+  document.getElementById('content').innerHTML = `
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingRefundsTitle')}</h3></div>
+      ${pending.length===0?`<div class="empty">${t('noPendingRefunds')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('originalAmountLabel')}</th><th>${t('fieldRefundAmount')}</th><th>${t('fieldRefundMethod')}</th><th>${t('colReceipt')}</th><th></th></tr></thead>
+      <tbody>${pending.map(b=>rowHTML(b,true)).join('')}</tbody></table></div>`}
+    </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('refundHistoryTitle')}</h3></div>
+      ${history.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('originalAmountLabel')}</th><th>${t('fieldRefundAmount')}</th><th>${t('fieldRefundMethod')}</th><th>${t('colReceipt')}</th><th>${t('colRefundStatus')}</th></tr></thead>
+      <tbody>${history.slice(0,100).map(b=>rowHTML(b,false)).join('')}</tbody></table></div>`}
+    </div>`;
 }
 function renderReconcile(){
   document.getElementById('pageSub').textContent = t('subReconcile');
