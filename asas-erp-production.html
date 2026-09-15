@@ -155,6 +155,7 @@ const T = {
     statusPaid:'مدفوع', statusPending:'قيد التحصيل', statusCollected:'محصّلة', collectPayment:'تحصيل الدفع',
     emptyBookings:'لا توجد حجوزات بعد.', emptyBranches:'لا توجد فروع.', emptyData:'لا توجد بيانات.',
     bookingsLog:'سجل الحجوزات والفواتير', addBookingFull:'+ إضافة حجز / فاتورة',
+    bookingsSearchPlaceholder:'🔍 بحث برقم التذكرة، اسم العميل، أو رقم الفاتورة...', bookingsSearchResultCount:'عدد النتائج',
     modalNewBooking:'إضافة حجز جديد', fieldServiceType:'نوع الخدمة', fieldBranch:'الفرع', fieldCustomer:'اسم العميل',
     fieldSupplier:'المصدر / المورد', fieldDate:'التاريخ', fieldSell:'سعر البيع للعميل (ر.س)',
     fieldCost:'التكلفة الصافية (ر.س)', fieldCommRate:'نسبة العمولة من المورد %', fieldPayStatus:'حالة تحصيل الدفع من العميل',
@@ -279,6 +280,9 @@ const T = {
     fieldRefundReceipt:'نموذج/إيصال الرفند', fieldRefundNote:'ملاحظة (اختياري)', refundNotePlaceholder:'سبب الرفند...',
     submitRefundBtn:'إرسال طلب الرفند', pendingRefundsTitle:'طلبات الرفند بانتظار المراجعة', noPendingRefunds:'لا توجد طلبات رفند معلّقة.',
     confirmApproveRefund:'اعتماد الرفند يعكس كل القيود المحاسبية الخاصة بهذا الحجز (البيع، التكلفة، التحصيل). هل أنت متأكد؟',
+    refundsReportTitle:'تقرير الاسترجاعات (الرفندات)', refundsReportNote:'كل طلبات الاسترجاع المطابقة للفلاتر أعلاه — الموظف يسوي الطلب، والمحاسب يعتمد أو يرفض. الربح مخفي عن المحاسب، يظهر للأدمن فقط.',
+    fieldRefundMethod:'طريقة استرجاع المبلغ للعميل', fieldRefundProof:'إثبات التحويل (إيصال)', modalApproveRefund:'اعتماد طلب الاسترجاع', refundProofRequired:'لازم ترفق إثبات التحويل.',
+    colRefundStatus:'حالة الاسترجاع',
     profitHandoverBtn:'📋 تسليم الربح', modalProfitHandover:'تقرير وتسليم الربح', previewBtn:'معاينة', noEligibleProfit:'لا توجد تذاكر مؤهلة (مدقّقة التكلفة) بهذي الفترة.',
     totalProfitLabel:'إجمالي الربح المسلَّم', submitHandoverBtn:'تسليم للأدمن', myHandoverHistory:'سجل تسليماتي',
     profitHandoversTitle:'تسليمات الربح من الموظفين', noPendingHandovers:'لا توجد تسليمات معلّقة.',
@@ -301,6 +305,7 @@ const T = {
     statusPaid:'Paid', statusPending:'Pending', statusCollected:'Collected', collectPayment:'Mark paid',
     emptyBookings:'No bookings yet.', emptyBranches:'No branches yet.', emptyData:'No data yet.',
     bookingsLog:'Bookings & invoices log', addBookingFull:'+ Add booking / invoice',
+    bookingsSearchPlaceholder:'🔍 Search by ticket number, customer name, or invoice number...', bookingsSearchResultCount:'Results found',
     modalNewBooking:'Add new booking', fieldServiceType:'Service type', fieldBranch:'Branch', fieldCustomer:'Customer name',
     fieldSupplier:'Supplier / source', fieldDate:'Date', fieldSell:'Sell price to customer (SAR)',
     fieldCost:'Net cost (SAR)', fieldCommRate:'Supplier commission rate %', fieldPayStatus:'Customer payment status',
@@ -425,6 +430,9 @@ const T = {
     fieldRefundReceipt:'Refund form/receipt', fieldRefundNote:'Note (optional)', refundNotePlaceholder:'Reason for refund...',
     submitRefundBtn:'Submit refund request', pendingRefundsTitle:'Refund requests awaiting review', noPendingRefunds:'No pending refund requests.',
     confirmApproveRefund:'Approving the refund will reverse all ledger entries for this booking (sale, cost, collection). Are you sure?',
+    refundsReportTitle:'Refunds report', refundsReportNote:'All refund requests matching the filters above — the employee submits the request, the accountant approves or rejects it. Profit stays hidden from the accountant, visible to admin only.',
+    fieldRefundMethod:'Method to refund the customer', fieldRefundProof:'Transfer proof (receipt)', modalApproveRefund:'Approve refund request', refundProofRequired:'You must attach transfer proof.',
+    colRefundStatus:'Refund status',
     profitHandoverBtn:'📋 Hand over profit', modalProfitHandover:'Profit report & handover', previewBtn:'Preview', noEligibleProfit:'No eligible (cost-reviewed) tickets in this period.',
     totalProfitLabel:'Total profit handed over', submitHandoverBtn:'Submit to admin', myHandoverHistory:'My handover history',
     profitHandoversTitle:'Profit handovers from employees', noPendingHandovers:'No pending handovers.',
@@ -480,7 +488,7 @@ function employeeCashBreakdownHTML(){
   const rows = employees.map(u=>({name:u.name, branch:branchName(u.branch_id), bal:employeeCashOnHand(u.id)})).filter(r=>r.bal!==0 || true);
   if(rows.length===0) return `<div class="empty">${t('emptyData')}</div>`;
   return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('colUserName')}</th><th>${t('fieldBranch')}</th><th>${t('colAmount')}</th></tr></thead>
-    <tbody>${rows.map(r=>`<tr><td>${r.name}</td><td>${r.branch}</td><td class="num" style="font-weight:600">${money(r.bal)}</td></tr>`).join('')}</tbody></table></div>`;
+    <tbody>${rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${r.branch}</td><td class="num" style="font-weight:600">${money(r.bal)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 async function uploadReceiptFile(file){
   const extMatch = /\.([a-zA-Z0-9]+)$/.exec(file.name||'');
@@ -618,12 +626,12 @@ async function rejectRefund(bookingId, note){
   if(error) throw error;
   const b = bookings.find(x=>x.id===bookingId); if(b){ b.refund_status='rejected'; b.refund_note=note||null; }
 }
-async function approveRefund(bookingId){
+async function approveRefund(bookingId, refundMethod, refundProofUrl){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) return;
-  const {error} = await sb.from('bookings').update({refund_status:'approved', refunded:true, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}).eq('id', bookingId);
+  const {error} = await sb.from('bookings').update({refund_status:'approved', refunded:true, refund_method:refundMethod||null, refund_proof_url:refundProofUrl||null, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}).eq('id', bookingId);
   if(error) throw error;
-  b.refund_status='approved'; b.refunded=true;
+  b.refund_status='approved'; b.refunded=true; b.refund_method=refundMethod||null; b.refund_proof_url=refundProofUrl||null;
   const origRows = journal.filter(j=>j.booking_id===bookingId);
   if(origRows.length>0){
     const reversedRows = origRows.map(j=>({ date:todayStr(), branch_id:j.branch_id, booking_id:bookingId,
@@ -671,6 +679,7 @@ async function settleSupplierBulk(bookingIds){
 }
 
 /* ===================== HELPERS ===================== */
+function esc(s){ if(s===undefined||s===null) return ''; return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function money(n){ const v=Number(n)||0; return v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) + ' SAR'; }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 function branchName(id){ const b = branches.find(x=>x.id===id); return b ? b.name : '—'; }
@@ -956,9 +965,9 @@ function render(){
           <div class="topbar-right">
             ${canSeeAllBranches() ? `<select class="select-ctrl" id="branchFilterSel">
               <option value="all" ${branchFilter==='all'?'selected':''}>${t('allBranches')}</option>
-              ${branches.map(b=>`<option value="${b.id}" ${branchFilter===b.id?'selected':''}>${b.name}</option>`).join('')}
+              ${branches.map(b=>`<option value="${b.id}" ${branchFilter===b.id?'selected':''}>${esc(b.name)}</option>`).join('')}
             </select>` : `<span class="tag employee">${branchName(u.branch_id)}</span>`}
-            <span style="font-size:12px;color:var(--ink-soft)">${t('loggedInAs')} <b style="color:var(--ink)">${u.name}</b></span>
+            <span style="font-size:12px;color:var(--ink-soft)">${t('loggedInAs')} <b style="color:var(--ink)">${esc(u.name)}</b></span>
             <button class="btn btn-ghost btn-sm" id="myAccountBtn">${t('myAccountBtn')}</button>
             <button class="btn btn-ghost btn-sm" id="langBtn">${t('langBtn')}</button>
             <button class="btn btn-ghost btn-sm" id="logoutBtn">${t('logout')}</button>
@@ -1051,12 +1060,12 @@ function bookingsTable(list, mode){
       <thead><tr><th>${t('colNo')}</th><th>${t('colAirline')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colBranch')}</th>
         <th>${t('colNet')}</th><th>${t('colProfit')}</th><th>${t('colSell')}</th><th>${t('colSupplier')}</th><th>${t('colInvoiceNo')}</th><th>${t('colPayStatus')}</th><th>${t('colPaymentMethod')}</th>${showActions?'<th></th>':''}</tr></thead>
       <tbody>${list.map(b=>`
-        <tr><td class="num">${b.booking_no}</td><td><b>${b.airline||'—'}</b></td><td>${b.customer}</td>
-          <td>${b.is_open_ticket?`<span class="tag pending">${t('tagOpen')}</span>`:(b.ticket_no||'—')}${b.flight_route?`<br><span style="font-size:10.5px;color:var(--ink-soft)">${b.flight_route}</span>`:''}</td>
+        <tr><td class="num">${b.booking_no}</td><td><b>${esc(b.airline||'—')}</b></td><td>${esc(b.customer)}</td>
+          <td>${b.is_open_ticket?`<span class="tag pending">${t('tagOpen')}</span>`:(b.ticket_no||'—')}${b.flight_route?`<br><span style="font-size:10.5px;color:var(--ink-soft)">${esc(b.flight_route)}</span>`:''}</td>
           <td>${branchName(b.branch_id)}</td>
           <td class="num">${b.cost_reviewed?money(b.cost):`<span class="tag pending">${t('pendingReviewTag')}</span>`}</td><td class="num">${canSeeOwnProfit()?(b.cost_reviewed?money(b.profit_amount):`<span class="tag pending">${t('pendingReviewTag')}</span>`):moneyOrHidden(0)}</td>
           <td class="num" style="font-weight:600">${canSeeSell()?money(b.sell):moneyOrHidden(0)}</td>
-          <td>${b.supplier||'—'}${(Number(b.cost)>0)?`<br><span class="tag ${b.supplier_settled?'collected':'pending'}">${b.supplier_settled?t('supplierSettledTag'):t('supplierUnsettledTag')}</span>`:''}</td><td>${b.invoice_no||'—'}</td>
+          <td>${b.supplier||'—'}${(Number(b.cost)>0)?`<br><span class="tag ${b.supplier_settled?'collected':'pending'}">${b.supplier_settled?t('supplierSettledTag'):t('supplierUnsettledTag')}</span>`:''}</td><td>${esc(b.invoice_no||'—')}</td>
           <td>${b.refunded?`<span class="tag rejected">${t('refundedTag')}</span>`:b.refund_status==='pending'?`<span class="tag pending">${t('refundPendingTag')}</span>`:b.refund_status==='rejected'?`<span class="tag rejected">${t('refundRejectedTag')}</span>`:`<span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span>`}</td>
           <td>${b.payment_method==='transfer'?`${t('payTransfer')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
             :b.payment_method==='span'?`${t('paySpan')}<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
@@ -1072,7 +1081,7 @@ function bookingsTable(list, mode){
             ${mode==='employee' && b.edit_requested?`<button class="btn btn-gold btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>`:''}
             ${(mode==='employee'||isAdmin()) && !b.refund_status && !b.refunded?`<button class="btn btn-ghost btn-sm" onclick="uiRequestRefund('${b.id}')">${t('requestRefundBtn')}</button>`:''}
           </td>`:''}
-        </tr>${mode==='employee' && b.edit_requested && b.edit_note?`<tr><td colspan="13" style="background:#FBEFE0;font-size:11.5px;color:#A8722C;">📝 ${t('editNoteLabel')}: ${b.edit_note}</td></tr>`:''}`).join('')}</tbody></table></div>`;
+        </tr>${mode==='employee' && b.edit_requested && b.edit_note?`<tr><td colspan="13" style="background:#FBEFE0;font-size:11.5px;color:#A8722C;">📝 ${t('editNoteLabel')}: ${esc(b.edit_note)}</td></tr>`:''}`).join('')}</tbody></table></div>`;
 }
 function branchBarsHTML(metric, sourceBookings){
   const list = sourceBookings || bookings;
@@ -1083,7 +1092,7 @@ function branchBarsHTML(metric, sourceBookings){
   });
   const max = Math.max(1, ...rows.map(r=>r.val));
   if(rows.length===0) return `<div class="empty">${t('emptyBranches')}</div>`;
-  return rows.map(r=>`<div class="bar-row"><div class="bar-label">${r.name}</div>
+  return rows.map(r=>`<div class="bar-row"><div class="bar-label">${esc(r.name)}</div>
     <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2,(r.val/max*100))}%"></div></div>
     <div class="bar-val num">${money(r.val)}</div></div>`).join('');
 }
@@ -1151,25 +1160,45 @@ function renderMySales(){
   document.getElementById('msPrintBtn').onclick=()=>generateBranchReport(u.branch_id, u.id, mySalesDateFrom, mySalesDateTo);
   document.getElementById('msExcelBtn').onclick=()=>exportBookingsToExcel(list, 'employee');
 }
+let bookingsSearchTerm = '';
 function renderBookings(){
+  const prevInput = document.getElementById('bookingsSearchInput');
+  const wasFocused = !!(prevInput && document.activeElement===prevInput);
+  const cursorPos = wasFocused ? prevInput.selectionStart : null;
   document.getElementById('pageSub').textContent = t('subBookings');
   const mode = canSeeAllBranches() ? 'manage' : 'employee';
   const u = currentUser();
+  let list = filteredBookings();
+  if(bookingsSearchTerm){
+    const term = bookingsSearchTerm.trim().toLowerCase();
+    list = list.filter(b=>
+      String(b.ticket_no||'').toLowerCase().includes(term) ||
+      String(b.customer||'').toLowerCase().includes(term) ||
+      String(b.invoice_no||'').toLowerCase().includes(term));
+  }
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('bookingsLog')}</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <input class="select-ctrl" id="bookingsSearchInput" type="text" placeholder="${t('bookingsSearchPlaceholder')}" value="${esc(bookingsSearchTerm)}">
         <button class="btn btn-ghost btn-sm" id="printReportBtn">${t('printReport')}</button>
         <button class="btn btn-ghost btn-sm" id="exportExcelBtn">${t('exportExcelBtn')}</button>
         ${u.role==='employee'?`<button class="btn btn-gold btn-sm" id="profitHandoverBtn">${t('profitHandoverBtn')}</button>`:''}
         ${!isAccountant()?`<button class="btn btn-primary btn-sm" id="addBookingBtn">${t('addBookingFull')}</button>`:''}
       </div></div>
-      ${bookingsTable(filteredBookings(), mode)}
+      ${bookingsSearchTerm?`<p class="note">${t('bookingsSearchResultCount')}: ${list.length}</p>`:''}
+      ${bookingsTable(list, mode)}
     </div>
     ${u.role==='employee'?myProfitHandoverHistoryHTML(u.id):''}`;
   if(document.getElementById('addBookingBtn')) document.getElementById('addBookingBtn').onclick = ()=>openBookingModal();
   document.getElementById('printReportBtn').onclick = openPrintReportModal;
-  document.getElementById('exportExcelBtn').onclick = ()=>exportBookingsToExcel(filteredBookings(), mode);
+  document.getElementById('exportExcelBtn').onclick = ()=>exportBookingsToExcel(list, mode);
   if(document.getElementById('profitHandoverBtn')) document.getElementById('profitHandoverBtn').onclick = openProfitHandoverModal;
+  document.getElementById('bookingsSearchInput').oninput = (e)=>{ bookingsSearchTerm = e.target.value; renderBookings(); };
+  if(wasFocused){
+    const newInput = document.getElementById('bookingsSearchInput');
+    newInput.focus();
+    if(cursorPos!==null) newInput.setSelectionRange(cursorPos, cursorPos);
+  }
 }
 function myProfitHandoverHistoryHTML(employeeId){
   const mine = profitHandovers.filter(h=>h.employee_id===employeeId);
@@ -1202,7 +1231,7 @@ function openProfitHandoverModal(){
     if(list.length===0){ box.innerHTML = `<div class="empty">${t('noEligibleProfit')}</div>`; return; }
     box.innerHTML = `
       <div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colProfit')}</th></tr></thead>
-        <tbody>${list.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.ticket_no||'—'}</td><td>${b.customer}</td><td class="num" style="font-weight:600">${money(b.profit_amount)}</td></tr>`).join('')}</tbody>
+        <tbody>${list.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no||'—')}</td><td>${esc(b.customer)}</td><td class="num" style="font-weight:600">${money(b.profit_amount)}</td></tr>`).join('')}</tbody>
       </table></div>
       <div style="margin-top:10px;font-weight:700;font-size:15px;">${t('totalProfitLabel')}: ${money(total)}</div>
       <div style="margin-top:16px;display:flex;gap:10px;">
@@ -1227,10 +1256,10 @@ function printProfitHandoverReport(list, total, dateFrom, dateTo, u){
       th{background:#0F2A3D;color:#fff;padding:7px 6px;text-align:${lang==='ar'?'right':'left'};} td{padding:6px;border-bottom:1px solid #E4DECB;}
       .total{margin-top:14px;font-weight:700;font-size:16px;}
     </style></head><body>
-    <h1>${t('modalProfitHandover')} — ${u.name}</h1>
+    <h1>${t('modalProfitHandover')} — ${esc(u.name)}</h1>
     <div>${t('reportPeriodLabel')}: ${periodLabel}</div>
     <table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colProfit')}</th></tr></thead>
-      <tbody>${list.map(b=>`<tr><td>${b.booking_no}</td><td>${b.ticket_no||'—'}</td><td>${b.customer}</td><td style="text-align:end;font-weight:600">${money(b.profit_amount)}</td></tr>`).join('')}</tbody>
+      <tbody>${list.map(b=>`<tr><td>${b.booking_no}</td><td>${esc(b.ticket_no||'—')}</td><td>${esc(b.customer)}</td><td style="text-align:end;font-weight:600">${money(b.profit_amount)}</td></tr>`).join('')}</tbody>
     </table>
     <div class="total">${t('totalProfitLabel')}: ${money(total)}</div>
     </body></html>`;
@@ -1248,11 +1277,11 @@ function openPrintReportModal(){
     <div class="modal-head"><h3>${t('modalPrintReport')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="printReportForm">
       ${canManage ? `<div class="field"><label>${t('fieldReportBranch')}</label><select name="branchId">
-          <option value="all">${t('allBranches')}</option>${branchOptions.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}
+          <option value="all">${t('allBranches')}</option>${branchOptions.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}
         </select></div>` : `<input type="hidden" name="branchId" value="${u.branch_id||'all'}">`}
       <div class="field"><label>${t('fieldEmployeeFilter')}</label><select name="employeeId" ${canManage?'':'disabled'}>
         ${canManage?`<option value="all">${t('allEmployeesOpt')}</option>`:''}
-        ${employeeOptions.map(x=>`<option value="${x.id}" ${!canManage?'selected':''}>${x.name}</option>`).join('')}
+        ${employeeOptions.map(x=>`<option value="${x.id}" ${!canManage?'selected':''}>${esc(x.name)}</option>`).join('')}
       </select></div>
       <div class="grid-2">
         <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" name="dateFrom"></div>
@@ -1290,8 +1319,8 @@ function exportBookingsToExcel(list, mode){
 }
 function bookingRowHTML(b){
   return `<tr>
-      <td>${b.booking_no}</td><td>${b.date}</td><td>${branchName(b.branch_id)}</td><td>${userName(b.created_by)}</td><td>${b.airline||'—'}</td><td>${b.customer}</td>
-      <td>${b.ticket_no||'—'}</td><td>${b.supplier||'—'}</td>
+      <td>${b.booking_no}</td><td>${b.date}</td><td>${branchName(b.branch_id)}</td><td>${userName(b.created_by)}</td><td>${esc(b.airline||'—')}</td><td>${esc(b.customer)}</td>
+      <td>${esc(b.ticket_no||'—')}</td><td>${b.supplier||'—'}</td>
       <td style="text-align:end">${money(b.cost)}</td><td style="text-align:end">${canSeeOwnProfit()?money(b.profit_amount):t('hiddenValue')}</td><td style="text-align:end;font-weight:600">${canSeeSell()?money(b.sell):t('hiddenValue')}</td>
       <td>${b.payment_method==='transfer'?t('payTransfer'):b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payCash')}</td>
       <td>${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</td>
@@ -1374,7 +1403,7 @@ function printBranchEmployeeReport(rows, groupBy, nameHeader){
     <h1>${t('agencyAr')} — ${t('navReports')}</h1>
     <div class="meta">${filters.map(f=>`<div>${f}</div>`).join('')}</div>
     <table><thead><tr><th>${nameHeader}</th>${groupBy==='employee'?`<th>${t('colUserBranch')}</th>`:''}<th>${t('colBookCount')}</th><th>${t('colSalesTotal')}</th><th>${t('colCostTotal')}</th><th>${t('colCommTotal')}</th>${groupBy==='branch'?`<th>${t('colExpTotal')}</th>`:''}<th>${t('colNetProfitCol')}</th><th>${t('colMargin')}</th></tr></thead>
-      <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td style="text-align:end">${r.count}</td><td style="text-align:end">${showSell?money(r.sales):t('hiddenValue')}</td><td style="text-align:end">${money(r.cost)}</td>
+      <tbody>${rows.map(r=>`<tr><td>${esc(r.name)}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td style="text-align:end">${r.count}</td><td style="text-align:end">${showSell?money(r.sales):t('hiddenValue')}</td><td style="text-align:end">${money(r.cost)}</td>
         <td style="text-align:end">${money(r.commission)}</td>${groupBy==='branch'?`<td style="text-align:end">${money(r.expenses)}</td>`:''}<td style="text-align:end;font-weight:600">${showProfit?money(r.netProfit):t('hiddenValue')}</td><td style="text-align:end">${showProfit?r.margin.toFixed(1)+'%':t('hiddenValue')}</td></tr>`).join('') || `<tr><td colspan="8" style="text-align:center;padding:16px;">${t('emptyData')}</td></tr>`}</tbody>
     </table>
     </body></html>`;
@@ -1399,7 +1428,7 @@ function generateBranchReport(branchId, employeeId, dateFrom, dateTo){
       const exp = manualExpenses.filter(e=>e.branch_id===br.id && inRange(e.date||''));
       if(list.length===0 && exp.length===0) return;
       const tt = computeTotals(list, exp);
-      bodyHtml += `<h2 style="border-bottom:2px solid #0F2A3D;padding-bottom:4px;">${br.name}</h2>${totalsKpisHTML(tt)}${bookingsTableHTML(list)}<div style="height:14px;"></div>`;
+      bodyHtml += `<h2 style="border-bottom:2px solid #0F2A3D;padding-bottom:4px;">${esc(br.name)}</h2>${totalsKpisHTML(tt)}${bookingsTableHTML(list)}<div style="height:14px;"></div>`;
     });
     const grandTt = computeTotals(grandList, grandExp);
     bodyHtml += `<h2 style="margin-top:26px;">${t('grandTotalTitle')}</h2>${totalsKpisHTML(grandTt)}`;
@@ -1455,7 +1484,7 @@ function openBookingModal(existing){
         <div class="field"><label>${t('fieldAirline')}</label><input name="airline" list="airlineHints" required value="${v.airline||''}">
           <datalist id="airlineHints">${AIRLINE_HINTS.map(a=>`<option value="${a}">`).join('')}</datalist>
         </div>
-        <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}" ${v.branch_id===b.id?'selected':''}>${b.name}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}" ${v.branch_id===b.id?'selected':''}>${esc(b.name)}</option>`).join('')}</select></div>
       </div>
       <div class="field"><label>${t('fieldCustomer')}</label><input name="customer" required value="${v.customer||''}"></div>
       <div class="grid-2">
@@ -1572,7 +1601,7 @@ function renderLedger(){
         ${(isAdmin() && tt.pendingReviewCount>0)?`<div class="note" style="color:#A8722C;">⚠️ ${tt.pendingReviewCount} ${t('pendingReviewTag')} (${money(tt.pendingReviewSales)}) — ${t('reviewCostBtn')}</div>`:''}
       </div>
       <div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('chartOfAccounts')}</h3></div>
-        <table><thead><tr><th>${t('jDesc')}</th><th>${t('colAmount')}</th></tr></thead><tbody>${['accCashOnHand','accBank','accCustomers','accCommRec','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'].map(k=>`<tr><td>${t(k)}</td><td class="num" style="font-weight:600">${k==='accSalesRev'?moneyOrHidden(accountBalance(k, jrnl)):money(accountBalance(k, jrnl))}</td></tr>`).join('')}</tbody></table>
+        <table><thead><tr><th>${t('jDesc')}</th><th>${t('colAmount')}</th></tr></thead><tbody>${['accCashOnHand','accBank','accCustomers','accCommRec','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'].map(k=>`<tr><td>${t(k)}</td><td class="num" style="font-weight:600">${k==='accSalesRev'?(canSeeSalesTotals()?money(accountBalance(k, jrnl)):moneyOrHidden(0)):money(accountBalance(k, jrnl))}</td></tr>`).join('')}</tbody></table>
       </div>
     </div>
     <div class="panel">
@@ -1583,7 +1612,7 @@ function renderLedger(){
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('manualExpensesListTitle')}</h3><button class="btn btn-ghost btn-sm" id="addExpenseBtn">${t('addExpense')}</button></div>
       ${expList.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colBranch')}</th><th>${t('fieldExpenseDesc')}</th><th>${t('colAmount')}</th><th></th></tr></thead>
-      <tbody>${expList.map(e=>`<tr><td>${e.date}</td><td>${branchName(e.branch_id)}</td><td>${e.description||'—'}</td><td class="num" style="font-weight:600">${money(e.amount)}</td>
+      <tbody>${expList.map(e=>`<tr><td>${e.date}</td><td>${branchName(e.branch_id)}</td><td>${esc(e.description||'—')}</td><td class="num" style="font-weight:600">${money(e.amount)}</td>
         <td><button class="btn btn-danger btn-sm" onclick="uiDeleteExpense('${e.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table></div>`}
     </div>
     <div class="panel">
@@ -1624,7 +1653,7 @@ function openSupplierPaymentModal(){
     const box = document.getElementById('supplierPayListBox');
     box.innerHTML = `<div style="overflow-x:auto;"><table><thead><tr><th></th><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colAmount')}</th></tr></thead>
       <tbody>${list.map(b=>`<tr><td><input type="checkbox" class="supPayChk" data-id="${b.id}" data-amt="${b.cost}" style="width:auto;"></td>
-        <td class="num">${b.booking_no}</td><td>${b.date}</td><td>${b.customer}</td><td>${b.ticket_no||'—'}</td><td class="num">${money(b.cost)}</td></tr>`).join('')}</tbody></table></div>
+        <td class="num">${b.booking_no}</td><td>${b.date}</td><td>${esc(b.customer)}</td><td>${esc(b.ticket_no||'—')}</td><td class="num">${money(b.cost)}</td></tr>`).join('')}</tbody></table></div>
       <div style="margin-top:10px;font-weight:700;">${t('selectedTotalLabel')}: <span id="supplierPayTotal">${money(0)}</span></div>`;
     box.querySelectorAll('.supPayChk').forEach(chk=>{
       chk.onchange = ()=>{
@@ -1651,7 +1680,7 @@ function openManualJournalModal(){
   showModal(`
     <div class="modal-head"><h3>${t('modalManualJournal')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="manualJournalForm">
-      <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>
+      <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
       <div class="field"><label>${t('fieldExpenseDesc')}</label><input name="desc" required placeholder="${t('manualDescPlaceholder')}"></div>
       <div class="grid-2">
         <div class="field"><label>${t('jDebit')}</label><select name="debitKey">${accountKeys.map(k=>`<option value="${k}">${t(k)}</option>`).join('')}</select></div>
@@ -1688,7 +1717,7 @@ function openExpenseModal(){
   showModal(`
     <div class="modal-head"><h3>${t('modalExpense')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="expenseForm">
-      <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>
+      <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
       <div class="field"><label>${t('fieldExpenseDesc')}</label><input name="desc" required></div>
       <div class="grid-2">
         <div class="field"><label>${t('fieldAmount')}</label><input type="number" step="0.01" name="amount" required></div>
@@ -1726,7 +1755,7 @@ function renderCommissions(){
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('commDetails')}</h3></div>
       ${list.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;">
       <table><thead><tr><th>${t('colBookingNo')}</th><th>${t('colSupplierName')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colCommAmount')}</th><th>${t('colStatus')}</th><th></th></tr></thead>
-        <tbody>${list.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.supplier}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td>
+        <tbody>${list.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.supplier}</td><td>${esc(b.customer)}</td><td>${branchName(b.branch_id)}</td>
           <td class="num">${money(b.commission)}</td><td><span class="tag ${b.commission_status}">${b.commission_status==='collected'?t('statusCollected'):t('statusPending')}</span></td>
           <td>${b.commission_status==='pending'?`<button class="btn btn-ghost btn-sm" onclick="uiCollectCommission('${b.id}')">${t('collectComm')}</button>`:''}</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
@@ -1786,15 +1815,16 @@ function renderReports(){
   const nameHeader = groupBy==='employee' ? t('colUserName') : t('colBranchName');
   const summaryExp = manualExpenses.filter(e=> (reportBranchFilter==='all'||e.branch_id===reportBranchFilter) && (!reportDateFrom||e.date>=reportDateFrom) && (!reportDateTo||e.date<=reportDateTo));
   const summaryTT = computeTotals(scoped, summaryExp);
+  const refundsList = scoped.filter(b=>b.refund_status);
   document.getElementById('content').innerHTML = `
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('reconcileFiltersTitle')}</h3></div>
       <div class="grid-2">
         <div class="field"><label>${t('colSupplier')}</label><select id="repSupplier"><option value="all" ${reportSupplierFilter==='all'?'selected':''}>${t('allSuppliersOpt')}</option>${suppliers.map(s=>`<option value="${s}" ${reportSupplierFilter===s?'selected':''}>${s}</option>`).join('')}</select></div>
-        <div class="field"><label>${t('fieldBranch')}</label><select id="repBranch"><option value="all" ${reportBranchFilter==='all'?'selected':''}>${t('allBranches')}</option>${branches.map(b=>`<option value="${b.id}" ${reportBranchFilter===b.id?'selected':''}>${b.name}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldBranch')}</label><select id="repBranch"><option value="all" ${reportBranchFilter==='all'?'selected':''}>${t('allBranches')}</option>${branches.map(b=>`<option value="${b.id}" ${reportBranchFilter===b.id?'selected':''}>${esc(b.name)}</option>`).join('')}</select></div>
       </div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldEmployeeFilter')}</label><select id="repEmployee"><option value="all" ${reportEmployeeFilter==='all'?'selected':''}>${t('allEmployeesOpt')}</option>${users.map(u=>`<option value="${u.id}" ${reportEmployeeFilter===u.id?'selected':''}>${u.name}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldEmployeeFilter')}</label><select id="repEmployee"><option value="all" ${reportEmployeeFilter==='all'?'selected':''}>${t('allEmployeesOpt')}</option>${users.map(u=>`<option value="${u.id}" ${reportEmployeeFilter===u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select></div>
         <div class="field"><label></label>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button type="button" class="btn btn-ghost btn-sm" id="repToday">${t('quickToday')}</button>
@@ -1835,6 +1865,20 @@ function renderReports(){
       ${scoped.length===0?`<div class="empty">${t('emptyData')}</div>`:bookingsTableHTML(scoped)}
     </div>
     <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('refundsReportTitle')}</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" id="refundsPrintBtn">${t('printReport')}</button>
+          <button class="btn btn-ghost btn-sm" id="refundsExcelBtn">${t('exportExcelBtn')}</button>
+        </div>
+      </div>
+      <p class="note">${t('refundsReportNote')}</p>
+      ${refundsList.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colAmount')}</th><th>${t('colProfit')}</th><th>${t('colRefundStatus')}</th><th>${t('fieldRefundMethod')}</th></tr></thead>
+      <tbody>${refundsList.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(b.created_by))}</td>
+        <td class="num">${canSeeSalesTotals()?money(b.sell):moneyOrHidden(0)}</td><td class="num">${canSeeProfit()?money(b.profit_amount):t('hiddenValue')}</td>
+        <td><span class="tag ${b.refund_status==='approved'?'collected':b.refund_status==='rejected'?'rejected':'pending'}">${b.refund_status==='approved'?t('approve'):b.refund_status==='rejected'?t('reject'):t('refundPendingTag')}</span></td>
+        <td>${b.refund_method==='transfer'?t('payTransfer'):b.refund_method==='cash'?t('payCash'):'—'}</td></tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('branchTable')}</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <select class="select-ctrl" id="reportGroupBySel">
@@ -1848,10 +1892,12 @@ function renderReports(){
       </div>
       ${rows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;">
       <table><thead><tr><th>${nameHeader}</th>${groupBy==='employee'?`<th>${t('colUserBranch')}</th>`:''}<th>${t('colBookCount')}</th><th>${t('colSalesTotal')}</th><th>${t('colCostTotal')}</th><th>${t('colCommTotal')}</th>${groupBy==='branch'?`<th>${t('colExpTotal')}</th>`:''}<th>${t('colNetProfitCol')}</th><th>${t('colMargin')}</th></tr></thead>
-        <tbody>${rows.map(r=>`<tr><td>${r.name}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td class="num">${r.count}</td><td class="num">${canSeeSalesTotals()?money(r.sales):moneyOrHidden(0)}</td><td class="num">${money(r.cost)}</td>
+        <tbody>${rows.map(r=>`<tr><td>${esc(r.name)}</td>${groupBy==='employee'?`<td>${r.sub||'—'}</td>`:''}<td class="num">${r.count}</td><td class="num">${canSeeSalesTotals()?money(r.sales):moneyOrHidden(0)}</td><td class="num">${money(r.cost)}</td>
           <td class="num">${money(r.commission)}</td>${groupBy==='branch'?`<td class="num">${money(r.expenses)}</td>`:''}<td class="num ${r.netProfit>=0?'pos':'neg'}" style="font-weight:600">${moneyOrHidden(r.netProfit)}</td><td class="num">${canSeeProfit()?r.margin.toFixed(1)+'%':t('hiddenValue')}</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
   document.getElementById('ticketDetailsPrintBtn').onclick = ()=>printTicketDetails(scoped);
+  document.getElementById('refundsPrintBtn').onclick = ()=>printTicketDetails(refundsList);
+  document.getElementById('refundsExcelBtn').onclick = ()=>exportBookingsToExcel(refundsList, 'manage');
   document.getElementById('ticketDetailsExcelBtn').onclick = ()=>exportBookingsToExcel(scoped, 'manage');
   document.getElementById('reportPrintBtn').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
   document.getElementById('reportExcelBtn').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
@@ -1885,7 +1931,7 @@ function renderTransfers(){
   const verifiedTransfers = bookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && b.transfer_verified);
   let html = `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingVerifyTitle')}</h3></div>
       ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${t('colFee')}</th><th></th></tr></thead>
-      <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
+      <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
         <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payTransfer')}</td>
         <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
         <td class="num">${money(b.sell)}</td>
@@ -1894,7 +1940,7 @@ function renderTransfers(){
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('verifiedTransfersTitle')}</h3></div>
       ${verifiedTransfers.length===0?`<div class="empty">${t('noVerifiedTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th></tr></thead>
-      <tbody>${verifiedTransfers.slice(0,50).map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
+      <tbody>${verifiedTransfers.slice(0,50).map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
         <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payTransfer')}</td>
         <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
         <td class="num">${money(b.sell)}</td></tr>`).join('')}</tbody></table></div>`}
@@ -1914,7 +1960,7 @@ function renderDeposits(){
     const rows = branches.map(b=>({name:b.name, bal:branchCashOnHand(b.id)}));
     html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('allBranchesCash')}</h3></div>
       ${rows.length===0?`<div class="empty">${t('emptyBranches')}</div>`:`<table><thead><tr><th>${t('colBranchName')}</th><th>${t('colAmount')}</th></tr></thead>
-      <tbody>${rows.map(r=>`<tr><td>${r.name}</td><td class="num" style="font-weight:600">${money(r.bal)}</td></tr>`).join('')}</tbody></table>`}
+      <tbody>${rows.map(r=>`<tr><td>${esc(r.name)}</td><td class="num" style="font-weight:600">${money(r.bal)}</td></tr>`).join('')}</tbody></table>`}
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('employeeCashBreakdownTitle')}</h3></div>
       <p class="note">${t('employeeCashBreakdownNote')}</p>
@@ -1923,7 +1969,7 @@ function renderDeposits(){
     const pendingRefunds = bookings.filter(b=>b.refund_status==='pending');
     html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingRefundsTitle')}</h3></div>
       ${pendingRefunds.length===0?`<div class="empty">${t('noPendingRefunds')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colSell')}</th><th>${t('colReceipt')}</th><th></th></tr></thead>
-      <tbody>${pendingRefunds.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.customer}</td><td>${branchName(b.branch_id)}</td><td class="num">${canSeeSell()?money(b.sell):moneyOrHidden(0)}</td>
+      <tbody>${pendingRefunds.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${branchName(b.branch_id)}</td><td class="num">${canSeeSalesTotals()?money(b.sell):moneyOrHidden(0)}</td>
         <td><a href="${b.refund_receipt_url}" target="_blank">${t('viewReceipt')}</a></td>
         <td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveRefund('${b.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectRefund('${b.id}')">${t('reject')}</button></td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
@@ -1955,7 +2001,7 @@ function openRefundRequestModal(bookingId){
   showModal(`
     <div class="modal-head"><h3>${t('modalRequestRefund')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="refundRequestForm">
-      <div class="note">${t('refundRequestNote')} (${t('colNo')}: ${b.booking_no} — ${b.customer})</div>
+      <div class="note">${t('refundRequestNote')} (${t('colNo')}: ${b.booking_no} — ${esc(b.customer)})</div>
       <div class="field"><label>${t('fieldRefundReceipt')}</label><input type="file" name="receipt" accept="image/*,.pdf" required></div>
       <div class="field"><label>${t('fieldRefundNote')}</label><input name="note" placeholder="${t('refundNotePlaceholder')}"></div>
       <div id="refundErrorBox"></div>
@@ -1982,9 +2028,50 @@ function openRefundRequestModal(bookingId){
   };
 }
 window.uiRequestRefund = function(id){ openRefundRequestModal(id); };
-window.uiApproveRefund = async function(id){
-  if(!confirm(t('confirmApproveRefund'))) return;
-  try{ await approveRefund(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+window.uiApproveRefund = function(id){
+  const b = bookings.find(x=>x.id===id);
+  if(!b) return;
+  showModal(`
+    <div class="modal-head"><h3>${t('modalApproveRefund')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <p class="note">${t('colNo')}: ${b.booking_no} — ${esc(b.customer)}${canSeeSalesTotals()?` — ${money(b.sell)}`:''}</p>
+    <form id="approveRefundForm">
+      <div class="field"><label>${t('fieldRefundMethod')}</label><select name="refundMethod" id="refundMethodSel">
+        <option value="cash">${t('payCash')}</option>
+        <option value="transfer">${t('payTransfer')}</option>
+      </select></div>
+      <div class="field" id="refundProofField"><label>${t('fieldRefundProof')}</label><input type="file" name="refundProof" accept="image/*"></div>
+      <div id="approveRefundErrorBox"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;">
+        <button type="submit" class="btn btn-primary" id="approveRefundBtn">${t('approve')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  document.getElementById('refundMethodSel').onchange = (e)=>{
+    document.getElementById('refundProofField').style.display = e.target.value==='transfer' ? '' : 'none';
+  };
+  document.getElementById('approveRefundForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('approveRefundBtn');
+    const f = new FormData(e.target);
+    const method = f.get('refundMethod');
+    const file = f.get('refundProof');
+    if(method==='transfer' && (!file || !file.size)){
+      document.getElementById('approveRefundErrorBox').innerHTML = `<div class="login-error">${t('refundProofRequired')}</div>`;
+      return;
+    }
+    btn.disabled=true; btn.textContent=t('saving');
+    try{
+      let proofUrl = null;
+      if(file && file.size) proofUrl = await uploadReceiptFile(file);
+      await approveRefund(id, method, proofUrl);
+      closeModal(); render();
+    }catch(err){
+      console.error(err);
+      document.getElementById('approveRefundErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      btn.disabled=false; btn.textContent=t('approve');
+    }
+  };
+  document.getElementById('refundProofField').style.display = 'none';
 };
 window.uiRejectRefund = async function(id){
   const note = prompt(t('rejectReason'))||'';
@@ -2000,7 +2087,7 @@ function openDepositModal(){
   showModal(`
     <div class="modal-head"><h3>${t('addDeposit')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="depositForm">
-      ${canManage ? `<div class="field"><label>${t('fieldBranch')}</label><select name="branchId" id="depositBranchSel">${branchOptions.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>
+      ${canManage ? `<div class="field"><label>${t('fieldBranch')}</label><select name="branchId" id="depositBranchSel">${branchOptions.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
         <div class="field"><label>${t('fieldEmployeeFilter')}</label><select name="employeeId" id="depositEmployeeSel"></select></div>`
         : `<input type="hidden" name="branchId" value="${defaultBranch}"><input type="hidden" name="employeeId" value="${u.id}">`}
       <div class="field"><label>${t('fieldDepositDestination')}</label><select name="destination">${DEPOSIT_DESTINATIONS.map(d=>`<option value="${d}">${destLabel(d)}</option>`).join('')}</select></div>
@@ -2017,7 +2104,7 @@ function openDepositModal(){
   if(branchSel && empSel){
     const refreshEmployees = (branchId)=>{
       const opts = employeesInBranch(branchId);
-      empSel.innerHTML = opts.map(x=>`<option value="${x.id}">${x.name}</option>`).join('');
+      empSel.innerHTML = opts.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('');
       document.getElementById('depositAmountInput').value = opts[0] ? employeeCashOnHand(opts[0].id) : 0;
     };
     refreshEmployees(defaultBranch || branchOptions[0]?.id);
@@ -2073,7 +2160,7 @@ function renderUsers(){
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('usersTitle')}</h3><button class="btn btn-primary btn-sm" id="addUserBtn">${t('addUser')}</button></div>
       <table><thead><tr><th>${t('colUserName')}</th><th>${t('colUsername')}</th><th>${t('colRole')}</th><th>${t('colUserBranch')}</th><th>${t('colStatus')}</th><th></th></tr></thead>
-        <tbody>${users.map(u=>`<tr><td>${u.name}</td><td class="num">${u.username}</td>
+        <tbody>${users.map(u=>`<tr><td>${esc(u.name)}</td><td class="num">${esc(u.username)}</td>
           <td><span class="tag ${u.role}">${u.role==='admin'?t('roleAdmin'):u.role==='accountant'?t('roleAccountant'):t('roleEmployee')}</span></td>
           <td>${u.branch_id?branchName(u.branch_id):'—'}</td>
           <td><span class="tag ${u.active===false?'rejected':'collected'}">${u.active===false?t('statusInactive'):t('statusActive')}</span></td>
@@ -2101,15 +2188,15 @@ window.uiEditUser = function(id){
   showModal(`
     <div class="modal-head"><h3>${t('modalEditUser')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="editUserForm">
-      <div class="field"><label>${t('fieldFullName')}</label><input name="name" value="${u.name}" required></div>
-      <div class="field"><label>${t('fieldUsername')}</label><input name="username" value="${u.username}" required></div>
+      <div class="field"><label>${t('fieldFullName')}</label><input name="name" value="${esc(u.name)}" required></div>
+      <div class="field"><label>${t('fieldUsername')}</label><input name="username" value="${esc(u.username)}" required></div>
       <div class="grid-2">
         <div class="field"><label>${t('fieldRole')}</label><select name="role">
           <option value="employee" ${u.role==='employee'?'selected':''}>${t('roleEmployee')}</option>
           <option value="accountant" ${u.role==='accountant'?'selected':''}>${t('roleAccountant')}</option>
           <option value="admin" ${u.role==='admin'?'selected':''}>${t('roleAdmin')}</option>
         </select></div>
-        <div class="field"><label>${t('fieldUserBranch')}</label><select name="branchId"><option value="" ${!u.branch_id?'selected':''}>${t('noBranch')}</option>${branches.map(b=>`<option value="${b.id}" ${u.branch_id===b.id?'selected':''}>${b.name}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldUserBranch')}</label><select name="branchId"><option value="" ${!u.branch_id?'selected':''}>${t('noBranch')}</option>${branches.map(b=>`<option value="${b.id}" ${u.branch_id===b.id?'selected':''}>${esc(b.name)}</option>`).join('')}</select></div>
       </div>
       <div id="editUserErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
@@ -2150,7 +2237,7 @@ function openUserModal(){
       </div>
       <div class="grid-2">
         <div class="field"><label>${t('fieldRole')}</label><select name="role"><option value="employee">${t('roleEmployee')}</option><option value="accountant">${t('roleAccountant')}</option><option value="admin">${t('roleAdmin')}</option></select></div>
-        <div class="field"><label>${t('fieldUserBranch')}</label><select name="branchId"><option value="">${t('noBranch')}</option>${branches.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldUserBranch')}</label><select name="branchId"><option value="">${t('noBranch')}</option>${branches.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
       </div>
       <div id="userErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
@@ -2214,7 +2301,7 @@ function renderSettings(){
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('branchesTitle')}</h3><button class="btn btn-primary btn-sm" id="addBranchBtn">${t('addBranch')}</button></div>
       <table><thead><tr><th>${t('colBranchOnly')}</th><th></th></tr></thead>
-        <tbody>${branches.map(b=>`<tr><td>${b.name}</td><td><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
+        <tbody>${branches.map(b=>`<tr><td>${esc(b.name)}</td><td><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
       <div class="note">${t('branchDeleteNote')}</div>
     </div>
     ${profitHandoverAdminPanelHTML()}
@@ -2322,10 +2409,10 @@ function renderReconcile(){
       <div class="panel-head"><h3 class="panel-title">${t('reconcileFiltersTitle')}</h3></div>
       <div class="grid-2">
         <div class="field"><label>${t('colSupplier')}</label><select id="rfSupplier"><option value="all">${t('allSuppliersOpt')}</option>${suppliers.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
-        <div class="field"><label>${t('fieldBranch')}</label><select id="rfBranch"><option value="all">${t('allBranches')}</option>${branches.map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldBranch')}</label><select id="rfBranch"><option value="all">${t('allBranches')}</option>${branches.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
       </div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldEmployeeFilter')}</label><select id="rfEmployee"><option value="all">${t('allEmployeesOpt')}</option>${users.map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldEmployeeFilter')}</label><select id="rfEmployee"><option value="all">${t('allEmployeesOpt')}</option>${users.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select></div>
         <div class="field"><label></label>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button type="button" class="btn btn-ghost btn-sm" id="rfToday">${t('quickToday')}</button>
@@ -2399,7 +2486,7 @@ function renderReconcile(){
         if(rows.length===0){ alert(t('reconcileEmptyFile')); return; }
         reconcileRows = rows;
         reconcileHeaders = headerRow;
-        const opts = reconcileHeaders.map(h=>`<option value="${h}">${h}</option>`).join('');
+        const opts = reconcileHeaders.map(h=>`<option value="${esc(h)}">${esc(h)}</option>`).join('');
         const optsWithNone = `<option value="">${t('reconcileNoneOpt')}</option>`+opts;
         document.getElementById('reconcileColSel').innerHTML = opts;
         document.getElementById('reconcileAirlineColSel').innerHTML = optsWithNone;
@@ -2469,12 +2556,12 @@ function renderReconcile(){
       });
       otherCols = reconcileHeaders.filter(h=>h!==col && h!==airlineCol && h!==routeCol && h!==amtCol).slice(0,4);
       if(emptyValCount===reconcileRows.length && reconcileRows.length>0){
-        missing._emptyColWarning = `${t('reconcileEmptyColWarning')} ("${col}")`;
+        missing._emptyColWarning = `${t('reconcileEmptyColWarning')} ("${esc(col)}")`;
       }else if(matched===0 && missing.length>0 && fuzzyMatches===0){
         const sampleSys = scoped.find(b=>b.ticket_no)?.ticket_no;
         const sampleFile = reconcileRows.find(r=>r[col]!==undefined && String(r[col]).trim()!=='')?.[col];
         if(sampleSys && sampleFile!==undefined){
-          missing._diagnostic = `${t('reconcileDiagnosticNote')} ${t('reconcileDiagnosticSystem')}: "${sampleSys}"  |  ${t('reconcileDiagnosticFile')}: "${sampleFile}"`;
+          missing._diagnostic = `${t('reconcileDiagnosticNote')} ${t('reconcileDiagnosticSystem')}: "${esc(sampleSys)}"  |  ${t('reconcileDiagnosticFile')}: "${esc(sampleFile)}"`;
         }
       }
     }else if(mode==='bankStatement'){
@@ -2498,7 +2585,7 @@ function renderReconcile(){
           else{ missing.push(b); }
         });
       }
-      missing._bankColEmpty = bankColEmpty ? `${t('reconcileEmptyColWarning')} ("${amtCol}")` : null;
+      missing._bankColEmpty = bankColEmpty ? `${t('reconcileEmptyColWarning')} ("${esc(amtCol)}")` : null;
       missing._verifiedTotal = verifiedList.length;
       missing._matchedList = matchedList;
     }else{
@@ -2517,7 +2604,7 @@ function renderReconcile(){
       });
       otherCols = reconcileHeaders.filter(h=>h!==nameCol && h!==amtCol).slice(0,4);
       if(emptyValCount2===reconcileRows.length && reconcileRows.length>0){
-        missing._emptyColWarning = `${t('reconcileEmptyColWarning')} ("${nameCol}" / "${amtCol}")`;
+        missing._emptyColWarning = `${t('reconcileEmptyColWarning')} ("${esc(nameCol)}" / "${esc(amtCol)}")`;
       }
     }
     const box = document.getElementById('reconcileResultBox');
@@ -2545,7 +2632,7 @@ function renderReconcile(){
         ${missing.length===0?`<div class="empty">${t('reconcileAllMatched')}</div>`:`
         <div class="note" style="color:var(--red);font-weight:600;">🚩 ${t('reconcileBankNotFoundNote')}</div>
         <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colPaymentMethod')}</th><th>${t('colAmount')}</th><th>${t('colBranch')}</th></tr></thead>
-          <tbody>${missing.map(b=>`<tr><td style="font-weight:700;color:var(--red);">${b.booking_no}</td><td>${b.customer}</td><td>${b.ticket_no||'—'}</td>
+          <tbody>${missing.map(b=>`<tr><td style="font-weight:700;color:var(--red);">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${esc(b.ticket_no||'—')}</td>
             <td>${b.payment_method==='span'?t('paySpan'):t('payTransfer')}</td><td class="num">${money(b.sell)}</td><td>${branchName(b.branch_id)}</td></tr>`).join('')}</tbody>
         </table></div>`}`;
       const matchedList = missing._matchedList||[];
@@ -2565,14 +2652,14 @@ function renderReconcile(){
       ${amountMismatches.length>0?`
       <div class="note" style="color:#A8722C;font-weight:600;">⚠️ ${t('reconcileAmountMismatchNote')}</div>
       <div style="overflow-x:auto;margin-top:8px;margin-bottom:16px;"><table><thead><tr><th>${t('colTicketNo')}</th><th>${t('reconcileSystemAmount')}</th><th>${t('reconcileFileAmount')}</th></tr></thead>
-        <tbody>${amountMismatches.map(m=>`<tr><td style="font-weight:700;color:#A8722C;">${m.ticket}</td><td>${money(m.sysAmt)}</td><td>${money(m.fileAmt)}</td></tr>`).join('')}</tbody>
+        <tbody>${amountMismatches.map(m=>`<tr><td style="font-weight:700;color:#A8722C;">${esc(m.ticket)}</td><td>${money(m.sysAmt)}</td><td>${money(m.fileAmt)}</td></tr>`).join('')}</tbody>
       </table></div>`:''}
       ${missing._emptyColWarning?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">⚠️ ${missing._emptyColWarning}</div>`:''}
       ${missing._diagnostic?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">🔎 ${missing._diagnostic}</div>`:''}
       ${missing._emptyColWarning?'':(missing.length===0?(amountMismatches.length===0?`<div class="empty">${t('reconcileAllMatched')}</div>`:''):`
       <div class="note" style="color:var(--red);font-weight:600;">⚠️ ${t('reconcileMissingNote')}</div>
-      <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${col}</th>${otherCols.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
-        <tbody>${missing.map(row=>`<tr><td style="font-weight:700;color:var(--red);">${row[col]}</td>${otherCols.map(c=>`<td>${row[c]??''}</td>`).join('')}</tr>`).join('')}</tbody>
+      <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${esc(col)}</th>${otherCols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead>
+        <tbody>${missing.map(row=>`<tr><td style="font-weight:700;color:var(--red);">${esc(row[col])}</td>${otherCols.map(c=>`<td>${esc(row[c]??'')}</td>`).join('')}</tr>`).join('')}</tbody>
       </table></div>`)}`;
   };
 }
@@ -2583,7 +2670,7 @@ function openMyAccountModal(){
   showModal(`
     <div class="modal-head"><h3>${t('modalMyAccount')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="myAccountForm">
-      <div class="field"><label>${t('fieldNewUsername')}</label><input name="newUsername" value="${u.username}" required></div>
+      <div class="field"><label>${t('fieldNewUsername')}</label><input name="newUsername" value="${esc(u.username)}" required></div>
       <div class="field"><label>${t('fieldCurrentPassword')}</label><input type="password" name="currentPassword" required></div>
       <div class="grid-2">
         <div class="field"><label>${t('fieldNewPassword')}</label><input type="password" name="newPassword"></div>
