@@ -1045,7 +1045,6 @@ function renderLogin(app){
         <button type="submit" class="btn btn-primary" style="width:100%;" id="loginSubmitBtn">${t('loginBtn')}</button>
       </form>
       <div style="text-align:center;margin-top:14px;"><button class="btn btn-ghost btn-sm" id="loginLangBtn">${t('langBtn')}</button></div>
-      <div class="login-demo">${t('loginDemo')}</div>
     </div></div>
   `;
   document.getElementById('loginLangBtn').onclick = ()=>{ setLang(lang==='ar'?'en':'ar'); renderLogin(app); };
