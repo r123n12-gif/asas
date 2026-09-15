@@ -258,6 +258,8 @@ const T = {
     reconcileFiltersTitle:'فلترة البحث قبل المطابقة', allSuppliersOpt:'كل الموردين', quickToday:'اليوم', quickMonth:'هذا الشهر', quickYear:'هذه السنة',
     matchingTicketsCount:'عدد التذاكر المطابقة للفلتر', reconcileModeLabel:'طريقة المطابقة', reconcileModeTicket:'برقم التذكرة', reconcileModeAmountName:'بالمبلغ + اسم العميل',
     applySearchBtn:'بحث / تطبيق الفلاتر', searchResultTitle:'نتيجة البحث',
+    employeeFinSummaryTitle:'الملخص المالي للموظف', employeeFinSummaryNote:'نظرة شاملة على وضع الموظف المالي: كم باع، كم ودّع، كم تحويل تأكّد، وكم باقي عليه غير مسوّى (بغض النظر عن الفترة المحددة فوق).',
+    efsTotalSales:'إجمالي المبيعات (كل الوقت)', efsDeposited:'إجمالي المودّع (كاش معتمد)', efsTransferred:'إجمالي التحويلات المؤكّدة', efsPendingBalance:'الباقي عليه (غير مؤكد)', efsCashOnHand:'كاش لسا بعهدته',
     kpiPendingAmounts:'مبالغ مستحقة (غير مؤكدة)', kpiPendingProfit:'ربح مستحق (لم يُسلَّم)',
     myBalanceTitle:'رصيدي المتبقي (المستحق)', myBalanceNote:'مبيعات لسا بانتظار تأكيد المحاسب، وربح لسا لم يُسلَّم للأدمن. تنقص تلقائيًا لحظة الاعتماد، وتبقى تفاصيلها هنا دائمًا للرجوع.', navMySales:'مبيعاتي', subMySales:'مبيعاتك وربحك الشخصي — يومي، شهري، أو سنوي', filterPeriod:'الفترة', mySalesTitle:'تفاصيل مبيعاتي',
     reconcileAmountColLabel:'عمود المبلغ', reconcileNameColLabel:'عمود اسم العميل', exportExcelBtn:'⬇️ تصدير Excel',
@@ -413,6 +415,8 @@ const T = {
     reconcileFiltersTitle:'Search filters before matching', allSuppliersOpt:'All suppliers', quickToday:'Today', quickMonth:'This month', quickYear:'This year',
     matchingTicketsCount:'Tickets matching the filter', reconcileModeLabel:'Matching method', reconcileModeTicket:'By ticket number', reconcileModeAmountName:'By amount + customer name',
     applySearchBtn:'Search / Apply filters', searchResultTitle:'Search result',
+    employeeFinSummaryTitle:'Employee financial summary', employeeFinSummaryNote:"A full picture of the employee's financial status: total sales, total deposited, confirmed transfers, and what's still outstanding (regardless of the period selected above).",
+    efsTotalSales:'Total sales (all-time)', efsDeposited:'Total deposited (approved cash)', efsTransferred:'Total confirmed transfers', efsPendingBalance:'Outstanding balance (unconfirmed)', efsCashOnHand:'Cash still in their custody',
     kpiPendingAmounts:'Pending amounts (unconfirmed)', kpiPendingProfit:'Pending profit (not handed over)',
     myBalanceTitle:'My remaining balance (outstanding)', myBalanceNote:"Sales still awaiting accountant confirmation, and profit not yet handed to the admin. These shrink automatically once approved, and their details always stay here for reference.", navMySales:'My Sales', subMySales:'Your personal sales and profit — daily, monthly, or yearly', filterPeriod:'Period', mySalesTitle:'My sales details',
     reconcileAmountColLabel:'Amount column', reconcileNameColLabel:'Customer name column', exportExcelBtn:'⬇️ Export Excel',
@@ -478,19 +482,19 @@ async function fetchAll(){
 }
 /* ===================== CASH DEPOSITS ===================== */
 function branchCashOnHand(branchId){
-  const collectedCash = bookings.filter(b=>b.branch_id===branchId && b.payment_method==='cash').reduce((s,b)=>s+Number(b.sell||0),0);
+  const collectedCash = bookings.filter(b=>b.branch_id===branchId && b.payment_method==='cash' && !b.refunded).reduce((s,b)=>s+Number(b.sell||0),0);
   const approvedDeposits = deposits.filter(d=>d.branch_id===branchId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
   const approvedHandoverIds = new Set();
   profitHandovers.filter(h=>h.status==='approved' && h.branch_id===branchId).forEach(h=>(h.booking_ids||[]).forEach(id=>approvedHandoverIds.add(id)));
-  const handedOverCashProfit = bookings.filter(b=>b.branch_id===branchId && b.payment_method==='cash' && approvedHandoverIds.has(b.id)).reduce((s,b)=>s+Number(b.profit_amount||0),0);
+  const handedOverCashProfit = bookings.filter(b=>b.branch_id===branchId && b.payment_method==='cash' && !b.refunded && approvedHandoverIds.has(b.id)).reduce((s,b)=>s+Number(b.profit_amount||0),0);
   return +(collectedCash-approvedDeposits-handedOverCashProfit).toFixed(2);
 }
 function employeeCashOnHand(employeeId){
-  const collectedCash = bookings.filter(b=>b.created_by===employeeId && b.payment_method==='cash').reduce((s,b)=>s+Number(b.sell||0),0);
+  const collectedCash = bookings.filter(b=>b.created_by===employeeId && b.payment_method==='cash' && !b.refunded).reduce((s,b)=>s+Number(b.sell||0),0);
   const approvedDeposits = deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
   const approvedHandoverIds = new Set();
   profitHandovers.filter(h=>h.status==='approved' && h.employee_id===employeeId).forEach(h=>(h.booking_ids||[]).forEach(id=>approvedHandoverIds.add(id)));
-  const handedOverCashProfit = bookings.filter(b=>b.created_by===employeeId && b.payment_method==='cash' && approvedHandoverIds.has(b.id)).reduce((s,b)=>s+Number(b.profit_amount||0),0);
+  const handedOverCashProfit = bookings.filter(b=>b.created_by===employeeId && b.payment_method==='cash' && !b.refunded && approvedHandoverIds.has(b.id)).reduce((s,b)=>s+Number(b.profit_amount||0),0);
   return +(collectedCash-approvedDeposits-handedOverCashProfit).toFixed(2);
 }
 function employeeCashBreakdownHTML(){
@@ -889,6 +893,16 @@ async function addManualJournalEntry(data){
     desc_key:'jManual', desc_args:[data.desc], debit_key:data.debitKey, credit_key:data.creditKey, amount }).select().single();
   if(error) throw error;
   journal.unshift(jIns);
+}
+function employeeFinancialSummary(employeeId){
+  const myBookings = bookings.filter(b=>b.created_by===employeeId && !b.refunded);
+  const totalSales = myBookings.reduce((s,b)=>s+Number(b.sell||0),0);
+  const totalDeposited = deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
+  const totalTransferred = myBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span') && b.payment_status==='paid').reduce((s,b)=>s+Number(b.sell||0),0);
+  const totalCashCollected = myBookings.filter(b=>b.payment_method==='cash' && b.payment_status==='paid').reduce((s,b)=>s+Number(b.sell||0),0);
+  const pendingAmt = pendingConfirmationAmount(myBookings);
+  const cashOnHand = employeeCashOnHand(employeeId);
+  return {totalSales, totalDeposited, totalTransferred, totalCashCollected, pendingAmt, cashOnHand};
 }
 function pendingConfirmationAmount(list){
   return +list.filter(b=>b.payment_status==='pending' && !b.refunded).reduce((s,b)=>s+Number(b.sell||0),0).toFixed(2);
@@ -1391,6 +1405,34 @@ function exportReportsToExcel(rows, groupBy, nameHeader){
   XLSX.utils.book_append_sheet(wb, ws, 'Report');
   XLSX.writeFile(wb, `branch-employee-report-${todayStr()}.xlsx`);
 }
+function printEmployeeFinancialSummary(employeeId){
+  const es = employeeFinancialSummary(employeeId);
+  const showSell = canSeeSalesTotals();
+  const rows = [
+    [t('efsTotalSales'), showSell?money(es.totalSales):t('hiddenValue')],
+    [t('efsDeposited'), money(es.totalDeposited)],
+    [t('efsTransferred'), showSell?money(es.totalTransferred):t('hiddenValue')],
+    [t('efsPendingBalance'), showSell?money(es.pendingAmt):t('hiddenValue')],
+    [t('efsCashOnHand'), money(es.cashOnHand)],
+  ];
+  const html = `<!DOCTYPE html><html lang="${lang}" dir="${lang==='ar'?'rtl':'ltr'}"><head><meta charset="UTF-8">
+    <title>${t('employeeFinSummaryTitle')}</title>
+    <style>
+      body{font-family:'IBM Plex Sans Arabic',system-ui,sans-serif;color:#1C1C1C;padding:24px;}
+      h1{font-size:18px;margin:0 0 4px;} h2{font-size:14px;color:#5B6570;margin:0 0 16px;font-weight:500;}
+      table{width:100%;border-collapse:collapse;font-size:13px;}
+      th,td{padding:9px 8px;text-align:${lang==='ar'?'right':'left'};border-bottom:1px solid #E4DECB;}
+      th{background:#0F2A3D;color:#fff;}
+    </style></head><body>
+    <h1>${t('agencyAr')} — ${t('employeeFinSummaryTitle')}</h1>
+    <h2>${esc(userName(employeeId))} — ${todayStr()}</h2>
+    <table><tbody>${rows.map(r=>`<tr><th>${r[0]}</th><td>${r[1]}</td></tr>`).join('')}</tbody></table>
+    </body></html>`;
+  const w = window.open('', '_blank');
+  if(!w){ alert(t('connError')); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+  setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
+}
 function printTicketDetails(list){
   const filters = [];
   if(reportSupplierFilter!=='all') filters.push(`${t('colSupplier')}: ${reportSupplierFilter}`);
@@ -1885,6 +1927,22 @@ function renderReports(){
         <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${summaryTT.netProfit>=0?'pos':'neg'}">${canSeeProfit()?money(summaryTT.netProfit):moneyOrHidden(0)}</div></div>
       </div>
     </div>
+    ${reportEmployeeFilter!=='all' ? (()=>{ const es = employeeFinancialSummary(reportEmployeeFilter); return `
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('employeeFinSummaryTitle')} — ${esc(userName(reportEmployeeFilter))}</h3>
+        <button class="btn btn-ghost btn-sm" id="efsPrintBtn">${t('printReport')}</button>
+      </div>
+      <p class="note">${t('employeeFinSummaryNote')}</p>
+      <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);">
+        <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${t('efsTotalSales')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.totalSales):moneyOrHidden(0)}</div></div>
+        <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('efsDeposited')}</div><div class="kpi-value">${money(es.totalDeposited)}</div></div>
+        <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('efsTransferred')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.totalTransferred):moneyOrHidden(0)}</div></div>
+      </div>
+      <div class="kpi-row" style="grid-template-columns:repeat(2,1fr);margin-top:10px;">
+        <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsPendingBalance')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.pendingAmt):moneyOrHidden(0)}</div></div>
+        <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsCashOnHand')}</div><div class="kpi-value">${money(es.cashOnHand)}</div></div>
+      </div>
+    </div>`; })() : ''}
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales', scoped)}</div>
     ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit', scoped)}</div>`:''}
     <div class="panel">
@@ -1935,6 +1993,7 @@ function renderReports(){
   document.getElementById('reportPrintBtn').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
   document.getElementById('reportExcelBtn').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
   document.getElementById('reportPrintBtnTop').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
+  if(document.getElementById('efsPrintBtn')) document.getElementById('efsPrintBtn').onclick = ()=>printEmployeeFinancialSummary(reportEmployeeFilter);
   document.getElementById('reportExcelBtnTop').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
   document.getElementById('reportGroupBySel').onchange = (e)=>{ reportGroupBy = e.target.value; renderReports(); };
   document.getElementById('reportSearchInput').oninput = (e)=>{ reportSearchTerm = e.target.value; renderReports(); };
