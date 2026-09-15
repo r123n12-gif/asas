@@ -258,6 +258,7 @@ const T = {
     reconcileAllMatched:'✅ كل التذاكر بالملف موجودة بالنظام — ما فيه نواقص.', reconcileMissingNote:'هذي التذاكر موجودة بالتقرير الخارجي بس غير مسجّلة بالنظام — يحتمل الموظف نسيها.',
     reconcileFiltersTitle:'فلترة البحث قبل المطابقة', allSuppliersOpt:'كل الموردين', quickToday:'اليوم', quickMonth:'هذا الشهر', quickYear:'هذه السنة',
     matchingTicketsCount:'عدد التذاكر المطابقة للفلتر', reconcileModeLabel:'طريقة المطابقة', reconcileModeTicket:'برقم التذكرة', reconcileModeAmountName:'بالمبلغ + اسم العميل',
+    quickAllTime:'كل الوقت',
     applySearchBtn:'بحث / تطبيق الفلاتر', searchResultTitle:'نتيجة البحث',
     employeeFinSummaryTitle:'الملخص المالي للموظف', employeeFinSummaryNote:'نظرة شاملة على وضع الموظف المالي: كم باع، كم ودّع، كم تحويل تأكّد، وكم باقي عليه غير مسوّى (بغض النظر عن الفترة المحددة فوق).',
     efsTotalSales:'إجمالي المبيعات (كل الوقت)', efsDeposited:'إجمالي المودّع (كاش معتمد)', efsTransferred:'إجمالي التحويلات المؤكّدة', efsPendingBalance:'الباقي عليه (غير مؤكد)', efsCashOnHand:'كاش لسا بعهدته',
@@ -418,6 +419,7 @@ const T = {
     reconcileAllMatched:'✅ Every ticket in the file exists in the system — nothing missing.', reconcileMissingNote:'These tickets exist in the external report but are not recorded in the system — the employee may have forgotten them.',
     reconcileFiltersTitle:'Search filters before matching', allSuppliersOpt:'All suppliers', quickToday:'Today', quickMonth:'This month', quickYear:'This year',
     matchingTicketsCount:'Tickets matching the filter', reconcileModeLabel:'Matching method', reconcileModeTicket:'By ticket number', reconcileModeAmountName:'By amount + customer name',
+    quickAllTime:'All time',
     applySearchBtn:'Search / Apply filters', searchResultTitle:'Search result',
     employeeFinSummaryTitle:'Employee financial summary', employeeFinSummaryNote:"A full picture of the employee's financial status: total sales, total deposited, confirmed transfers, and what's still outstanding (regardless of the period selected above).",
     efsTotalSales:'Total sales (all-time)', efsDeposited:'Total deposited (approved cash)', efsTransferred:'Total confirmed transfers', efsPendingBalance:'Outstanding balance (unconfirmed)', efsCashOnHand:'Cash still in their custody',
@@ -1067,10 +1069,14 @@ function renderLogin(app){
 }
 
 /* ===================== DASHBOARD ===================== */
+let dashDateFrom = todayStr().slice(0,8)+'01';
+let dashDateTo = todayStr();
 function renderDashboard(){
   document.getElementById('pageSub').textContent = t('subDashboard');
-  const list = filteredBookings();
-  const tt = computeTotals(list, expensesForFilter());
+  let list = filteredBookings();
+  if(dashDateFrom) list = list.filter(b=>b.date>=dashDateFrom);
+  if(dashDateTo) list = list.filter(b=>b.date<=dashDateTo);
+  const tt = computeTotals(list, expensesForFilter().filter(e=>(!dashDateFrom||e.date>=dashDateFrom)&&(!dashDateTo||e.date<=dashDateTo)));
   const u = currentUser();
   let pendingAmt = pendingConfirmationAmount(list);
   if(u.role==='employee') pendingAmt = +(pendingAmt + employeeCashOnHand(u.id)).toFixed(2);
@@ -1082,6 +1088,19 @@ function renderDashboard(){
   const pendingProfitAmt = pendingProfitHandoverAmount(list);
   const c = document.getElementById('content');
   c.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('filterPeriod')}</h3></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+        <button type="button" class="btn btn-ghost btn-sm" id="dashToday">${t('quickToday')}</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="dashMonth">${t('quickMonth')}</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="dashYear">${t('quickYear')}</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="dashAllTime">${t('quickAllTime')}</button>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" id="dashDateFromInput" value="${dashDateFrom||''}"></div>
+        <div class="field"><label>${t('fieldDateTo')}</label><input type="date" id="dashDateToInput" value="${dashDateTo||''}"></div>
+      </div>
+    </div>
     <div class="kpi-row">
       <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('kpiSales')}</div><div class="kpi-value">${canSeeSalesTotals()?money(tt.sales):moneyOrHidden(0)}</div></div>
       <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${tt.netProfit>=0?'pos':'neg'}">${canSeeOwnProfit()?money(tt.netProfit):moneyOrHidden(0)}</div></div>
@@ -1094,10 +1113,23 @@ function renderDashboard(){
         <div class="panel-head"><h3 class="panel-title">${t('recentBookings')}</h3>${!isAccountant()?`<button class="btn btn-gold btn-sm" id="quickAddBtn">${t('addBooking')}</button>`:''}</div>
         ${bookingsTable(list.slice(0,6), 'none')}
       </div>
-      ${canSeeAllBranches() ? `<div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('branchCompareSales')}</h3></div>${branchBarsHTML('sales')}</div>` : ''}
+      ${canSeeAllBranches() ? `<div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('branchCompareSales')}</h3></div>${branchBarsHTML('sales', list)}</div>` : ''}
     </div>
   `;
   if(document.getElementById('quickAddBtn')) document.getElementById('quickAddBtn').onclick = ()=>openBookingModal();
+  const setRange = (kind)=>{
+    const today = todayStr(); let from = today;
+    if(kind==='month') from = today.slice(0,8)+'01';
+    else if(kind==='year') from = today.slice(0,4)+'-01-01';
+    else if(kind==='all'){ dashDateFrom=null; dashDateTo=null; renderDashboard(); return; }
+    dashDateFrom = from; dashDateTo = today; renderDashboard();
+  };
+  document.getElementById('dashToday').onclick = ()=>setRange('today');
+  document.getElementById('dashMonth').onclick = ()=>setRange('month');
+  document.getElementById('dashYear').onclick = ()=>setRange('year');
+  document.getElementById('dashAllTime').onclick = ()=>setRange('all');
+  document.getElementById('dashDateFromInput').onchange = (e)=>{ dashDateFrom = e.target.value||null; renderDashboard(); };
+  document.getElementById('dashDateToInput').onchange = (e)=>{ dashDateTo = e.target.value||null; renderDashboard(); };
 }
 function bookingsTable(list, mode){
   if(list.length===0) return `<div class="empty">${t('emptyBookings')}</div>`;
