@@ -2161,7 +2161,6 @@ window.uiApproveRefund = function(id){
       btn.disabled=false; btn.textContent=t('approve');
     }
   };
-  document.getElementById('refundProofField').style.display = 'none';
 };
 window.uiRejectRefund = async function(id){
   const note = prompt(t('rejectReason'))||'';
