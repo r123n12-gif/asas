@@ -282,6 +282,7 @@ const T = {
     navRefunds:'الاسترجاعات', subRefunds:'كل طلبات الاسترجاع — بانتظار المراجعة، ومعتمدة أو مرفوضة سابقًا', refundHistoryTitle:'سجل الاسترجاعات (معتمدة/مرفوضة)',
     fieldRefundAmount:'المبلغ الفعلي المسترجع للعميل', originalAmountLabel:'المبلغ الأصلي', refundAmountHint:'لو فيه رسوم إلغاء من شركة الطيران، عدّل المبلغ هنا للمبلغ الفعلي اللي يرجع للعميل (أقل من الأصلي).',
     invalidRefundAmount:'المبلغ غير صحيح — لازم يكون أكبر من صفر وما يتجاوز المبلغ الأصلي.',
+    resubmitRefundBtn:'إعادة طلب الاسترجاع', refundRejectReasonLabel:'سبب الرفض', searchByEmployeeName:'بحث باسم الموظف...',
     confirmApproveRefund:'اعتماد الرفند يعكس كل القيود المحاسبية الخاصة بهذا الحجز (البيع، التكلفة، التحصيل). هل أنت متأكد؟',
     refundsReportTitle:'تقرير الاسترجاعات (الرفندات)', refundsReportNote:'كل طلبات الاسترجاع المطابقة للفلاتر أعلاه — الموظف يسوي الطلب، والمحاسب يعتمد أو يرفض. الربح مخفي عن المحاسب، يظهر للأدمن فقط.',
     fieldRefundMethod:'طريقة استرجاع المبلغ للعميل', fieldRefundProof:'إثبات التحويل (إيصال)', modalApproveRefund:'اعتماد طلب الاسترجاع', refundProofRequired:'لازم ترفق إثبات التحويل.',
@@ -436,6 +437,7 @@ const T = {
     navRefunds:'Refunds', subRefunds:'All refund requests — pending review, previously approved or rejected', refundHistoryTitle:'Refund history (approved/rejected)',
     fieldRefundAmount:'Actual amount refunded to customer', originalAmountLabel:'Original amount', refundAmountHint:'If the airline charges a cancellation fee, adjust this to the actual amount going back to the customer (less than the original).',
     invalidRefundAmount:'Invalid amount — must be greater than zero and not exceed the original amount.',
+    resubmitRefundBtn:'Resubmit refund request', refundRejectReasonLabel:'Rejection reason', searchByEmployeeName:'Search by employee name...',
     confirmApproveRefund:'Approving the refund will reverse all ledger entries for this booking (sale, cost, collection). Are you sure?',
     refundsReportTitle:'Refunds report', refundsReportNote:'All refund requests matching the filters above — the employee submits the request, the accountant approves or rejects it. Profit stays hidden from the accountant, visible to admin only.',
     fieldRefundMethod:'Method to refund the customer', fieldRefundProof:'Transfer proof (receipt)', modalApproveRefund:'Approve refund request', refundProofRequired:'You must attach transfer proof.',
@@ -1110,9 +1112,9 @@ function bookingsTable(list, mode){
               ${isAdmin()?`<button class="btn btn-danger btn-sm" onclick="uiDeleteBooking('${b.id}')">${t('delete')}</button>`:''}
               ${b.edit_requested?`<span class="tag pending">${t('returnedTag')}</span>`:`<button class="btn btn-ghost btn-sm" onclick="uiRequestEdit('${b.id}')">${t('returnToEmployee')}</button>`}`:''}
             ${mode==='employee' && b.edit_requested?`<button class="btn btn-gold btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>`:''}
-            ${(mode==='employee'||isAdmin()) && !b.refund_status && !b.refunded?`<button class="btn btn-ghost btn-sm" onclick="uiRequestRefund('${b.id}')">${t('requestRefundBtn')}</button>`:''}
+            ${(mode==='employee'||isAdmin()) && !b.refunded && (!b.refund_status||b.refund_status==='rejected')?`<button class="btn btn-ghost btn-sm" onclick="uiRequestRefund('${b.id}')">${b.refund_status==='rejected'?t('resubmitRefundBtn'):t('requestRefundBtn')}</button>`:''}
           </td>`:''}
-        </tr>${mode==='employee' && b.edit_requested && b.edit_note?`<tr><td colspan="13" style="background:#FBEFE0;font-size:11.5px;color:#A8722C;">📝 ${t('editNoteLabel')}: ${esc(b.edit_note)}</td></tr>`:''}`).join('')}</tbody></table></div>`;
+        </tr>${mode==='employee' && b.edit_requested && b.edit_note?`<tr><td colspan="13" style="background:#FBEFE0;font-size:11.5px;color:#A8722C;">📝 ${t('editNoteLabel')}: ${esc(b.edit_note)}</td></tr>`:''}${b.refund_status==='rejected' && b.refund_note?`<tr><td colspan="13" style="background:#FBE9E7;font-size:11.5px;color:var(--red);">🚫 ${t('refundRejectReasonLabel')}: ${esc(b.refund_note)}</td></tr>`:''}`).join('')}</tbody></table></div>`;
 }
 function branchBarsHTML(metric, sourceBookings){
   const list = sourceBookings || bookings;
@@ -2434,13 +2436,22 @@ function setReconcileQuickRange(kind){
   document.getElementById('rfDateTo').value = today;
   updateReconcileCount();
 }
+let refundsSearchTerm = '';
+let refundsDateFrom = null;
+let refundsDateTo = null;
 function renderRefunds(){
   document.getElementById('pageSub').textContent = t('subRefunds');
   const bf = effectiveBranchFilter();
   const scoped = bf==='all' ? bookings : bookings.filter(b=>b.branch_id===bf);
   const pending = scoped.filter(b=>b.refund_status==='pending');
-  const history = scoped.filter(b=>b.refund_status==='approved'||b.refund_status==='rejected')
+  let history = scoped.filter(b=>b.refund_status==='approved'||b.refund_status==='rejected')
     .sort((a,b)=>(b.refund_reviewed_at||'').localeCompare(a.refund_reviewed_at||''));
+  if(refundsSearchTerm){
+    const term = refundsSearchTerm.trim().toLowerCase();
+    history = history.filter(b=> userName(b.created_by).toLowerCase().includes(term));
+  }
+  if(refundsDateFrom) history = history.filter(b=> (b.refund_reviewed_at||'').slice(0,10) >= refundsDateFrom);
+  if(refundsDateTo) history = history.filter(b=> (b.refund_reviewed_at||'').slice(0,10) <= refundsDateTo);
   const rowHTML = (b, showActions)=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(b.created_by))}</td><td>${branchName(b.branch_id)}</td>
       <td class="num">${canSeeSalesTotals()?money(b.sell):moneyOrHidden(0)}</td>
       <td class="num" style="font-weight:600">${canSeeSalesTotals()?money(b.refund_amount!=null?b.refund_amount:b.sell):moneyOrHidden(0)}</td>
@@ -2453,10 +2464,24 @@ function renderRefunds(){
       ${pending.length===0?`<div class="empty">${t('noPendingRefunds')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('originalAmountLabel')}</th><th>${t('fieldRefundAmount')}</th><th>${t('fieldRefundMethod')}</th><th>${t('colReceipt')}</th><th></th></tr></thead>
       <tbody>${pending.map(b=>rowHTML(b,true)).join('')}</tbody></table></div>`}
     </div>
-    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('refundHistoryTitle')}</h3></div>
-      ${history.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('originalAmountLabel')}</th><th>${t('fieldRefundAmount')}</th><th>${t('fieldRefundMethod')}</th><th>${t('colReceipt')}</th><th>${t('colRefundStatus')}</th></tr></thead>
-      <tbody>${history.slice(0,100).map(b=>rowHTML(b,false)).join('')}</tbody></table></div>`}
+    <div class="panel">
+      <div class="panel-head"><h3 class="panel-title">${t('refundHistoryTitle')}</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" id="refundsHistoryPrintBtn">${t('printReport')}</button>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldEmployeeFilter')}</label><input type="text" id="refundsSearchInput" placeholder="${t('searchByEmployeeName')}" value="${esc(refundsSearchTerm)}"></div>
+        <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" id="refundsDateFromInput" value="${refundsDateFrom||''}"></div>
+      </div>
+      <div class="field"><label>${t('fieldDateTo')}</label><input type="date" id="refundsDateToInput" value="${refundsDateTo||''}"></div>
+      ${history.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;margin-top:10px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('originalAmountLabel')}</th><th>${t('fieldRefundAmount')}</th><th>${t('fieldRefundMethod')}</th><th>${t('colReceipt')}</th><th>${t('colRefundStatus')}</th></tr></thead>
+      <tbody>${history.slice(0,200).map(b=>rowHTML(b,false)).join('')}</tbody></table></div>`}
     </div>`;
+  document.getElementById('refundsSearchInput').oninput = (e)=>{ refundsSearchTerm = e.target.value; renderRefunds(); };
+  document.getElementById('refundsDateFromInput').onchange = (e)=>{ refundsDateFrom = e.target.value||null; renderRefunds(); };
+  document.getElementById('refundsDateToInput').onchange = (e)=>{ refundsDateTo = e.target.value||null; renderRefunds(); };
+  document.getElementById('refundsHistoryPrintBtn').onclick = ()=>printTicketDetails(history);
 }
 function renderReconcile(){
   document.getElementById('pageSub').textContent = t('subReconcile');
