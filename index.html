@@ -227,6 +227,7 @@ const T = {
     saveAccount:'حفظ التغييرات', accountUpdated:'تم تحديث بيانات حسابك بنجاح.', wrongCurrentPassword:'كلمة المرور الحالية غير صحيحة.',
     passwordMismatch:'كلمة المرور الجديدة وتأكيدها غير متطابقين.', leaveBlankNote:'اترك كلمة المرور الجديدة فاضية إذا ما تبي تغيّرها.',
     edit:'تعديل', modalEditBooking:'تعديل الحجز', saveChanges:'حفظ التعديلات', returnedTag:'مُرجَع للموظف',
+    editWindowExpired:'انتهت مهلة التعديل (24 ساعة)', editWindowExpiredMsg:'مضى أكثر من 24 ساعة على تسجيل هذا الحجز — ما تقدر تعدّله بنفسك بعد كذا. لو تحتاج تصحيح، اطلب من المحاسب أو الأدمن يرجعه لك أو يعدّله.',
     returnToEmployee:'إرجاع للموظف للتعديل', confirmDeleteBooking:'هل أنت متأكد من حذف هذا الحجز؟ لا يمكن التراجع عن هذا الإجراء.',
     editNotePrompt:'وضّح للموظف ما المطلوب تعديله (اختياري):', editNoteLabel:'ملاحظة المحاسب',
     groupByBranch:'تصنيف حسب: الفرع', groupByEmployee:'تصنيف حسب: الموظف', searchPlaceholder:'بحث بالاسم...',
@@ -388,6 +389,7 @@ const T = {
     saveAccount:'Save changes', accountUpdated:'Your account was updated successfully.', wrongCurrentPassword:'Current password is incorrect.',
     passwordMismatch:'New password and confirmation do not match.', leaveBlankNote:'Leave the new password blank to keep it unchanged.',
     edit:'Edit', modalEditBooking:'Edit booking', saveChanges:'Save changes', returnedTag:'Returned to employee',
+    editWindowExpired:'Edit window expired (24h)', editWindowExpiredMsg:"More than 24 hours have passed since this booking was created — you can no longer edit it yourself. If it needs correction, ask the accountant or admin to return it to you or edit it themselves.",
     returnToEmployee:'Return to employee for edit', confirmDeleteBooking:'Are you sure you want to delete this booking? This cannot be undone.',
     editNotePrompt:"Explain to the employee what needs to be fixed (optional):", editNoteLabel:"Accountant's note",
     groupByBranch:'Group by: Branch', groupByEmployee:'Group by: Employee', searchPlaceholder:'Search by name...',
@@ -729,6 +731,11 @@ function canSeeProfit(){ return isAdmin(); }
 function canSeeOwnProfit(){ return isAdmin() || (currentUser()?.role==='employee'); }
 function canSeeSell(){ return isAdmin() || (currentUser()?.role==='employee'); }
 function canSeeSalesTotals(){ return canSeeSell() || isAccountant(); }
+function isWithinEditWindow(b){
+  if(!b.created_at) return true;
+  const ageMs = Date.now() - new Date(b.created_at).getTime();
+  return ageMs <= 24*60*60*1000;
+}
 function moneyOrHidden(n){ return canSeeProfit() ? money(n) : `<span style="color:var(--ink-soft)">${t('hiddenValue')}</span>`; }
 function effectiveBranchFilter(){
   const u = currentUser();
@@ -1155,7 +1162,7 @@ function bookingsTable(list, mode){
             ${mode==='manage'?`<button class="btn btn-ghost btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>
               ${isAdmin()?`<button class="btn btn-danger btn-sm" onclick="uiDeleteBooking('${b.id}')">${t('delete')}</button>`:''}
               ${b.edit_requested?`<span class="tag pending">${t('returnedTag')}</span>`:`<button class="btn btn-ghost btn-sm" onclick="uiRequestEdit('${b.id}')">${t('returnToEmployee')}</button>`}`:''}
-            ${mode==='employee' && b.edit_requested?`<button class="btn btn-gold btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>`:''}
+            ${mode==='employee' && (isWithinEditWindow(b)||b.edit_requested)?`<button class="btn btn-gold btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>`:mode==='employee'?`<span class="tag" style="color:var(--ink-soft);background:#F0EEE6;">${t('editWindowExpired')}</span>`:''}
             ${(mode==='employee'||isAdmin()) && !b.refunded && (!b.refund_status||b.refund_status==='rejected')?`<button class="btn btn-ghost btn-sm" onclick="uiRequestRefund('${b.id}')">${b.refund_status==='rejected'?t('resubmitRefundBtn'):t('requestRefundBtn')}</button>`:''}
           </td>`:''}
         </tr>${mode==='employee' && b.edit_requested && b.edit_note?`<tr><td colspan="13" style="background:#FBEFE0;font-size:11.5px;color:#A8722C;">📝 ${t('editNoteLabel')}: ${esc(b.edit_note)}</td></tr>`:''}${b.refund_status==='rejected' && b.refund_note?`<tr><td colspan="13" style="background:#FBE9E7;font-size:11.5px;color:var(--red);">🚫 ${t('refundRejectReasonLabel')}: ${esc(b.refund_note)}</td></tr>`:''}`).join('')}</tbody></table></div>`;
@@ -1672,6 +1679,7 @@ window.uiCollectCommission = async function(id){ try{ await collectCommission(id
 window.uiEditBooking = function(id){
   const b = bookings.find(x=>x.id===id);
   if(!b){ console.error('uiEditBooking: booking not found for id', id); alert('تعذر إيجاد هذا الحجز، حدّث الصفحة وحاول من جديد.'); return; }
+  if(!isAdmin() && !isAccountant() && !isWithinEditWindow(b) && !b.edit_requested){ alert(t('editWindowExpiredMsg')); return; }
   openBookingModal(b);
 };
 window.uiDeleteBooking = async function(id){
