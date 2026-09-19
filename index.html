@@ -267,7 +267,10 @@ const T = {
     quickAllTime:'كل الوقت',
     applySearchBtn:'بحث / تطبيق الفلاتر', searchResultTitle:'نتيجة البحث',
     employeeFinSummaryTitle:'الملخص المالي للموظف', employeeFinSummaryNote:'نظرة شاملة على وضع الموظف المالي: كم باع، كم ودّع، كم تحويل تأكّد، وكم باقي عليه غير مسوّى (بغض النظر عن الفترة المحددة فوق).',
-    efsTotalSales:'إجمالي المبيعات (كل الوقت)', efsDeposited:'إجمالي المودّع (كاش معتمد)', efsTransferred:'إجمالي التحويلات المؤكّدة', efsPendingBalance:'الباقي عليه (غير مؤكد)', efsCashOnHand:'كاش لسا بعهدته',
+    efsTotalSales:'إجمالي المبيعات (كل الوقت)', efsDeposited:'إجمالي المودّع (كاش معتمد)', efsTransferred:'إجمالي التحويلات المؤكّدة', efsPendingBalance:'الباقي عليه (غير مؤكد)', efsCashOnHand:'كاش لسا بعهدته', efsCharges:'مبالغ مطلوبة (قيود يدوية)',
+    addChargeBtn:'+ تسجيل مبلغ مطلوب من الموظف', fieldChargeReason:'السبب', chargeReasonPlaceholder:'مثلاً: عجز صندوق، سلفة، إلخ...', sendChargeBtn:'إرسال للموظف',
+    chargeAlertTitle:'تنبيه: يوجد مبلغ مطلوب منك', acknowledgeChargeBtn:'تم الاطلاع', acknowledgedTag:'تم الاطلاع', chargeUnseenTag:'لم يُطّلع عليه بعد', chargeSettledTag:'مُسدَّد',
+    settleChargeBtn:'تسديد', confirmSettleCharge:'هل تأكّد إن هذا المبلغ تسدّد فعليًا (ودّعه الموظف أو خُصم من مستحقاته)؟',
     kpiPendingAmounts:'مبالغ مستحقة (غير مؤكدة)', kpiPendingProfit:'ربح مستحق (لم يُسلَّم)',
     myBalanceTitle:'رصيدي المتبقي (المستحق)', myBalanceNote:'مبيعات لسا بانتظار تأكيد المحاسب، وربح لسا لم يُسلَّم للأدمن. تنقص تلقائيًا لحظة الاعتماد، وتبقى تفاصيلها هنا دائمًا للرجوع.', navMySales:'مبيعاتي', subMySales:'مبيعاتك وربحك الشخصي — يومي، شهري، أو سنوي', filterPeriod:'الفترة', mySalesTitle:'تفاصيل مبيعاتي',
     reconcileAmountColLabel:'عمود المبلغ', reconcileNameColLabel:'عمود اسم العميل', exportExcelBtn:'⬇️ تصدير Excel',
@@ -434,7 +437,10 @@ const T = {
     quickAllTime:'All time',
     applySearchBtn:'Search / Apply filters', searchResultTitle:'Search result',
     employeeFinSummaryTitle:'Employee financial summary', employeeFinSummaryNote:"A full picture of the employee's financial status: total sales, total deposited, confirmed transfers, and what's still outstanding (regardless of the period selected above).",
-    efsTotalSales:'Total sales (all-time)', efsDeposited:'Total deposited (approved cash)', efsTransferred:'Total confirmed transfers', efsPendingBalance:'Outstanding balance (unconfirmed)', efsCashOnHand:'Cash still in their custody',
+    efsTotalSales:'Total sales (all-time)', efsDeposited:'Total deposited (approved cash)', efsTransferred:'Total confirmed transfers', efsPendingBalance:'Outstanding balance (unconfirmed)', efsCashOnHand:'Cash still in their custody', efsCharges:'Amounts owed (manual entries)',
+    addChargeBtn:'+ Charge employee an amount', fieldChargeReason:'Reason', chargeReasonPlaceholder:'e.g. cash shortage, advance, etc...', sendChargeBtn:'Send to employee',
+    chargeAlertTitle:'Alert: an amount is owed by you', acknowledgeChargeBtn:'Acknowledge', acknowledgedTag:'Acknowledged', chargeUnseenTag:'Not seen yet', chargeSettledTag:'Settled',
+    settleChargeBtn:'Settle', confirmSettleCharge:'Confirm this amount has actually been settled (deposited by the employee or deducted from what they are owed)?',
     kpiPendingAmounts:'Pending amounts (unconfirmed)', kpiPendingProfit:'Pending profit (not handed over)',
     myBalanceTitle:'My remaining balance (outstanding)', myBalanceNote:"Sales still awaiting accountant confirmation, and profit not yet handed to the admin. These shrink automatically once approved, and their details always stay here for reference.", navMySales:'My Sales', subMySales:'Your personal sales and profit — daily, monthly, or yearly', filterPeriod:'Period', mySalesTitle:'My sales details',
     reconcileAmountColLabel:'Amount column', reconcileNameColLabel:'Customer name column', exportExcelBtn:'⬇️ Export Excel',
@@ -483,24 +489,46 @@ function setSession(u){ localStorage.setItem('asas_session', JSON.stringify(u));
 function clearSession(){ localStorage.removeItem('asas_session'); }
 
 /* ===================== LOCAL CACHE ===================== */
-let branches = [], users = [], bookings = [], journal = [], manualExpenses = [], deposits = [], profitHandovers = [];
+let branches = [], users = [], bookings = [], journal = [], manualExpenses = [], deposits = [], profitHandovers = [], employeeCharges = [];
 let route = 'dashboard';
 let branchFilter = 'all';
 
 async function fetchAll(){
-  const [b, u, bk, jr, ex, dp, ph] = await Promise.all([
+  const [b, u, bk, jr, ex, dp, ph, ec] = await Promise.all([
     sb.from('branches').select('*').order('created_at'),
     sb.from('app_users').select('id,name,username,role,branch_id,active').order('created_at'),
     sb.from('bookings').select('*').order('created_at', {ascending:false}),
     sb.from('journal').select('*').order('created_at', {ascending:false}),
     sb.from('manual_expenses').select('*').order('created_at', {ascending:false}),
     sb.from('cash_deposits').select('*').order('created_at', {ascending:false}),
-    sb.from('profit_handovers').select('*').order('created_at', {ascending:false})
+    sb.from('profit_handovers').select('*').order('created_at', {ascending:false}),
+    sb.from('employee_charges').select('*').order('created_at', {ascending:false})
   ]);
-  if(b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error) throw (b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error);
-  branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[]; deposits = dp.data||[]; profitHandovers = ph.data||[];
+  if(b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error) throw (b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error);
+  branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[]; deposits = dp.data||[]; profitHandovers = ph.data||[]; employeeCharges = ec.data||[];
 }
 /* ===================== CASH DEPOSITS ===================== */
+/* ===================== EMPLOYEE CHARGES (manual debit) ===================== */
+async function addEmployeeCharge(employeeId, branchId, amount, reason){
+  const row = { employee_id:employeeId, branch_id:branchId||null, amount:Number(amount)||0, reason:reason||null,
+    created_by: currentUser()?.id||null, acknowledged:false, settled:false };
+  const {data, error} = await sb.from('employee_charges').insert(row).select().single();
+  if(error) throw error;
+  employeeCharges.unshift(data);
+}
+async function acknowledgeEmployeeCharge(id){
+  const {error} = await sb.from('employee_charges').update({acknowledged:true, acknowledged_at:new Date().toISOString()}).eq('id', id);
+  if(error) throw error;
+  const c = employeeCharges.find(x=>x.id===id); if(c){ c.acknowledged=true; }
+}
+async function settleEmployeeCharge(id){
+  const {error} = await sb.from('employee_charges').update({settled:true, settled_by:currentUser()?.id||null, settled_at:new Date().toISOString()}).eq('id', id);
+  if(error) throw error;
+  const c = employeeCharges.find(x=>x.id===id); if(c){ c.settled=true; }
+}
+function outstandingEmployeeCharges(employeeId){
+  return +employeeCharges.filter(c=>c.employee_id===employeeId && !c.settled).reduce((s,c)=>s+Number(c.amount||0),0).toFixed(2);
+}
 function bookingCashCostPortion(b){
   if(b.refunded) return 0;
   if(b.payment_method==='cash') return Number(b.cost)||0;
@@ -961,8 +989,9 @@ function employeeFinancialSummary(employeeId){
   const totalDeposited = deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
   const totalTransferred = myBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span') && b.payment_status==='paid').reduce((s,b)=>s+Number(b.sell||0),0);
   const cashOnHand = employeeCashOnHand(employeeId);
-  const pendingAmt = +(pendingConfirmationAmount(myBookings) + cashOnHand).toFixed(2);
-  return {totalSales, totalDeposited, totalTransferred, pendingAmt, cashOnHand};
+  const charges = outstandingEmployeeCharges(employeeId);
+  const pendingAmt = +(pendingConfirmationAmount(myBookings) + cashOnHand + charges).toFixed(2);
+  return {totalSales, totalDeposited, totalTransferred, pendingAmt, cashOnHand, charges};
 }
 function pendingConfirmationAmount(list){
   let total = 0;
@@ -1153,15 +1182,24 @@ function renderDashboard(){
   const tt = computeTotals(list, expensesForFilter().filter(e=>(!dashDateFrom||e.date>=dashDateFrom)&&(!dashDateTo||e.date<=dashDateTo)));
   const u = currentUser();
   let pendingAmt = pendingConfirmationAmount(list);
-  if(u.role==='employee') pendingAmt = +(pendingAmt + employeeCashOnHand(u.id)).toFixed(2);
+  if(u.role==='employee') pendingAmt = +(pendingAmt + employeeCashOnHand(u.id) + outstandingEmployeeCharges(u.id)).toFixed(2);
   else if(canSeeAllBranches()){
     const bf = effectiveBranchFilter();
     const scopeEmployees = users.filter(e=>e.role==='employee' && (bf==='all'||e.branch_id===bf));
-    pendingAmt = +(pendingAmt + scopeEmployees.reduce((s,e)=>s+employeeCashOnHand(e.id),0)).toFixed(2);
+    pendingAmt = +(pendingAmt + scopeEmployees.reduce((s,e)=>s+employeeCashOnHand(e.id)+outstandingEmployeeCharges(e.id),0)).toFixed(2);
   }
+  const myPendingCharges = u.role==='employee' ? employeeCharges.filter(c=>c.employee_id===u.id && !c.settled) : [];
   const pendingProfitAmt = pendingProfitHandoverAmount(list);
   const c = document.getElementById('content');
   c.innerHTML = `
+    ${myPendingCharges.length>0?`<div class="panel" style="border:2px solid var(--red);">
+      <div class="panel-head"><h3 class="panel-title" style="color:var(--red);">⚠️ ${t('chargeAlertTitle')}</h3></div>
+      ${myPendingCharges.map(ch=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="font-weight:700;color:var(--red);">${money(ch.amount)}</div>
+        <div class="note">${esc(ch.reason||'—')} — ${(ch.created_at||'').slice(0,10)}</div>
+        ${!ch.acknowledged?`<button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiAcknowledgeCharge('${ch.id}')">${t('acknowledgeChargeBtn')}</button>`:`<span class="tag collected">${t('acknowledgedTag')}</span>`}
+      </div>`).join('')}
+    </div>`:''}
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('filterPeriod')}</h3></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
@@ -1258,9 +1296,18 @@ function renderMySales(){
   const list = bookings.filter(b=> b.created_by===u.id && (!mySalesDateFrom||b.date>=mySalesDateFrom) && (!mySalesDateTo||b.date<=mySalesDateTo));
   const allMine = bookings.filter(b=>b.created_by===u.id);
   const tt = computeTotals(list, []);
-  const pendingAmt = +(pendingConfirmationAmount(allMine) + employeeCashOnHand(u.id)).toFixed(2);
+  const pendingAmt = +(pendingConfirmationAmount(allMine) + employeeCashOnHand(u.id) + outstandingEmployeeCharges(u.id)).toFixed(2);
+  const myCharges = employeeCharges.filter(c=>c.employee_id===u.id && !c.settled);
   const pendingProfitAmt = pendingProfitHandoverAmount(allMine);
   document.getElementById('content').innerHTML = `
+    ${myCharges.length>0?`<div class="panel" style="border:2px solid var(--red);">
+      <div class="panel-head"><h3 class="panel-title" style="color:var(--red);">⚠️ ${t('chargeAlertTitle')}</h3></div>
+      ${myCharges.map(ch=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="font-weight:700;color:var(--red);">${money(ch.amount)}</div>
+        <div class="note">${esc(ch.reason||'—')} — ${(ch.created_at||'').slice(0,10)}</div>
+        ${!ch.acknowledged?`<button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiAcknowledgeCharge('${ch.id}')">${t('acknowledgeChargeBtn')}</button>`:`<span class="tag collected">${t('acknowledgedTag')}</span>`}
+      </div>`).join('')}
+    </div>`:''}
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('filterPeriod')}</h3></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
@@ -1510,6 +1557,41 @@ function exportReportsToExcel(rows, groupBy, nameHeader){
   XLSX.utils.book_append_sheet(wb, ws, 'Report');
   XLSX.writeFile(wb, `branch-employee-report-${todayStr()}.xlsx`);
 }
+function openAddChargeModal(employeeId){
+  showModal(`
+    <div class="modal-head"><h3>${t('addChargeBtn')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <p class="note">${t('colEmployee')}: ${esc(userName(employeeId))}</p>
+    <form id="addChargeForm">
+      <div class="field"><label>${t('fieldSplitAmount')}</label><input type="number" step="0.01" name="amount" required min="0.01"></div>
+      <div class="field"><label>${t('fieldChargeReason')}</label><textarea name="reason" rows="3" required placeholder="${t('chargeReasonPlaceholder')}"></textarea></div>
+      <div id="addChargeErrorBox"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;">
+        <button type="submit" class="btn btn-primary" id="addChargeSaveBtn">${t('sendChargeBtn')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  document.getElementById('addChargeForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('addChargeSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
+    const f = new FormData(e.target);
+    try{
+      const emp = users.find(u=>u.id===employeeId);
+      await addEmployeeCharge(employeeId, emp?.branch_id||null, f.get('amount'), f.get('reason'));
+      closeModal(); render();
+    }catch(err){
+      console.error(err);
+      document.getElementById('addChargeErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      btn.disabled=false; btn.textContent=t('sendChargeBtn');
+    }
+  };
+}
+window.uiAcknowledgeCharge = async function(id){
+  try{ await acknowledgeEmployeeCharge(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
+window.uiSettleCharge = async function(id){
+  if(!confirm(t('confirmSettleCharge'))) return;
+  try{ await settleEmployeeCharge(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
 function printEmployeeFinancialSummary(employeeId){
   const es = employeeFinancialSummary(employeeId);
   const showSell = canSeeSalesTotals();
@@ -2104,7 +2186,7 @@ function renderReports(){
         <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('kpiProfit')}</div><div class="kpi-value ${summaryTT.netProfit>=0?'pos':'neg'}">${canSeeProfit()?money(summaryTT.netProfit):moneyOrHidden(0)}</div></div>
       </div>
     </div>
-    ${reportEmployeeFilter!=='all' ? (()=>{ const es = employeeFinancialSummary(reportEmployeeFilter); return `
+    ${reportEmployeeFilter!=='all' ? (()=>{ const es = employeeFinancialSummary(reportEmployeeFilter); const myCharges = employeeCharges.filter(c=>c.employee_id===reportEmployeeFilter); return `
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('employeeFinSummaryTitle')} — ${esc(userName(reportEmployeeFilter))}</h3>
         <button class="btn btn-ghost btn-sm" id="efsPrintBtn">${t('printReport')}</button>
@@ -2115,10 +2197,16 @@ function renderReports(){
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('efsDeposited')}</div><div class="kpi-value">${money(es.totalDeposited)}</div></div>
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('efsTransferred')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.totalTransferred):moneyOrHidden(0)}</div></div>
       </div>
-      <div class="kpi-row" style="grid-template-columns:repeat(2,1fr);margin-top:10px;">
+      <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-top:10px;">
         <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsPendingBalance')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.pendingAmt):moneyOrHidden(0)}</div></div>
         <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsCashOnHand')}</div><div class="kpi-value">${money(es.cashOnHand)}</div></div>
+        <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('efsCharges')}</div><div class="kpi-value">${money(es.charges)}</div></div>
       </div>
+      ${isAdmin()||isAccountant()?`<button class="btn btn-primary btn-sm" id="addChargeBtn" style="margin-top:10px;">${t('addChargeBtn')}</button>`:''}
+      ${myCharges.length>0?`<div style="overflow-x:auto;margin-top:10px;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colAmount')}</th><th>${t('fieldChargeReason')}</th><th>${t('colDepositStatus')}</th>${isAdmin()||isAccountant()?'<th></th>':''}</tr></thead>
+      <tbody>${myCharges.map(ch=>`<tr><td>${(ch.created_at||'').slice(0,10)}</td><td class="num">${money(ch.amount)}</td><td>${esc(ch.reason||'—')}</td>
+        <td><span class="tag ${ch.settled?'collected':'pending'}">${ch.settled?t('chargeSettledTag'):(ch.acknowledged?t('acknowledgedTag'):t('chargeUnseenTag'))}</span></td>
+        ${(isAdmin()||isAccountant()) && !ch.settled?`<td><button class="btn btn-gold btn-sm" onclick="uiSettleCharge('${ch.id}')">${t('settleChargeBtn')}</button></td>`:isAdmin()||isAccountant()?'<td></td>':''}</tr>`).join('')}</tbody></table></div>`:''}
     </div>`; })() : ''}
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales', scoped)}</div>
     ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit', scoped)}</div>`:''}
@@ -2171,6 +2259,7 @@ function renderReports(){
   document.getElementById('reportExcelBtn').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
   document.getElementById('reportPrintBtnTop').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
   if(document.getElementById('efsPrintBtn')) document.getElementById('efsPrintBtn').onclick = ()=>printEmployeeFinancialSummary(reportEmployeeFilter);
+  if(document.getElementById('addChargeBtn')) document.getElementById('addChargeBtn').onclick = ()=>openAddChargeModal(reportEmployeeFilter);
   document.getElementById('reportExcelBtnTop').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
   document.getElementById('reportGroupBySel').onchange = (e)=>{ reportGroupBy = e.target.value; renderReports(); };
   document.getElementById('reportSearchInput').oninput = (e)=>{ reportSearchTerm = e.target.value; renderReports(); };
