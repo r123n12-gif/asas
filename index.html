@@ -485,8 +485,19 @@ function setLang(l){ lang = l; localStorage.setItem('asas_lang', l); }
 
 /* ===================== SESSION (localStorage) ===================== */
 function getSession(){ try{ return JSON.parse(localStorage.getItem('asas_session')||'null'); }catch(e){ return null; } }
-function setSession(u){ localStorage.setItem('asas_session', JSON.stringify(u)); }
-function clearSession(){ localStorage.removeItem('asas_session'); }
+function setSession(u){ localStorage.setItem('asas_session', JSON.stringify(u)); resetAllFilters(); }
+function clearSession(){ localStorage.removeItem('asas_session'); resetAllFilters(); }
+function resetAllFilters(){
+  branchFilter = 'all';
+  dashDateFrom = todayStr().slice(0,8)+'01'; dashDateTo = todayStr();
+  mySalesDateFrom = null; mySalesDateTo = null;
+  bookingsSearchTerm = '';
+  reportGroupBy = 'branch'; reportSearchTerm = ''; reportSupplierFilter = 'all'; reportBranchFilter = 'all'; reportEmployeeFilter = 'all'; reportDateFrom = null; reportDateTo = null;
+  profitsSearchTerm = 'all'; profitsDateFrom = null; profitsDateTo = null;
+  reconcileRows = []; reconcileHeaders = [];
+  refundsSearchTerm = 'all'; refundsDateFrom = null; refundsDateTo = null;
+  route = 'dashboard';
+}
 
 /* ===================== LOCAL CACHE ===================== */
 let branches = [], users = [], bookings = [], journal = [], manualExpenses = [], deposits = [], profitHandovers = [], employeeCharges = [];
