@@ -264,6 +264,7 @@ const T = {
     reconcileAllMatched:'✅ كل التذاكر بالملف موجودة بالنظام — ما فيه نواقص.', reconcileMissingNote:'هذي التذاكر موجودة بالتقرير الخارجي بس غير مسجّلة بالنظام — يحتمل الموظف نسيها.',
     reconcileFiltersTitle:'فلترة البحث قبل المطابقة', allSuppliersOpt:'كل الموردين', quickToday:'اليوم', quickMonth:'هذا الشهر', quickYear:'هذه السنة',
     matchingTicketsCount:'عدد التذاكر المطابقة للفلتر', reconcileModeLabel:'طريقة المطابقة', reconcileModeTicket:'برقم التذكرة', reconcileModeAmountName:'بالمبلغ + اسم العميل',
+    reconcileColLabel2:'عمود بديل لرقم التذكرة (لو عندك أكثر من نظام حجز)',
     quickAllTime:'كل الوقت',
     applySearchBtn:'بحث / تطبيق الفلاتر', searchResultTitle:'نتيجة البحث',
     employeeFinSummaryTitle:'الملخص المالي للموظف', employeeFinSummaryNote:'نظرة شاملة على وضع الموظف المالي: كم باع، كم ودّع، كم تحويل تأكّد، وكم باقي عليه غير مسوّى (بغض النظر عن الفترة المحددة فوق).',
@@ -434,6 +435,7 @@ const T = {
     reconcileAllMatched:'✅ Every ticket in the file exists in the system — nothing missing.', reconcileMissingNote:'These tickets exist in the external report but are not recorded in the system — the employee may have forgotten them.',
     reconcileFiltersTitle:'Search filters before matching', allSuppliersOpt:'All suppliers', quickToday:'Today', quickMonth:'This month', quickYear:'This year',
     matchingTicketsCount:'Tickets matching the filter', reconcileModeLabel:'Matching method', reconcileModeTicket:'By ticket number', reconcileModeAmountName:'By amount + customer name',
+    reconcileColLabel2:'Alternate ticket-number column (if you use more than one booking system)',
     quickAllTime:'All time',
     applySearchBtn:'Search / Apply filters', searchResultTitle:'Search result',
     employeeFinSummaryTitle:'Employee financial summary', employeeFinSummaryNote:"A full picture of the employee's financial status: total sales, total deposited, confirmed transfers, and what's still outstanding (regardless of the period selected above).",
@@ -2916,6 +2918,7 @@ function renderReconcile(){
         </select></div>
         <div id="reconcileModeTicketBox" class="grid-2">
           <div class="field"><label>${t('reconcileColLabel')}</label><select id="reconcileColSel"></select></div>
+          <div class="field"><label>${t('reconcileColLabel2')} (${t('reconcileOptionalNote')})</label><select id="reconcileColSel2"><option value="">${t('reconcileNoneOpt')}</option></select></div>
           <div class="field"><label>${t('reconcileAirlineColLabel')}</label><select id="reconcileAirlineColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
           <div class="field"><label>${t('reconcileRouteColLabel')}</label><select id="reconcileRouteColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
           <div class="field"><label>${t('reconcileAmountColLabel')} (${t('reconcileOptionalNote')})</label><select id="reconcileTicketAmountColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
@@ -2966,6 +2969,7 @@ function renderReconcile(){
         const opts = reconcileHeaders.map(h=>`<option value="${esc(h)}">${esc(h)}</option>`).join('');
         const optsWithNone = `<option value="">${t('reconcileNoneOpt')}</option>`+opts;
         document.getElementById('reconcileColSel').innerHTML = opts;
+        document.getElementById('reconcileColSel2').innerHTML = optsWithNone;
         document.getElementById('reconcileAirlineColSel').innerHTML = optsWithNone;
         document.getElementById('reconcileRouteColSel').innerHTML = optsWithNone;
         document.getElementById('reconcileTicketAmountColSel').innerHTML = optsWithNone;
@@ -2998,6 +3002,7 @@ function renderReconcile(){
     let col, otherCols;
     if(mode==='ticket'){
       col = document.getElementById('reconcileColSel').value;
+      const col2 = document.getElementById('reconcileColSel2').value;
       const airlineCol = document.getElementById('reconcileAirlineColSel').value;
       const routeCol = document.getElementById('reconcileRouteColSel').value;
       const amtCol = document.getElementById('reconcileTicketAmountColSel').value;
@@ -3014,16 +3019,25 @@ function renderReconcile(){
       });
       let fuzzyMatches = 0;
       let emptyValCount = 0;
+      const tryMatch = (raw, airlineVal, routeVal)=>{
+        if(raw===undefined || raw===null || String(raw).trim()==='') return null;
+        const key = keyOf(raw, airlineVal, routeVal);
+        let hit = systemMap.get(key);
+        if(hit) return {hit, fuzzy:false};
+        const d = digitsOnly(raw);
+        if(d && digitsMap.has(d)) return {hit: digitsMap.get(d), fuzzy:true};
+        return null;
+      };
       reconcileRows.forEach(row=>{
         const raw = row[col];
-        if(raw===undefined || raw===null || String(raw).trim()===''){ emptyValCount++; return; }
-        const key = keyOf(raw, airlineCol ? row[airlineCol] : '', routeCol ? row[routeCol] : '');
-        let hit = systemMap.get(key);
-        if(!hit){
-          const d = digitsOnly(raw);
-          if(d && digitsMap.has(d)){ hit = digitsMap.get(d); fuzzyMatches++; }
-        }
-        if(!hit){ missing.push(row); return; }
+        const airlineVal = airlineCol ? row[airlineCol] : '';
+        const routeVal = routeCol ? row[routeCol] : '';
+        let result = tryMatch(raw, airlineVal, routeVal);
+        if(!result && col2) result = tryMatch(row[col2], airlineVal, routeVal);
+        if((raw===undefined||raw===null||String(raw).trim()==='') && (!col2 || row[col2]===undefined||row[col2]===null||String(row[col2]).trim()==='')){ emptyValCount++; return; }
+        if(!result){ missing.push(row); return; }
+        const hit = result.hit;
+        if(result.fuzzy) fuzzyMatches++;
         if(amtCol){
           const fileAmt = +Number(row[amtCol]||0).toFixed(2);
           const sysAmt = +Number(hit.sell||0).toFixed(2);
