@@ -167,7 +167,7 @@ const T = {
     chartOfAccounts:'دليل الحسابات', journalTitle:'القيود اليومية (تلقائية + يدوية)', addExpense:'+ إضافة مصروف يدوي',
     jDate:'التاريخ', jBranch:'الفرع', jDesc:'البيان', jDebit:'من حساب (مدين)', jCredit:'إلى حساب (دائن)', jAmount:'المبلغ',
     journalEmpty:'لا توجد قيود بعد.', journalShowing:'عرض آخر 40 قيدًا من',
-    accCashOnHand:'الخزينة النقدية (الصندوق)', accBank:'الخزينة البنكية (البنك)', accCustomers:'حسابات العملاء', accCommRec:'مستحقات عمولات من الموردين', accEmployeeReceivable:'مستحقات على الموظفين (قيود يدوية)',
+    accCashOnHand:'الخزينة النقدية (الصندوق)', accBank:'الخزينة البنكية (البنك)', accCustomers:'حسابات العملاء', accCommRec:'مستحقات عمولات من الموردين', accEmployeeReceivable:'مستحقات على الموظفين (قيود يدوية)', accMiscReceipts:'مقبوضات متنوعة (بدون تذكرة)',
     accSuppliers:'حسابات الموردين (شركات الطيران / GDS)', accSalesRev:'إيرادات المبيعات', accCommRev:'إيرادات العمولات',
     accCogs:'تكلفة الخدمات المباعة', accExpenses:'المصروفات التشغيلية',
     modalExpense:'إضافة مصروف تشغيلي', fieldExpenseDesc:'البيان (مثال: إيجار، رواتب، اتصالات)', fieldAmount:'المبلغ (ر.س)',
@@ -273,6 +273,8 @@ const T = {
     addChargeBtn:'+ تسجيل مبلغ مطلوب من الموظف', fieldChargeReason:'السبب', chargeReasonPlaceholder:'مثلاً: عجز صندوق، سلفة، إلخ...', sendChargeBtn:'إرسال للموظف',
     chargeAlertTitle:'تنبيه: يوجد مبلغ مطلوب منك', acknowledgeChargeBtn:'تم الاطلاع', acknowledgedTag:'تم الاطلاع', chargeUnseenTag:'لم يُطّلع عليه بعد', chargeSettledTag:'مُسدَّد',
     claimPaidBtn:'أبلغت إني سدّدت', claimPaidNote:'اختر الطريقة اللي سدّدت فيها المبلغ. هذا يوصل كتنبيه للمحاسب عشان يأكّد الاستلام رسميًا.', claimPendingTag:'بانتظار تأكيد المحاسب',
+    miscReceiptsTitle:'مبالغ مستلمة بدون تذكرة', miscReceiptsNote:'لتسجيل أي مبلغ كاش أو تحويل استلمته بدون ما يكون مرتبط بتذكرة معينة (سلفة، مبلغ قديم، أو أي سبب آخر) — يروح للمحاسب للتأكيد.',
+    addMiscReceiptBtn:'+ تسجيل مبلغ بدون تذكرة', miscReceiptsHistoryTitle:'سجل المبالغ بدون تذكرة', miscReceiptNotePlaceholder:'مثلاً: سلفة قديمة، مبلغ زيادة من عميل، إلخ...',
     settleChargeBtn:'تسديد', confirmSettleCharge:'هل تأكّد إن هذا المبلغ تسدّد فعليًا (ودّعه الموظف أو خُصم من مستحقاته)؟',
     kpiPendingAmounts:'مبالغ مستحقة (غير مؤكدة)', kpiPendingProfit:'ربح مستحق (لم يُسلَّم)',
     myBalanceTitle:'رصيدي المتبقي (المستحق)', myBalanceNote:'مبيعات لسا بانتظار تأكيد المحاسب، وربح لسا لم يُسلَّم للأدمن. تنقص تلقائيًا لحظة الاعتماد، وتبقى تفاصيلها هنا دائمًا للرجوع.', navMySales:'مبيعاتي', subMySales:'مبيعاتك وربحك الشخصي — يومي، شهري، أو سنوي', filterPeriod:'الفترة', mySalesTitle:'تفاصيل مبيعاتي',
@@ -340,7 +342,7 @@ const T = {
     chartOfAccounts:'Chart of accounts', journalTitle:'Daily journal (auto + manual)', addExpense:'+ Add manual expense',
     jDate:'Date', jBranch:'Branch', jDesc:'Description', jDebit:'Debit account', jCredit:'Credit account', jAmount:'Amount',
     journalEmpty:'No entries yet.', journalShowing:'Showing last 40 entries of',
-    accCashOnHand:'Cash on hand (till)', accBank:'Bank (treasury)', accCustomers:'Accounts receivable (customers)', accCommRec:'Commissions receivable from suppliers', accEmployeeReceivable:'Receivable from employees (manual charges)',
+    accCashOnHand:'Cash on hand (till)', accBank:'Bank (treasury)', accCustomers:'Accounts receivable (customers)', accCommRec:'Commissions receivable from suppliers', accEmployeeReceivable:'Receivable from employees (manual charges)', accMiscReceipts:'Miscellaneous receipts (no ticket)',
     accSuppliers:'Accounts payable (airlines / GDS)', accSalesRev:'Sales revenue', accCommRev:'Commission revenue',
     accCogs:'Cost of services sold', accExpenses:'Operating expenses',
     modalExpense:'Add operating expense', fieldExpenseDesc:'Description (e.g. rent, salaries, phone)', fieldAmount:'Amount (SAR)',
@@ -446,6 +448,8 @@ const T = {
     addChargeBtn:'+ Charge employee an amount', fieldChargeReason:'Reason', chargeReasonPlaceholder:'e.g. cash shortage, advance, etc...', sendChargeBtn:'Send to employee',
     chargeAlertTitle:'Alert: an amount is owed by you', acknowledgeChargeBtn:'Acknowledge', acknowledgedTag:'Acknowledged', chargeUnseenTag:'Not seen yet', chargeSettledTag:'Settled',
     claimPaidBtn:"I've paid this", claimPaidNote:"Pick the method you paid with. This alerts the accountant to officially confirm receipt.", claimPendingTag:'Awaiting accountant confirmation',
+    miscReceiptsTitle:'Amounts received without a ticket', miscReceiptsNote:'To record any cash or transfer amount you received that is not tied to a specific ticket (an advance, an old amount, or any other reason) — goes to the accountant for confirmation.',
+    addMiscReceiptBtn:'+ Record an amount without a ticket', miscReceiptsHistoryTitle:'History of amounts without a ticket', miscReceiptNotePlaceholder:'e.g. old advance, extra amount from a customer, etc...',
     settleChargeBtn:'Settle', confirmSettleCharge:'Confirm this amount has actually been settled (deposited by the employee or deducted from what they are owed)?',
     kpiPendingAmounts:'Pending amounts (unconfirmed)', kpiPendingProfit:'Pending profit (not handed over)',
     myBalanceTitle:'My remaining balance (outstanding)', myBalanceNote:"Sales still awaiting accountant confirmation, and profit not yet handed to the admin. These shrink automatically once approved, and their details always stay here for reference.", navMySales:'My Sales', subMySales:'Your personal sales and profit — daily, monthly, or yearly', filterPeriod:'Period', mySalesTitle:'My sales details',
@@ -506,12 +510,12 @@ function resetAllFilters(){
 }
 
 /* ===================== LOCAL CACHE ===================== */
-let branches = [], users = [], bookings = [], journal = [], manualExpenses = [], deposits = [], profitHandovers = [], employeeCharges = [];
+let branches = [], users = [], bookings = [], journal = [], manualExpenses = [], deposits = [], profitHandovers = [], employeeCharges = [], miscReceipts = [];
 let route = 'dashboard';
 let branchFilter = 'all';
 
 async function fetchAll(){
-  const [b, u, bk, jr, ex, dp, ph, ec] = await Promise.all([
+  const [b, u, bk, jr, ex, dp, ph, ec, mr] = await Promise.all([
     sb.from('branches').select('*').order('created_at'),
     sb.from('app_users').select('id,name,username,role,branch_id,active').order('created_at'),
     sb.from('bookings').select('*').order('created_at', {ascending:false}),
@@ -519,12 +523,39 @@ async function fetchAll(){
     sb.from('manual_expenses').select('*').order('created_at', {ascending:false}),
     sb.from('cash_deposits').select('*').order('created_at', {ascending:false}),
     sb.from('profit_handovers').select('*').order('created_at', {ascending:false}),
-    sb.from('employee_charges').select('*').order('created_at', {ascending:false})
+    sb.from('employee_charges').select('*').order('created_at', {ascending:false}),
+    sb.from('misc_receipts').select('*').order('created_at', {ascending:false})
   ]);
-  if(b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error) throw (b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error);
-  branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[]; deposits = dp.data||[]; profitHandovers = ph.data||[]; employeeCharges = ec.data||[];
+  if(b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error||mr.error) throw (b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error||mr.error);
+  branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[]; deposits = dp.data||[]; profitHandovers = ph.data||[]; employeeCharges = ec.data||[]; miscReceipts = mr.data||[];
 }
 /* ===================== CASH DEPOSITS ===================== */
+/* ===================== MISC RECEIPTS (payment without a ticket) ===================== */
+async function submitMiscReceipt(employeeId, branchId, amount, method, bankName, note){
+  const row = { employee_id:employeeId, branch_id:branchId||null, amount:Number(amount)||0, method, bank_name:bankName||null, note:note||null,
+    status:'pending', created_by: currentUser()?.id||null };
+  const {data, error} = await sb.from('misc_receipts').insert(row).select().single();
+  if(error) throw error;
+  miscReceipts.unshift(data);
+}
+async function approveMiscReceipt(id){
+  const r = miscReceipts.find(x=>x.id===id);
+  if(!r) throw new Error('receipt not found');
+  const {error} = await sb.from('misc_receipts').update({status:'confirmed', confirmed_by:currentUser()?.id||null, confirmed_at:new Date().toISOString()}).eq('id', id);
+  if(error) throw error;
+  r.status='confirmed';
+  const {data:jIns, error:jErr} = await sb.from('journal').insert({
+    date: todayStr(), branch_id: r.branch_id||null, desc_key:'jMiscReceipt', desc_args:[userName(r.employee_id), r.note||'-'],
+    debit_key: r.method==='cash' ? 'accCashOnHand' : 'accBank', credit_key:'accMiscReceipts', amount: Number(r.amount)||0
+  }).select().single();
+  if(jErr) throw jErr;
+  journal.unshift(jIns);
+}
+async function rejectMiscReceipt(id, note){
+  const {error} = await sb.from('misc_receipts').update({status:'rejected', reject_note:note||null, confirmed_by:currentUser()?.id||null, confirmed_at:new Date().toISOString()}).eq('id', id);
+  if(error) throw error;
+  const r = miscReceipts.find(x=>x.id===id); if(r){ r.status='rejected'; r.reject_note=note||null; }
+}
 /* ===================== EMPLOYEE CHARGES (manual debit) ===================== */
 async function addEmployeeCharge(employeeId, branchId, amount, reason){
   const row = { employee_id:employeeId, branch_id:branchId||null, amount:Number(amount)||0, reason:reason||null,
@@ -981,6 +1012,7 @@ function journalDesc(j){
     jManual:{ar:(a)=>`قيد يدوي: ${a[0]}`, en:(a)=>`Manual entry: ${a[0]}`},
     jEmployeeCharge:{ar:(a)=>`مبلغ مطلوب من الموظف ${a[0]} - ${a[1]}`, en:(a)=>`Amount charged to employee ${a[0]} - ${a[1]}`},
     jEmployeeChargeSettled:{ar:(a)=>`تسديد مبلغ مطلوب من ${a[0]} (${a[1]})`, en:(a)=>`Employee charge settled by ${a[0]} (${a[1]})`},
+    jMiscReceipt:{ar:(a)=>`مبلغ مستلم بدون تذكرة من ${a[0]} - ${a[1]}`, en:(a)=>`Amount received without a ticket from ${a[0]} - ${a[1]}`},
     jSupplierPay:{ar:(a)=>`دفعة لمورد ${a[0]} - حجز #${a[1]}`, en:(a)=>`Payment to supplier ${a[0]} - booking #${a[1]}`},
     jSupplierBulkPay:{ar:(a)=>`دفعة مجمّعة لمورد ${a[0]} (${a[1]} تذكرة)`, en:(a)=>`Bulk payment to supplier ${a[0]} (${a[1]} tickets)`},
     jRefund:{ar:(a)=>`عكس قيود بسبب رفند حجز #${a[0]}`, en:(a)=>`Reversal due to refund of booking #${a[0]}`} };
@@ -2022,7 +2054,7 @@ window.uiRequestEdit = async function(id){
 
 /* ===================== LEDGER ===================== */
 const ACCOUNT_NORMAL_SIDE = { accCashOnHand:'debit', accBank:'debit', accCustomers:'debit', accCommRec:'debit', accEmployeeReceivable:'debit',
-  accSuppliers:'credit', accSalesRev:'credit', accCommRev:'credit', accCogs:'debit', accExpenses:'debit' };
+  accSuppliers:'credit', accSalesRev:'credit', accCommRev:'credit', accCogs:'debit', accExpenses:'debit', accMiscReceipts:'credit' };
 function accountBalance(key, jrnl){
   let debit=0, credit=0;
   jrnl.forEach(j=>{ if(j.debit_key===key) debit+=Number(j.amount)||0; if(j.credit_key===key) credit+=Number(j.amount)||0; });
@@ -2048,7 +2080,7 @@ function renderLedger(){
         ${(isAdmin() && tt.pendingReviewCount>0)?`<div class="note" style="color:#A8722C;">⚠️ ${tt.pendingReviewCount} ${t('pendingReviewTag')} (${money(tt.pendingReviewSales)}) — ${t('reviewCostBtn')}</div>`:''}
       </div>
       <div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('chartOfAccounts')}</h3></div>
-        <table><thead><tr><th>${t('jDesc')}</th><th>${t('colAmount')}</th></tr></thead><tbody>${['accCashOnHand','accBank','accCustomers','accCommRec','accEmployeeReceivable','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'].map(k=>`<tr><td>${t(k)}</td><td class="num" style="font-weight:600">${k==='accSalesRev'?(canSeeSalesTotals()?money(accountBalance(k, jrnl)):moneyOrHidden(0)):money(accountBalance(k, jrnl))}</td></tr>`).join('')}</tbody></table>
+        <table><thead><tr><th>${t('jDesc')}</th><th>${t('colAmount')}</th></tr></thead><tbody>${['accCashOnHand','accBank','accCustomers','accCommRec','accEmployeeReceivable','accMiscReceipts','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'].map(k=>`<tr><td>${t(k)}</td><td class="num" style="font-weight:600">${k==='accSalesRev'?(canSeeSalesTotals()?money(accountBalance(k, jrnl)):moneyOrHidden(0)):money(accountBalance(k, jrnl))}</td></tr>`).join('')}</tbody></table>
       </div>
     </div>
     <div class="panel">
@@ -2123,7 +2155,7 @@ function openSupplierPaymentModal(){
 function openManualJournalModal(){
   const u = currentUser();
   const branchOptions = (u.role==='employee') ? branches.filter(b=>b.id===u.branch_id) : branches;
-  const accountKeys = ['accCashOnHand','accBank','accCustomers','accCommRec','accEmployeeReceivable','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'];
+  const accountKeys = ['accCashOnHand','accBank','accCustomers','accCommRec','accEmployeeReceivable','accMiscReceipts','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses'];
   showModal(`
     <div class="modal-head"><h3>${t('modalManualJournal')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="manualJournalForm">
@@ -2461,8 +2493,30 @@ function renderDeposits(){
   <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('depositHistory')}</h3></div>
     ${depositsTableHTML(historyDeposits, false)}
   </div>`;
+  const myMisc = canManage ? miscReceipts : miscReceipts.filter(r=>r.created_by===u.id);
+  const pendingMisc = myMisc.filter(r=>r.status==='pending');
+  const historyMisc = myMisc.filter(r=>r.status!=='pending');
+  html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('miscReceiptsTitle')}</h3><button class="btn btn-primary btn-sm" id="addMiscReceiptBtn">${t('addMiscReceiptBtn')}</button></div>
+    <p class="note">${t('miscReceiptsNote')}</p>
+    ${miscReceiptsTableHTML(pendingMisc, canManage)}
+  </div>
+  <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('miscReceiptsHistoryTitle')}</h3></div>
+    ${miscReceiptsTableHTML(historyMisc, false)}
+  </div>`;
   document.getElementById('content').innerHTML = html;
   document.getElementById('addDepositBtn').onclick = openDepositModal;
+  document.getElementById('addMiscReceiptBtn').onclick = openMiscReceiptModal;
+}
+function miscReceiptsTableHTML(list, showApprove){
+  if(list.length===0) return `<div class="empty">${t('emptyData')}</div>`;
+  return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('fieldPaymentMethod')}</th><th>${t('colAmount')}</th><th>${t('fieldChargeReason')}</th><th>${t('colDepositStatus')}</th>${showApprove?'<th></th>':''}</tr></thead>
+    <tbody>${list.map(r=>`<tr><td>${(r.created_at||'').slice(0,10)}</td><td>${esc(userName(r.employee_id))}</td><td>${branchName(r.branch_id)}</td>
+      <td>${r.method==='cash'?t('payCash'):r.method==='span'?t('paySpan'):t('payTransfer')}${r.bank_name?` (${bankLabel(r.bank_name)})`:''}</td>
+      <td class="num" style="font-weight:600">${money(r.amount)}</td><td>${esc(r.note||'—')}</td>
+      <td><span class="tag ${r.status==='confirmed'?'collected':r.status==='rejected'?'rejected':'pending'}">${r.status==='confirmed'?t('depositApproved'):r.status==='rejected'?t('depositRejected'):t('depositPending')}</span>
+        ${r.status==='rejected' && r.reject_note?`<div class="note" style="color:var(--red);">${esc(r.reject_note)}</div>`:''}</td>
+      ${showApprove?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveMiscReceipt('${r.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectMiscReceipt('${r.id}')">${t('reject')}</button></td>`:''}
+    </tr>`).join('')}</tbody></table></div>`;
 }
 function depositsTableHTML(list, showApprove){
   if(list.length===0) return `<div class="empty">${t('noPendingDeposits')}</div>`;
@@ -2562,6 +2616,50 @@ window.uiApproveRefund = function(id){
 window.uiRejectRefund = async function(id){
   const note = prompt(t('rejectReason'))||'';
   try{ await rejectRefund(id, note); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
+function openMiscReceiptModal(){
+  const u = currentUser();
+  showModal(`
+    <div class="modal-head"><h3>${t('addMiscReceiptBtn')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <p class="note">${t('miscReceiptsNote')}</p>
+    <form id="miscReceiptForm">
+      <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="method" id="miscReceiptMethodSel">
+        <option value="cash">${t('payCash')}</option><option value="transfer">${t('payTransfer')}</option><option value="span">${t('paySpan')}</option>
+      </select></div>
+      <div class="field" id="miscReceiptBankField" style="display:none;"><label>${t('fieldBankName')}</label><select name="bankName">
+        <option value="RAJHI">${t('bankRajhi')}</option><option value="AHLI">${t('bankAhli')}</option><option value="OTHER">${t('bankOther')}</option>
+      </select></div>
+      <div class="field"><label>${t('fieldSplitAmount')}</label><input type="number" step="0.01" name="amount" required min="0.01"></div>
+      <div class="field"><label>${t('fieldChargeReason')}</label><textarea name="note" rows="3" required placeholder="${t('miscReceiptNotePlaceholder')}"></textarea></div>
+      <div id="miscReceiptErrorBox"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;">
+        <button type="submit" class="btn btn-primary" id="miscReceiptSaveBtn">${t('sendChargeBtn')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  document.getElementById('miscReceiptMethodSel').onchange = (e)=>{
+    document.getElementById('miscReceiptBankField').style.display = e.target.value==='transfer' ? '' : 'none';
+  };
+  document.getElementById('miscReceiptForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('miscReceiptSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
+    const f = new FormData(e.target);
+    try{
+      await submitMiscReceipt(u.id, u.branch_id, f.get('amount'), f.get('method'), f.get('bankName'), f.get('note'));
+      closeModal(); render();
+    }catch(err){
+      console.error(err);
+      document.getElementById('miscReceiptErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      btn.disabled=false; btn.textContent=t('sendChargeBtn');
+    }
+  };
+}
+window.uiApproveMiscReceipt = async function(id){
+  try{ await approveMiscReceipt(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
+window.uiRejectMiscReceipt = async function(id){
+  const note = prompt(t('refundRejectReasonLabel'))||'';
+  try{ await rejectMiscReceipt(id, note); render(); }catch(e){ console.error(e); alert(t('connError')); }
 };
 function openDepositModal(){
   const u = currentUser();
