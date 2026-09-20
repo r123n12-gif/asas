@@ -275,6 +275,7 @@ const T = {
     claimPaidBtn:'أبلغت إني سدّدت', claimPaidNote:'اختر الطريقة اللي سدّدت فيها المبلغ. هذا يوصل كتنبيه للمحاسب عشان يأكّد الاستلام رسميًا.', claimPendingTag:'بانتظار تأكيد المحاسب',
     miscReceiptsTitle:'مبالغ مستلمة بدون تذكرة', miscReceiptsNote:'لتسجيل أي مبلغ كاش أو تحويل استلمته بدون ما يكون مرتبط بتذكرة معينة (سلفة، مبلغ قديم، أو أي سبب آخر) — يروح للمحاسب للتأكيد.',
     addMiscReceiptBtn:'+ تسجيل مبلغ بدون تذكرة', miscReceiptsHistoryTitle:'سجل المبالغ بدون تذكرة', miscReceiptNotePlaceholder:'مثلاً: سلفة قديمة، مبلغ زيادة من عميل، إلخ...',
+    fieldBookingNote:'ملاحظة', bookingNotePlaceholder:'أي ملاحظة تبي المحاسب يشوفها بخصوص هذا الحجز (اختياري)...', depositNotePlaceholder:'أي ملاحظة تبي المحاسب يشوفها بخصوص هذا الإيداع (اختياري)...',
     settleChargeBtn:'تسديد', confirmSettleCharge:'هل تأكّد إن هذا المبلغ تسدّد فعليًا (ودّعه الموظف أو خُصم من مستحقاته)؟',
     kpiPendingAmounts:'مبالغ مستحقة (غير مؤكدة)', kpiPendingProfit:'ربح مستحق (لم يُسلَّم)',
     myBalanceTitle:'رصيدي المتبقي (المستحق)', myBalanceNote:'مبيعات لسا بانتظار تأكيد المحاسب، وربح لسا لم يُسلَّم للأدمن. تنقص تلقائيًا لحظة الاعتماد، وتبقى تفاصيلها هنا دائمًا للرجوع.', navMySales:'مبيعاتي', subMySales:'مبيعاتك وربحك الشخصي — يومي، شهري، أو سنوي', filterPeriod:'الفترة', mySalesTitle:'تفاصيل مبيعاتي',
@@ -450,6 +451,7 @@ const T = {
     claimPaidBtn:"I've paid this", claimPaidNote:"Pick the method you paid with. This alerts the accountant to officially confirm receipt.", claimPendingTag:'Awaiting accountant confirmation',
     miscReceiptsTitle:'Amounts received without a ticket', miscReceiptsNote:'To record any cash or transfer amount you received that is not tied to a specific ticket (an advance, an old amount, or any other reason) — goes to the accountant for confirmation.',
     addMiscReceiptBtn:'+ Record an amount without a ticket', miscReceiptsHistoryTitle:'History of amounts without a ticket', miscReceiptNotePlaceholder:'e.g. old advance, extra amount from a customer, etc...',
+    fieldBookingNote:'Note', bookingNotePlaceholder:'Any note you want the accountant to see about this booking (optional)...', depositNotePlaceholder:'Any note you want the accountant to see about this deposit (optional)...',
     settleChargeBtn:'Settle', confirmSettleCharge:'Confirm this amount has actually been settled (deposited by the employee or deducted from what they are owed)?',
     kpiPendingAmounts:'Pending amounts (unconfirmed)', kpiPendingProfit:'Pending profit (not handed over)',
     myBalanceTitle:'My remaining balance (outstanding)', myBalanceNote:"Sales still awaiting accountant confirmation, and profit not yet handed to the admin. These shrink automatically once approved, and their details always stay here for reference.", navMySales:'My Sales', subMySales:'Your personal sales and profit — daily, monthly, or yearly', filterPeriod:'Period', mySalesTitle:'My sales details',
@@ -636,7 +638,7 @@ async function uploadReceiptFile(file){
 async function submitDeposit(data){
   const receiptUrl = await uploadReceiptFile(data.file);
   const row = { branch_id:data.branchId, amount:Number(data.amount)||0, destination:data.destination,
-    receipt_url:receiptUrl, status:'pending', submitted_by:data.onBehalfOf||currentUser()?.id||null };
+    receipt_url:receiptUrl, status:'pending', submitted_by:data.onBehalfOf||currentUser()?.id||null, note:data.note||null };
   const {data:ins, error} = await sb.from('cash_deposits').insert(row).select().single();
   if(error) throw error;
   deposits.unshift(ins);
@@ -908,7 +910,7 @@ async function addBooking(data){
     payment_method: method, bank_name: method==='transfer' ? (data.bankName||null) : method==='installment' ? (data.installmentProvider||null) : null,
     payment_splits: isSplit ? data.paymentSplits.map(s=>({...s, verified: s.method==='cash'?true:false})) : null,
     transfer_verified: isSplit ? allCash : false,
-    commission_status:'pending', created_by: currentUser()?.id||null
+    commission_status:'pending', created_by: currentUser()?.id||null, note: data.note||null
   };
   const {data:inserted, error} = await sb.from('bookings').insert(row).select().single();
   if(error) throw error;
@@ -946,7 +948,7 @@ async function updateBooking(id, data){
     bank_name: method==='transfer' ? (data.bankName||null) : method==='installment' ? (data.installmentProvider||null) : null,
     payment_splits: isSplit ? data.paymentSplits.map(s=>({...s, verified: s.method==='cash' ? true : !!s.verified})) : null,
     transfer_verified: isSplit ? allSettled : (method==='cash'),
-    edit_requested:false, edit_note:null
+    edit_requested:false, edit_note:null, note: data.note||null
   };
   const {data:updated, error} = await sb.from('bookings').update(row).eq('id', id).select().single();
   if(error) throw error;
@@ -1341,7 +1343,7 @@ function bookingsTable(list, mode){
             ${mode==='employee' && (isWithinEditWindow(b)||b.edit_requested)?`<button class="btn btn-gold btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>`:mode==='employee'?`<span class="tag" style="color:var(--ink-soft);background:#F0EEE6;">${t('editWindowExpired')}</span>`:''}
             ${(mode==='employee'||isAdmin()) && !b.refunded && (!b.refund_status||b.refund_status==='rejected')?`<button class="btn btn-ghost btn-sm" onclick="uiRequestRefund('${b.id}')">${b.refund_status==='rejected'?t('resubmitRefundBtn'):t('requestRefundBtn')}</button>`:''}
           </td>`:''}
-        </tr>${mode==='employee' && b.edit_requested && b.edit_note?`<tr><td colspan="13" style="background:#FBEFE0;font-size:11.5px;color:#A8722C;">📝 ${t('editNoteLabel')}: ${esc(b.edit_note)}</td></tr>`:''}${b.refund_status==='rejected' && b.refund_note?`<tr><td colspan="13" style="background:#FBE9E7;font-size:11.5px;color:var(--red);">🚫 ${t('refundRejectReasonLabel')}: ${esc(b.refund_note)}</td></tr>`:''}`).join('')}</tbody></table></div>`;
+        </tr>${mode==='employee' && b.edit_requested && b.edit_note?`<tr><td colspan="13" style="background:#FBEFE0;font-size:11.5px;color:#A8722C;">📝 ${t('editNoteLabel')}: ${esc(b.edit_note)}</td></tr>`:''}${b.refund_status==='rejected' && b.refund_note?`<tr><td colspan="13" style="background:#FBE9E7;font-size:11.5px;color:var(--red);">🚫 ${t('refundRejectReasonLabel')}: ${esc(b.refund_note)}</td></tr>`:''}${b.note?`<tr><td colspan="13" style="background:#EEF3F8;font-size:11.5px;color:var(--navy);">🗒️ ${t('fieldBookingNote')}: ${esc(b.note)}</td></tr>`:''}`).join('')}</tbody></table></div>`;
 }
 function branchBarsHTML(metric, sourceBookings){
   const list = sourceBookings || bookings;
@@ -1937,6 +1939,7 @@ function openBookingModal(existing){
       <div id="spanNoteBox" class="note" style="display:${v.payment_method==='span'?'':'none'};color:#A8722C;">${t('spanFeeNote')}</div>
       <div id="installmentNoteBox" class="note" style="display:${v.payment_method==='installment'?'':'none'};color:#A8722C;">${t('installmentFeeNote')}</div>
       <div class="note">${t('journalNote')} — ${t('paymentPendingNote')}</div>
+      <div class="field"><label>${t('fieldBookingNote')} (${t('reconcileOptionalNote')})</label><textarea name="note" rows="2" placeholder="${t('bookingNotePlaceholder')}">${v.note||''}</textarea></div>
       <div id="bookingErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
         <button type="submit" class="btn btn-primary" id="bookingSaveBtn">${isEdit?t('saveChanges'):t('saveBooking')}</button>
@@ -2006,7 +2009,7 @@ function openBookingModal(existing){
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
       ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
       sell:f.get('sell'), cost:f.get('cost'), isOpenTicket: f.get('isOpenTicket')==='on',
-      paymentMethod:isSplit?'split':f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider') };
+      paymentMethod:isSplit?'split':f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider'), note:f.get('note') };
     if(isSplit){
       const sellVal = Number(f.get('sell'))||0;
       const cleanSplits = splitRows.map(r=>({method:r.method, amount:+Number(r.amount||0).toFixed(2), bankName:r.bankName||null,
@@ -2525,7 +2528,7 @@ function depositsTableHTML(list, showApprove){
       <td><a href="${d.receipt_url}" target="_blank">${t('viewReceipt')}</a></td>
       <td><span class="tag ${d.status==='approved'?'collected':d.status==='rejected'?'rejected':'pending'}">${d.status==='approved'?t('depositApproved'):d.status==='rejected'?t('depositRejected'):t('depositPending')}</span></td>
       ${showApprove?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveDeposit('${d.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectDeposit('${d.id}')">${t('reject')}</button></td>`:''}
-    </tr>`).join('')}</tbody></table></div>`;
+    </tr>${d.note?`<tr><td colspan="8" style="background:#EEF3F8;font-size:11.5px;color:var(--navy);">🗒️ ${esc(d.note)}</td></tr>`:''}`).join('')}</tbody></table></div>`;
 }
 function openRefundRequestModal(bookingId){
   const b = bookings.find(x=>x.id===bookingId);
@@ -2677,6 +2680,7 @@ function openDepositModal(){
       <div class="field"><label>${t('fieldDepositDestination')}</label><select name="destination">${DEPOSIT_DESTINATIONS.map(d=>`<option value="${d}">${destLabel(d)}</option>`).join('')}</select></div>
       <div class="field"><label>${t('fieldDepositAmount')}</label><input type="number" step="0.01" name="amount" id="depositAmountInput" value="${suggestedAmount}" required></div>
       <div class="field"><label>${t('fieldDepositReceipt')}</label><input type="file" name="receipt" accept="image/*" required></div>
+      <div class="field"><label>${t('fieldBookingNote')} (${t('reconcileOptionalNote')})</label><textarea name="note" rows="2" placeholder="${t('depositNotePlaceholder')}"></textarea></div>
       <div id="depositErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
         <button type="submit" class="btn btn-primary" id="depositSaveBtn">${t('submitDeposit')}</button>
@@ -2703,7 +2707,7 @@ function openDepositModal(){
     if(!file || !file.size){ document.getElementById('depositErrorBox').innerHTML = `<div class="login-error">${t('receiptRequired')}</div>`; return; }
     btn.disabled=true; btn.textContent=t('uploading');
     try{
-      await submitDeposit({ branchId:f.get('branchId'), destination:f.get('destination'), amount:f.get('amount'), file, onBehalfOf:f.get('employeeId') });
+      await submitDeposit({ branchId:f.get('branchId'), destination:f.get('destination'), amount:f.get('amount'), file, onBehalfOf:f.get('employeeId'), note:f.get('note') });
       closeModal(); render();
     }catch(err){
       console.error(err);
