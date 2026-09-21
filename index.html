@@ -271,6 +271,7 @@ const T = {
     employeeFinSummaryTitle:'الملخص المالي للموظف', employeeFinSummaryNote:'نظرة شاملة على وضع الموظف المالي: كم باع، كم ودّع، كم تحويل تأكّد، وكم باقي عليه غير مسوّى (بغض النظر عن الفترة المحددة فوق).',
     efsTotalSales:'إجمالي المبيعات (كل الوقت)', efsDeposited:'إجمالي المودّع (كاش معتمد)', efsTransferred:'إجمالي التحويلات المؤكّدة', efsPendingBalance:'الباقي عليه (غير مؤكد)', efsCashOnHand:'كاش لسا بعهدته', efsCharges:'مبالغ مطلوبة (قيود يدوية)',
     addChargeBtn:'+ تسجيل مبلغ مطلوب من الموظف', fieldChargeReason:'السبب', chargeReasonPlaceholder:'مثلاً: عجز صندوق، سلفة، إلخ...', sendChargeBtn:'إرسال للموظف',
+    sendMiscReceiptBtn:'تسجيل', pleaseSelectEmployee:'الرجاء اختيار الموظف المعني بهذا المبلغ',
     chargeAlertTitle:'تنبيه: يوجد مبلغ مطلوب منك', acknowledgeChargeBtn:'تم الاطلاع', acknowledgedTag:'تم الاطلاع', chargeUnseenTag:'لم يُطّلع عليه بعد', chargeSettledTag:'مُسدَّد',
     claimPaidBtn:'أبلغت إني سدّدت', claimPaidNote:'اختر الطريقة اللي سدّدت فيها المبلغ. هذا يوصل كتنبيه للمحاسب عشان يأكّد الاستلام رسميًا.', claimPendingTag:'بانتظار تأكيد المحاسب',
     miscReceiptsTitle:'مبالغ مستلمة بدون تذكرة', miscReceiptsNote:'لتسجيل أي مبلغ كاش أو تحويل استلمته بدون ما يكون مرتبط بتذكرة معينة (سلفة، مبلغ قديم، أو أي سبب آخر) — يروح للمحاسب للتأكيد.',
@@ -447,6 +448,7 @@ const T = {
     employeeFinSummaryTitle:'Employee financial summary', employeeFinSummaryNote:"A full picture of the employee's financial status: total sales, total deposited, confirmed transfers, and what's still outstanding (regardless of the period selected above).",
     efsTotalSales:'Total sales (all-time)', efsDeposited:'Total deposited (approved cash)', efsTransferred:'Total confirmed transfers', efsPendingBalance:'Outstanding balance (unconfirmed)', efsCashOnHand:'Cash still in their custody', efsCharges:'Amounts owed (manual entries)',
     addChargeBtn:'+ Charge employee an amount', fieldChargeReason:'Reason', chargeReasonPlaceholder:'e.g. cash shortage, advance, etc...', sendChargeBtn:'Send to employee',
+    sendMiscReceiptBtn:'Register', pleaseSelectEmployee:'Please select the employee this amount concerns',
     chargeAlertTitle:'Alert: an amount is owed by you', acknowledgeChargeBtn:'Acknowledge', acknowledgedTag:'Acknowledged', chargeUnseenTag:'Not seen yet', chargeSettledTag:'Settled',
     claimPaidBtn:"I've paid this", claimPaidNote:"Pick the method you paid with. This alerts the accountant to officially confirm receipt.", claimPendingTag:'Awaiting accountant confirmation',
     miscReceiptsTitle:'Amounts received without a ticket', miscReceiptsNote:'To record any cash or transfer amount you received that is not tied to a specific ticket (an advance, an old amount, or any other reason) — goes to the accountant for confirmation.',
@@ -2622,10 +2624,15 @@ window.uiRejectRefund = async function(id){
 };
 function openMiscReceiptModal(){
   const u = currentUser();
+  const canPickEmployee = isAdmin() || isAccountant();
+  const employeesList = canPickEmployee ? users.filter(x=>x.role==='employee') : [];
   showModal(`
     <div class="modal-head"><h3>${t('addMiscReceiptBtn')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <p class="note">${t('miscReceiptsNote')}</p>
     <form id="miscReceiptForm">
+      ${canPickEmployee?`<div class="field"><label>${t('colEmployee')}</label><select name="employeeId" required>
+        <option value="">${t('reconcileNoneOpt')}</option>${employeesList.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}
+      </select></div>`:''}
       <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="method" id="miscReceiptMethodSel">
         <option value="cash">${t('payCash')}</option><option value="transfer">${t('payTransfer')}</option><option value="span">${t('paySpan')}</option>
       </select></div>
@@ -2636,7 +2643,7 @@ function openMiscReceiptModal(){
       <div class="field"><label>${t('fieldChargeReason')}</label><textarea name="note" rows="3" required placeholder="${t('miscReceiptNotePlaceholder')}"></textarea></div>
       <div id="miscReceiptErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
-        <button type="submit" class="btn btn-primary" id="miscReceiptSaveBtn">${t('sendChargeBtn')}</button>
+        <button type="submit" class="btn btn-primary" id="miscReceiptSaveBtn">${canPickEmployee?t('sendChargeBtn'):t('sendMiscReceiptBtn')}</button>
         <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
       </div>
     </form>`);
@@ -2647,13 +2654,20 @@ function openMiscReceiptModal(){
     e.preventDefault();
     const btn = document.getElementById('miscReceiptSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
     const f = new FormData(e.target);
+    const targetEmployeeId = canPickEmployee ? f.get('employeeId') : u.id;
+    if(canPickEmployee && !targetEmployeeId){
+      document.getElementById('miscReceiptErrorBox').innerHTML = `<div class="login-error">${t('pleaseSelectEmployee')}</div>`;
+      btn.disabled=false; btn.textContent=t('sendChargeBtn');
+      return;
+    }
+    const targetEmp = users.find(x=>x.id===targetEmployeeId);
     try{
-      await submitMiscReceipt(u.id, u.branch_id, f.get('amount'), f.get('method'), f.get('bankName'), f.get('note'));
+      await submitMiscReceipt(targetEmployeeId, targetEmp?.branch_id||u.branch_id, f.get('amount'), f.get('method'), f.get('bankName'), f.get('note'));
       closeModal(); render();
     }catch(err){
       console.error(err);
       document.getElementById('miscReceiptErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
-      btn.disabled=false; btn.textContent=t('sendChargeBtn');
+      btn.disabled=false; btn.textContent=canPickEmployee?t('sendChargeBtn'):t('sendMiscReceiptBtn');
     }
   };
 }
