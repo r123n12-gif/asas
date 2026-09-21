@@ -271,7 +271,9 @@ const T = {
     employeeFinSummaryTitle:'الملخص المالي للموظف', employeeFinSummaryNote:'نظرة شاملة على وضع الموظف المالي: كم باع، كم ودّع، كم تحويل تأكّد، وكم باقي عليه غير مسوّى (بغض النظر عن الفترة المحددة فوق).',
     efsTotalSales:'إجمالي المبيعات (كل الوقت)', efsDeposited:'إجمالي المودّع (كاش معتمد)', efsTransferred:'إجمالي التحويلات المؤكّدة', efsPendingBalance:'الباقي عليه (غير مؤكد)', efsCashOnHand:'كاش لسا بعهدته', efsCharges:'مبالغ مطلوبة (قيود يدوية)',
     addChargeBtn:'+ تسجيل مبلغ مطلوب من الموظف', fieldChargeReason:'السبب', chargeReasonPlaceholder:'مثلاً: عجز صندوق، سلفة، إلخ...', sendChargeBtn:'إرسال للموظف',
-    sendMiscReceiptBtn:'تسجيل', pleaseSelectEmployee:'الرجاء اختيار الموظف المعني بهذا المبلغ',
+    sendMiscReceiptBtn:'تسجيل', pleaseSelectEmployee:'الرجاء اختيار الموظف المعني بهذا المبلغ', miscReceiptRejectedAlertTitle:'تنبيه: طلب مبلغ بدون تذكرة تم رفضه',
+    returnedForEditAlertTitle:'تنبيه: المحاسب أرجع لك تذكرة للتعديل', rejectTransferBtn:'رفض', confirmRejectTransfer:'هل تأكّد إن هذا التحويل ما وصل فعليًا للبنك؟ (سيتحول الحجز لحالة مرفوض)',
+    refundRejectedAlertTitle:'تنبيه: طلب استرجاع تم رفضه', handoverRejectedAlertTitle:'تنبيه: طلب تسليم ربح تم رفضه', depositRejectedAlertTitle:'تنبيه: طلب إيداع نقدي تم رفضه',
     chargeAlertTitle:'تنبيه: يوجد مبلغ مطلوب منك', acknowledgeChargeBtn:'تم الاطلاع', acknowledgedTag:'تم الاطلاع', chargeUnseenTag:'لم يُطّلع عليه بعد', chargeSettledTag:'مُسدَّد',
     claimPaidBtn:'أبلغت إني سدّدت', claimPaidNote:'اختر الطريقة اللي سدّدت فيها المبلغ. هذا يوصل كتنبيه للمحاسب عشان يأكّد الاستلام رسميًا.', claimPendingTag:'بانتظار تأكيد المحاسب',
     miscReceiptsTitle:'مبالغ مستلمة بدون تذكرة', miscReceiptsNote:'لتسجيل أي مبلغ كاش أو تحويل استلمته بدون ما يكون مرتبط بتذكرة معينة (سلفة، مبلغ قديم، أو أي سبب آخر) — يروح للمحاسب للتأكيد.',
@@ -448,7 +450,9 @@ const T = {
     employeeFinSummaryTitle:'Employee financial summary', employeeFinSummaryNote:"A full picture of the employee's financial status: total sales, total deposited, confirmed transfers, and what's still outstanding (regardless of the period selected above).",
     efsTotalSales:'Total sales (all-time)', efsDeposited:'Total deposited (approved cash)', efsTransferred:'Total confirmed transfers', efsPendingBalance:'Outstanding balance (unconfirmed)', efsCashOnHand:'Cash still in their custody', efsCharges:'Amounts owed (manual entries)',
     addChargeBtn:'+ Charge employee an amount', fieldChargeReason:'Reason', chargeReasonPlaceholder:'e.g. cash shortage, advance, etc...', sendChargeBtn:'Send to employee',
-    sendMiscReceiptBtn:'Register', pleaseSelectEmployee:'Please select the employee this amount concerns',
+    sendMiscReceiptBtn:'Register', pleaseSelectEmployee:'Please select the employee this amount concerns', miscReceiptRejectedAlertTitle:'Alert: a no-ticket amount request was rejected',
+    returnedForEditAlertTitle:'Alert: the accountant returned a ticket to you for editing', rejectTransferBtn:'Reject', confirmRejectTransfer:'Confirm this transfer never actually arrived at the bank? (the booking will be marked as rejected)',
+    refundRejectedAlertTitle:'Alert: a refund request was rejected', handoverRejectedAlertTitle:'Alert: a profit handover request was rejected', depositRejectedAlertTitle:'Alert: a cash deposit request was rejected',
     chargeAlertTitle:'Alert: an amount is owed by you', acknowledgeChargeBtn:'Acknowledge', acknowledgedTag:'Acknowledged', chargeUnseenTag:'Not seen yet', chargeSettledTag:'Settled',
     claimPaidBtn:"I've paid this", claimPaidNote:"Pick the method you paid with. This alerts the accountant to officially confirm receipt.", claimPendingTag:'Awaiting accountant confirmation',
     miscReceiptsTitle:'Amounts received without a ticket', miscReceiptsNote:'To record any cash or transfer amount you received that is not tied to a specific ticket (an advance, an old amount, or any other reason) — goes to the accountant for confirmation.',
@@ -503,6 +507,7 @@ function setSession(u){ localStorage.setItem('asas_session', JSON.stringify(u));
 function clearSession(){ localStorage.removeItem('asas_session'); resetAllFilters(); }
 function resetAllFilters(){
   branchFilter = 'all';
+  employeeFilter = 'all';
   dashDateFrom = todayStr().slice(0,8)+'01'; dashDateTo = todayStr();
   mySalesDateFrom = null; mySalesDateTo = null;
   bookingsSearchTerm = '';
@@ -517,6 +522,7 @@ function resetAllFilters(){
 let branches = [], users = [], bookings = [], journal = [], manualExpenses = [], deposits = [], profitHandovers = [], employeeCharges = [], miscReceipts = [];
 let route = 'dashboard';
 let branchFilter = 'all';
+let employeeFilter = 'all';
 
 async function fetchAll(){
   const [b, u, bk, jr, ex, dp, ph, ec, mr] = await Promise.all([
@@ -677,6 +683,11 @@ async function verifySplitPayment(bookingId, splitIndex){
   const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
   if(jErr) throw jErr;
   journal.unshift(...jIns.reverse());
+}
+async function rejectTransfer(bookingId, note){
+  const {error} = await sb.from('bookings').update({edit_requested:true, edit_note: note||null}).eq('id', bookingId);
+  if(error) throw error;
+  const b = bookings.find(x=>x.id===bookingId); if(b){ b.edit_requested=true; b.edit_note=note||null; }
 }
 async function verifyPaymentReceived(bookingId, actualAmount){
   const b = bookings.find(x=>x.id===bookingId);
@@ -884,8 +895,9 @@ function filteredBookings(){
   const u = currentUser();
   if(u && u.role==='employee') return bookings.filter(b=>b.created_by===u.id);
   const bf = effectiveBranchFilter();
-  if(bf==='all') return bookings;
-  return bookings.filter(b=>b.branch_id===bf);
+  let list = bf==='all' ? bookings : bookings.filter(b=>b.branch_id===bf);
+  if(employeeFilter!=='all') list = list.filter(b=>b.created_by===employeeFilter);
+  return list;
 }
 const SOURCE_PRESETS = ['AKBAR','NDC','PORTAL','GALILEO','G9','GULF','J9','AM','مباشر'];
 const AIRLINE_HINTS = ['SV','EY','EK','G9','FZ','GF','QR','6E','XY'];
@@ -1185,6 +1197,10 @@ function render(){
             ${canSeeAllBranches() ? `<select class="select-ctrl" id="branchFilterSel">
               <option value="all" ${branchFilter==='all'?'selected':''}>${t('allBranches')}</option>
               ${branches.map(b=>`<option value="${b.id}" ${branchFilter===b.id?'selected':''}>${esc(b.name)}</option>`).join('')}
+            </select>
+            <select class="select-ctrl" id="topEmployeeFilterSel">
+              <option value="all" ${employeeFilter==='all'?'selected':''}>${t('allEmployeesOpt')}</option>
+              ${users.filter(e=>e.role==='employee' && (branchFilter==='all'||e.branch_id===branchFilter)).map(e=>`<option value="${e.id}" ${employeeFilter===e.id?'selected':''}>${esc(e.name)}</option>`).join('')}
             </select>` : `<span class="tag employee">${branchName(u.branch_id)}</span>`}
             <span style="font-size:12px;color:var(--ink-soft)">${t('loggedInAs')} <b style="color:var(--ink)">${esc(u.name)}</b></span>
             <button class="btn btn-ghost btn-sm" id="myAccountBtn">${t('myAccountBtn')}</button>
@@ -1198,7 +1214,9 @@ function render(){
   `;
   document.querySelectorAll('.nav-item').forEach(el=>{ el.onclick = ()=>{ route = el.dataset.route; render(); }; });
   const bfSel = document.getElementById('branchFilterSel');
-  if(bfSel) bfSel.onchange = (e)=>{ branchFilter = e.target.value; render(); };
+  if(bfSel) bfSel.onchange = (e)=>{ branchFilter = e.target.value; employeeFilter='all'; render(); };
+  const efSel = document.getElementById('topEmployeeFilterSel');
+  if(efSel) efSel.onchange = (e)=>{ employeeFilter = e.target.value; render(); };
   document.getElementById('logoutBtn').onclick = ()=>{ clearSession(); render(); };
   document.getElementById('langBtn').onclick = ()=>{ setLang(lang==='ar'?'en':'ar'); render(); };
   document.getElementById('myAccountBtn').onclick = openMyAccountModal;
@@ -1263,6 +1281,11 @@ function renderDashboard(){
     pendingAmt = +(pendingAmt + scopeEmployees.reduce((s,e)=>s+employeeCashOnHand(e.id)+outstandingEmployeeCharges(e.id),0)).toFixed(2);
   }
   const myPendingCharges = u.role==='employee' ? employeeCharges.filter(c=>c.employee_id===u.id && !c.settled) : [];
+  const myRejectedMisc = u.role==='employee' ? miscReceipts.filter(r=>r.employee_id===u.id && r.status==='rejected') : [];
+  const myReturnedForEdit = u.role==='employee' ? bookings.filter(b=>b.created_by===u.id && b.edit_requested) : [];
+  const myRejectedRefunds = u.role==='employee' ? bookings.filter(b=>b.created_by===u.id && b.refund_status==='rejected' && !b.refunded) : [];
+  const myRejectedDeposits = u.role==='employee' ? deposits.filter(d=>d.submitted_by===u.id && d.status==='rejected') : [];
+  const myRejectedHandovers = u.role==='employee' ? profitHandovers.filter(h=>h.employee_id===u.id && h.status==='rejected') : [];
   const pendingProfitAmt = pendingProfitHandoverAmount(list);
   const c = document.getElementById('content');
   c.innerHTML = `
@@ -1272,6 +1295,43 @@ function renderDashboard(){
         <div style="font-weight:700;color:var(--red);">${money(ch.amount)}</div>
         <div class="note">${esc(ch.reason||'—')} — ${(ch.created_at||'').slice(0,10)}</div>
         ${!ch.acknowledged?`<button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiAcknowledgeCharge('${ch.id}')">${t('acknowledgeChargeBtn')}</button>`:ch.payment_claimed?`<span class="tag pending">${t('claimPendingTag')}</span>`:`<span class="tag collected">${t('acknowledgedTag')}</span> <button class="btn btn-primary btn-sm" style="margin-top:6px;margin-right:6px;" onclick="uiClaimChargePaid('${ch.id}')">${t('claimPaidBtn')}</button>`}
+      </div>`).join('')}
+    </div>`:''}
+    ${myRejectedMisc.length>0?`<div class="panel" style="border:2px solid var(--red);">
+      <div class="panel-head"><h3 class="panel-title" style="color:var(--red);">🚫 ${t('miscReceiptRejectedAlertTitle')}</h3></div>
+      ${myRejectedMisc.map(r=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="font-weight:700;color:var(--red);">${money(r.amount)} — ${esc(r.note||'—')}</div>
+        ${r.reject_note?`<div class="note">${t('refundRejectReasonLabel')}: ${esc(r.reject_note)}</div>`:''}
+      </div>`).join('')}
+    </div>`:''}
+    ${myReturnedForEdit.length>0?`<div class="panel" style="border:2px solid var(--gold);">
+      <div class="panel-head"><h3 class="panel-title" style="color:#A8722C;">📝 ${t('returnedForEditAlertTitle')}</h3></div>
+      ${myReturnedForEdit.map(b=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="font-weight:700;">${t('colNo')}: ${b.booking_no} — ${esc(b.customer)}</div>
+        <div class="note">${esc(b.edit_note||'—')}</div>
+        <button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>
+      </div>`).join('')}
+    </div>`:''}
+    ${myRejectedRefunds.length>0?`<div class="panel" style="border:2px solid var(--red);">
+      <div class="panel-head"><h3 class="panel-title" style="color:var(--red);">🚫 ${t('refundRejectedAlertTitle')}</h3></div>
+      ${myRejectedRefunds.map(b=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="font-weight:700;">${t('colNo')}: ${b.booking_no} — ${esc(b.customer)}</div>
+        <div class="note">${esc(b.refund_note||'—')}</div>
+        <button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiRequestRefund('${b.id}')">${t('resubmitRefundBtn')}</button>
+      </div>`).join('')}
+    </div>`:''}
+    ${myRejectedHandovers.length>0?`<div class="panel" style="border:2px solid var(--red);">
+      <div class="panel-head"><h3 class="panel-title" style="color:var(--red);">🚫 ${t('handoverRejectedAlertTitle')}</h3></div>
+      ${myRejectedHandovers.map(h=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="font-weight:700;">${money(h.total_profit)} — ${h.date_from||'—'} → ${h.date_to||'—'}</div>
+        <div class="note">${esc(h.notes||'—')}</div>
+      </div>`).join('')}
+    </div>`:''}
+    ${myRejectedDeposits.length>0?`<div class="panel" style="border:2px solid var(--red);">
+      <div class="panel-head"><h3 class="panel-title" style="color:var(--red);">🚫 ${t('depositRejectedAlertTitle')}</h3></div>
+      ${myRejectedDeposits.map(d=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="font-weight:700;">${money(d.amount)} — ${d.destination||'—'}</div>
+        <div class="note">${esc(d.notes||'—')}</div>
       </div>`).join('')}
     </div>`:''}
     <div class="panel">
@@ -1372,6 +1432,11 @@ function renderMySales(){
   const tt = computeTotals(list, []);
   const pendingAmt = +(pendingConfirmationAmount(allMine) + employeeCashOnHand(u.id) + outstandingEmployeeCharges(u.id)).toFixed(2);
   const myCharges = employeeCharges.filter(c=>c.employee_id===u.id && !c.settled);
+  const myRejectedMiscMS = miscReceipts.filter(r=>r.employee_id===u.id && r.status==='rejected');
+  const myReturnedForEditMS = bookings.filter(b=>b.created_by===u.id && b.edit_requested);
+  const myRejectedRefundsMS = bookings.filter(b=>b.created_by===u.id && b.refund_status==='rejected' && !b.refunded);
+  const myRejectedDepositsMS = deposits.filter(d=>d.submitted_by===u.id && d.status==='rejected');
+  const myRejectedHandoversMS = profitHandovers.filter(h=>h.employee_id===u.id && h.status==='rejected');
   const pendingProfitAmt = pendingProfitHandoverAmount(allMine);
   document.getElementById('content').innerHTML = `
     ${myCharges.length>0?`<div class="panel" style="border:2px solid var(--red);">
@@ -1380,6 +1445,43 @@ function renderMySales(){
         <div style="font-weight:700;color:var(--red);">${money(ch.amount)}</div>
         <div class="note">${esc(ch.reason||'—')} — ${(ch.created_at||'').slice(0,10)}</div>
         ${!ch.acknowledged?`<button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiAcknowledgeCharge('${ch.id}')">${t('acknowledgeChargeBtn')}</button>`:ch.payment_claimed?`<span class="tag pending">${t('claimPendingTag')}</span>`:`<span class="tag collected">${t('acknowledgedTag')}</span> <button class="btn btn-primary btn-sm" style="margin-top:6px;margin-right:6px;" onclick="uiClaimChargePaid('${ch.id}')">${t('claimPaidBtn')}</button>`}
+      </div>`).join('')}
+    </div>`:''}
+    ${myRejectedMiscMS.length>0?`<div class="panel" style="border:2px solid var(--red);">
+      <div class="panel-head"><h3 class="panel-title" style="color:var(--red);">🚫 ${t('miscReceiptRejectedAlertTitle')}</h3></div>
+      ${myRejectedMiscMS.map(r=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="font-weight:700;color:var(--red);">${money(r.amount)} — ${esc(r.note||'—')}</div>
+        ${r.reject_note?`<div class="note">${t('refundRejectReasonLabel')}: ${esc(r.reject_note)}</div>`:''}
+      </div>`).join('')}
+    </div>`:''}
+    ${myReturnedForEditMS.length>0?`<div class="panel" style="border:2px solid var(--gold);">
+      <div class="panel-head"><h3 class="panel-title" style="color:#A8722C;">📝 ${t('returnedForEditAlertTitle')}</h3></div>
+      ${myReturnedForEditMS.map(b=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="font-weight:700;">${t('colNo')}: ${b.booking_no} — ${esc(b.customer)}</div>
+        <div class="note">${esc(b.edit_note||'—')}</div>
+        <button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>
+      </div>`).join('')}
+    </div>`:''}
+    ${myRejectedRefundsMS.length>0?`<div class="panel" style="border:2px solid var(--red);">
+      <div class="panel-head"><h3 class="panel-title" style="color:var(--red);">🚫 ${t('refundRejectedAlertTitle')}</h3></div>
+      ${myRejectedRefundsMS.map(b=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="font-weight:700;">${t('colNo')}: ${b.booking_no} — ${esc(b.customer)}</div>
+        <div class="note">${esc(b.refund_note||'—')}</div>
+        <button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiRequestRefund('${b.id}')">${t('resubmitRefundBtn')}</button>
+      </div>`).join('')}
+    </div>`:''}
+    ${myRejectedHandoversMS.length>0?`<div class="panel" style="border:2px solid var(--red);">
+      <div class="panel-head"><h3 class="panel-title" style="color:var(--red);">🚫 ${t('handoverRejectedAlertTitle')}</h3></div>
+      ${myRejectedHandoversMS.map(h=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="font-weight:700;">${money(h.total_profit)} — ${h.date_from||'—'} → ${h.date_to||'—'}</div>
+        <div class="note">${esc(h.notes||'—')}</div>
+      </div>`).join('')}
+    </div>`:''}
+    ${myRejectedDepositsMS.length>0?`<div class="panel" style="border:2px solid var(--red);">
+      <div class="panel-head"><h3 class="panel-title" style="color:var(--red);">🚫 ${t('depositRejectedAlertTitle')}</h3></div>
+      ${myRejectedDepositsMS.map(d=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+        <div style="font-weight:700;">${money(d.amount)} — ${d.destination||'—'}</div>
+        <div class="note">${esc(d.notes||'—')}</div>
       </div>`).join('')}
     </div>`:''}
     <div class="panel">
@@ -2448,7 +2550,7 @@ function renderTransfers(){
         <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
         <td class="num">${money(b.sell)}</td>
         <td class="num">${b.payment_method==='span'?money(+(Number(b.sell)*0.008).toFixed(2)):b.payment_method==='installment'?money(+(Number(b.sell)*0.07).toFixed(2)):'—'}</td>
-        <td><button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
+        <td style="display:flex;gap:6px;"><button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectTransfer('${b.id}')">${t('rejectTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingSplitTitle')}</h3></div>
       <p class="note">${t('pendingSplitNote')}</p>
@@ -2498,7 +2600,7 @@ function renderDeposits(){
   <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('depositHistory')}</h3></div>
     ${depositsTableHTML(historyDeposits, false)}
   </div>`;
-  const myMisc = canManage ? miscReceipts : miscReceipts.filter(r=>r.created_by===u.id);
+  const myMisc = canManage ? miscReceipts : miscReceipts.filter(r=>r.employee_id===u.id);
   const pendingMisc = myMisc.filter(r=>r.status==='pending');
   const historyMisc = myMisc.filter(r=>r.status!=='pending');
   html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('miscReceiptsTitle')}</h3><button class="btn btn-primary btn-sm" id="addMiscReceiptBtn">${t('addMiscReceiptBtn')}</button></div>
@@ -2743,6 +2845,11 @@ window.uiVerifyTransfer = async function(id){
   const amt = Number(val);
   if(isNaN(amt) || amt<0){ alert(t('invalidNumber')); return; }
   try{ await verifyPaymentReceived(id, amt); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
+window.uiRejectTransfer = async function(id){
+  if(!confirm(t('confirmRejectTransfer'))) return;
+  const note = prompt(t('editNotePrompt'))||'';
+  try{ await rejectTransfer(id, note); render(); }catch(e){ console.error(e); alert(t('connError')); }
 };
 window.uiVerifySplitPayment = async function(id, splitIndex){
   if(!confirm(t('confirmVerifySplit'))) return;
