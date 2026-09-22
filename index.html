@@ -504,7 +504,7 @@ function setLang(l){ lang = l; localStorage.setItem('asas_lang', l); }
 /* ===================== SESSION (localStorage) ===================== */
 function getSession(){ try{ return JSON.parse(localStorage.getItem('asas_session')||'null'); }catch(e){ return null; } }
 function setSession(u){ localStorage.setItem('asas_session', JSON.stringify(u)); resetAllFilters(); }
-function clearSession(){ localStorage.removeItem('asas_session'); resetAllFilters(); }
+function clearSession(){ localStorage.removeItem('asas_session'); resetAllFilters(); stopAutoRefresh(); }
 function resetAllFilters(){
   branchFilter = 'all';
   employeeFilter = 'all';
@@ -1152,11 +1152,25 @@ async function boot(){
   try{
     await fetchAll();
     render();
+    startAutoRefresh();
   }catch(e){
     console.error(e);
     app.innerHTML = `<div class="login-wrap"><div class="login-card"><div class="login-error">${t('connError')}</div>
       <button class="btn btn-ghost" style="width:100%" onclick="location.reload()">Retry / إعادة المحاولة</button></div></div>`;
   }
+}
+let autoRefreshInterval = null;
+function startAutoRefresh(){
+  if(autoRefreshInterval) return;
+  autoRefreshInterval = setInterval(async ()=>{
+    if(!getSession()) return;
+    const overlay = document.getElementById('overlay');
+    if(overlay && overlay.classList.contains('show')) return;
+    try{ await fetchAll(); render(); }catch(e){ console.error('auto-refresh failed', e); }
+  }, 30000);
+}
+function stopAutoRefresh(){
+  if(autoRefreshInterval){ clearInterval(autoRefreshInterval); autoRefreshInterval=null; }
 }
 
 function renderSetupScreen(app){
@@ -2537,10 +2551,11 @@ function renderReports(){
 /* ===================== BANK TRANSFERS PAGE ===================== */
 function renderTransfers(){
   document.getElementById('pageSub').textContent = t('subTransfers');
-  const pendingTransfers = bookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && !b.transfer_verified);
-  const verifiedTransfers = bookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && b.transfer_verified);
+  const scopedBookings = filteredBookings();
+  const pendingTransfers = scopedBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && !b.transfer_verified);
+  const verifiedTransfers = scopedBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && b.transfer_verified);
   const pendingSplitRows = [];
-  bookings.filter(b=>b.payment_method==='split' && Array.isArray(b.payment_splits)).forEach(b=>{
+  scopedBookings.filter(b=>b.payment_method==='split' && Array.isArray(b.payment_splits)).forEach(b=>{
     b.payment_splits.forEach((s,i)=>{ if(s.method!=='cash' && !s.verified) pendingSplitRows.push({b, s, i}); });
   });
   let html = `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingVerifyTitle')}</h3></div>
@@ -2591,7 +2606,8 @@ function renderDeposits(){
       ${employeeCashBreakdownHTML()}
     </div>`;
   }
-  const myDeposits = canManage ? deposits : deposits.filter(d=>d.submitted_by===u.id);
+  const myDeposits0 = canManage ? deposits : deposits.filter(d=>d.submitted_by===u.id);
+  const myDeposits = canManage ? myDeposits0.filter(d=>(effectiveBranchFilter()==='all'||d.branch_id===effectiveBranchFilter()) && (employeeFilter==='all'||d.submitted_by===employeeFilter)) : myDeposits0;
   const pendingDeposits = myDeposits.filter(d=>d.status==='pending');
   const historyDeposits = myDeposits.filter(d=>d.status!=='pending');
   html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('depositsTitle')}</h3><button class="btn btn-primary btn-sm" id="addDepositBtn">${t('addDeposit')}</button></div>
@@ -2600,7 +2616,8 @@ function renderDeposits(){
   <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('depositHistory')}</h3></div>
     ${depositsTableHTML(historyDeposits, false)}
   </div>`;
-  const myMisc = canManage ? miscReceipts : miscReceipts.filter(r=>r.employee_id===u.id);
+  const myMisc0 = canManage ? miscReceipts : miscReceipts.filter(r=>r.employee_id===u.id);
+  const myMisc = canManage ? myMisc0.filter(r=>(effectiveBranchFilter()==='all'||r.branch_id===effectiveBranchFilter()) && (employeeFilter==='all'||r.employee_id===employeeFilter)) : myMisc0;
   const pendingMisc = myMisc.filter(r=>r.status==='pending');
   const historyMisc = myMisc.filter(r=>r.status!=='pending');
   html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('miscReceiptsTitle')}</h3><button class="btn btn-primary btn-sm" id="addMiscReceiptBtn">${t('addMiscReceiptBtn')}</button></div>
@@ -2983,7 +3000,7 @@ function openUserModal(){
 window.uiDeleteUser = async function(id){
   if(id===currentUser().id){ alert(t('cannotDeleteSelf')); return; }
   if(!confirm(t('confirmDeleteUser'))) return;
-  try{ const {error} = await sb.from('app_users').delete().eq('id', id); if(error) throw error; users = users.filter(u=>u.id!==id); render(); }
+  try{ const {error} = await sb.from('app_users').delete().eq('id', id); if(error) throw error; users = users.filter(u=>u.id!==id); if(employeeFilter===id) employeeFilter='all'; render(); }
   catch(e){ alert(t('connError')); }
 };
 
@@ -3100,7 +3117,7 @@ window.uiRemoveBranch = async function(id){
     const {error} = await sb.from('branches').delete().eq('id', id);
     if(error) throw error;
     branches = branches.filter(b=>b.id!==id);
-    if(branchFilter===id) branchFilter='all';
+    if(branchFilter===id){ branchFilter='all'; employeeFilter='all'; }
     render();
   }catch(e){ alert(t('branchDeleteError')); }
 };
