@@ -271,11 +271,13 @@ const T = {
     employeeFinSummaryTitle:'الملخص المالي للموظف', employeeFinSummaryNote:'نظرة شاملة على وضع الموظف المالي: كم باع، كم ودّع، كم تحويل تأكّد، وكم باقي عليه غير مسوّى (بغض النظر عن الفترة المحددة فوق).',
     efsTotalSales:'إجمالي المبيعات (كل الوقت)', efsDeposited:'إجمالي المودّع (كاش معتمد)', efsTransferred:'إجمالي التحويلات المؤكّدة', efsPendingBalance:'الباقي عليه (غير مؤكد)', efsCashOnHand:'كاش لسا بعهدته', efsCharges:'مبالغ مطلوبة (قيود يدوية)',
     addChargeBtn:'+ تسجيل مبلغ مطلوب من الموظف', fieldChargeReason:'السبب', chargeReasonPlaceholder:'مثلاً: عجز صندوق، سلفة، إلخ...', sendChargeBtn:'إرسال للموظف',
+    chargeSourceLabel:'مصدر المبلغ', chargeSourceCash:'نقدي من الصندوق', chargeSourceBank:'سحب من حساب البنك (أونلاين)',
     sendMiscReceiptBtn:'تسجيل', pleaseSelectEmployee:'الرجاء اختيار الموظف المعني بهذا المبلغ', miscReceiptRejectedAlertTitle:'تنبيه: طلب مبلغ بدون تذكرة تم رفضه',
     returnedForEditAlertTitle:'تنبيه: المحاسب أرجع لك تذكرة للتعديل', rejectTransferBtn:'رفض', confirmRejectTransfer:'هل تأكّد إن هذا التحويل ما وصل فعليًا للبنك؟ (سيتحول الحجز لحالة مرفوض)',
     refundRejectedAlertTitle:'تنبيه: طلب استرجاع تم رفضه', handoverRejectedAlertTitle:'تنبيه: طلب تسليم ربح تم رفضه', depositRejectedAlertTitle:'تنبيه: طلب إيداع نقدي تم رفضه',
     chargeAlertTitle:'تنبيه: يوجد مبلغ مطلوب منك', acknowledgeChargeBtn:'تم الاطلاع', acknowledgedTag:'تم الاطلاع', chargeUnseenTag:'لم يُطّلع عليه بعد', chargeSettledTag:'مُسدَّد',
     claimPaidBtn:'أبلغت إني سدّدت', claimPaidNote:'اختر الطريقة اللي سدّدت فيها المبلغ. هذا يوصل كتنبيه للمحاسب عشان يأكّد الاستلام رسميًا.', claimPendingTag:'بانتظار تأكيد المحاسب',
+    linkTicketToggle:'هذا المبلغ يخص تذكرة معينة — أضيفها الآن', linkTicketNote:'حدد بيانات التذكرة عشان تُسجَّل بشكل صحيح بالنظام (بالمبيعات والتقارير)، بدل ما تبقى مجرد مبلغ معلّق.',
     miscReceiptsTitle:'مبالغ مستلمة بدون تذكرة', miscReceiptsNote:'لتسجيل أي مبلغ كاش أو تحويل استلمته بدون ما يكون مرتبط بتذكرة معينة (سلفة، مبلغ قديم، أو أي سبب آخر) — يروح للمحاسب للتأكيد.',
     addMiscReceiptBtn:'+ تسجيل مبلغ بدون تذكرة', miscReceiptsHistoryTitle:'سجل المبالغ بدون تذكرة', miscReceiptNotePlaceholder:'مثلاً: سلفة قديمة، مبلغ زيادة من عميل، إلخ...',
     fieldBookingNote:'ملاحظة', bookingNotePlaceholder:'أي ملاحظة تبي المحاسب يشوفها بخصوص هذا الحجز (اختياري)...', depositNotePlaceholder:'أي ملاحظة تبي المحاسب يشوفها بخصوص هذا الإيداع (اختياري)...',
@@ -450,11 +452,13 @@ const T = {
     employeeFinSummaryTitle:'Employee financial summary', employeeFinSummaryNote:"A full picture of the employee's financial status: total sales, total deposited, confirmed transfers, and what's still outstanding (regardless of the period selected above).",
     efsTotalSales:'Total sales (all-time)', efsDeposited:'Total deposited (approved cash)', efsTransferred:'Total confirmed transfers', efsPendingBalance:'Outstanding balance (unconfirmed)', efsCashOnHand:'Cash still in their custody', efsCharges:'Amounts owed (manual entries)',
     addChargeBtn:'+ Charge employee an amount', fieldChargeReason:'Reason', chargeReasonPlaceholder:'e.g. cash shortage, advance, etc...', sendChargeBtn:'Send to employee',
+    chargeSourceLabel:'Source of the amount', chargeSourceCash:'Cash from the till', chargeSourceBank:'Withdrawn from bank account (online)',
     sendMiscReceiptBtn:'Register', pleaseSelectEmployee:'Please select the employee this amount concerns', miscReceiptRejectedAlertTitle:'Alert: a no-ticket amount request was rejected',
     returnedForEditAlertTitle:'Alert: the accountant returned a ticket to you for editing', rejectTransferBtn:'Reject', confirmRejectTransfer:'Confirm this transfer never actually arrived at the bank? (the booking will be marked as rejected)',
     refundRejectedAlertTitle:'Alert: a refund request was rejected', handoverRejectedAlertTitle:'Alert: a profit handover request was rejected', depositRejectedAlertTitle:'Alert: a cash deposit request was rejected',
     chargeAlertTitle:'Alert: an amount is owed by you', acknowledgeChargeBtn:'Acknowledge', acknowledgedTag:'Acknowledged', chargeUnseenTag:'Not seen yet', chargeSettledTag:'Settled',
     claimPaidBtn:"I've paid this", claimPaidNote:"Pick the method you paid with. This alerts the accountant to officially confirm receipt.", claimPendingTag:'Awaiting accountant confirmation',
+    linkTicketToggle:'This amount is for a specific ticket — add it now', linkTicketNote:'Fill in the ticket details so it gets properly recorded in the system (sales and reports), instead of staying just a pending amount.',
     miscReceiptsTitle:'Amounts received without a ticket', miscReceiptsNote:'To record any cash or transfer amount you received that is not tied to a specific ticket (an advance, an old amount, or any other reason) — goes to the accountant for confirmation.',
     addMiscReceiptBtn:'+ Record an amount without a ticket', miscReceiptsHistoryTitle:'History of amounts without a ticket', miscReceiptNotePlaceholder:'e.g. old advance, extra amount from a customer, etc...',
     fieldBookingNote:'Note', bookingNotePlaceholder:'Any note you want the accountant to see about this booking (optional)...', depositNotePlaceholder:'Any note you want the accountant to see about this deposit (optional)...',
@@ -567,15 +571,15 @@ async function rejectMiscReceipt(id, note){
   const r = miscReceipts.find(x=>x.id===id); if(r){ r.status='rejected'; r.reject_note=note||null; }
 }
 /* ===================== EMPLOYEE CHARGES (manual debit) ===================== */
-async function addEmployeeCharge(employeeId, branchId, amount, reason){
-  const row = { employee_id:employeeId, branch_id:branchId||null, amount:Number(amount)||0, reason:reason||null,
+async function addEmployeeCharge(employeeId, branchId, amount, reason, source){
+  const row = { employee_id:employeeId, branch_id:branchId||null, amount:Number(amount)||0, reason:reason||null, source:source||'cash',
     created_by: currentUser()?.id||null, acknowledged:false, settled:false };
   const {data, error} = await sb.from('employee_charges').insert(row).select().single();
   if(error) throw error;
   employeeCharges.unshift(data);
   const {data:jIns, error:jErr} = await sb.from('journal').insert({
     date: todayStr(), branch_id: branchId||null, desc_key:'jEmployeeCharge', desc_args:[userName(employeeId), reason||'-'],
-    debit_key:'accEmployeeReceivable', credit_key:'accCashOnHand', amount: Number(amount)||0
+    debit_key:'accEmployeeReceivable', credit_key: source==='bank' ? 'accBank' : 'accCashOnHand', amount: Number(amount)||0
   }).select().single();
   if(jErr) throw jErr;
   journal.unshift(jIns);
@@ -1753,6 +1757,9 @@ function openAddChargeModal(employeeId){
     <p class="note">${t('colEmployee')}: ${esc(userName(employeeId))}</p>
     <form id="addChargeForm">
       <div class="field"><label>${t('fieldSplitAmount')}</label><input type="number" step="0.01" name="amount" required min="0.01"></div>
+      <div class="field"><label>${t('chargeSourceLabel')}</label><select name="source">
+        <option value="cash">${t('chargeSourceCash')}</option><option value="bank">${t('chargeSourceBank')}</option>
+      </select></div>
       <div class="field"><label>${t('fieldChargeReason')}</label><textarea name="reason" rows="3" required placeholder="${t('chargeReasonPlaceholder')}"></textarea></div>
       <div id="addChargeErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
@@ -1766,7 +1773,7 @@ function openAddChargeModal(employeeId){
     const f = new FormData(e.target);
     try{
       const emp = users.find(u=>u.id===employeeId);
-      await addEmployeeCharge(employeeId, emp?.branch_id||null, f.get('amount'), f.get('reason'));
+      await addEmployeeCharge(employeeId, emp?.branch_id||null, f.get('amount'), f.get('reason'), f.get('source'));
       closeModal(); render();
     }catch(err){
       console.error(err);
@@ -1779,6 +1786,7 @@ window.uiAcknowledgeCharge = async function(id){
   try{ await acknowledgeEmployeeCharge(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
 };
 window.uiClaimChargePaid = function(id){
+  const c = employeeCharges.find(x=>x.id===id);
   showModal(`
     <div class="modal-head"><h3>${t('claimPaidBtn')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <p class="note">${t('claimPaidNote')}</p>
@@ -1786,17 +1794,46 @@ window.uiClaimChargePaid = function(id){
       <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="method">
         <option value="cash">${t('payCash')}</option><option value="transfer">${t('payTransfer')}</option>
       </select></div>
+      <div class="field" style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="linkTicketToggle" style="width:auto;">
+        <label for="linkTicketToggle" style="margin:0;">${t('linkTicketToggle')}</label>
+      </div>
+      <div id="linkTicketBox" style="display:none;">
+        <p class="note">${t('linkTicketNote')}</p>
+        <div class="grid-2">
+          <div class="field"><label>${t('fieldCustomer')}</label><input type="text" name="customer"></div>
+          <div class="field"><label>${t('fieldTicketNo')}</label><input type="text" name="ticketNo"></div>
+        </div>
+        <div class="grid-2">
+          <div class="field"><label>${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell"></div>
+          <div class="field"><label>${t('fieldSystemFare')}</label><input type="number" step="0.01" name="cost" value="${c?Number(c.amount)||'':''}"></div>
+        </div>
+        <div class="field"><label>${t('fieldAirline')}</label><input type="text" name="airline"></div>
+      </div>
       <div id="claimChargeErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
         <button type="submit" class="btn btn-primary" id="claimChargeSaveBtn">${t('claimPaidBtn')}</button>
         <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
       </div>
     </form>`);
+  document.getElementById('linkTicketToggle').onchange = (e)=>{
+    document.getElementById('linkTicketBox').style.display = e.target.checked ? '' : 'none';
+  };
   document.getElementById('claimChargeForm').onsubmit = async (e)=>{
     e.preventDefault();
     const btn = document.getElementById('claimChargeSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
     const f = new FormData(e.target);
-    try{ await claimChargePaid(id, f.get('method')); closeModal(); render(); }
+    try{
+      await claimChargePaid(id, f.get('method'));
+      if(document.getElementById('linkTicketToggle').checked && c){
+        const sell = Number(f.get('sell'))||0, cost = Number(f.get('cost'))||0;
+        if(f.get('customer') && sell>0){
+          await addBooking({ customer:f.get('customer'), ticketNo:f.get('ticketNo'), airline:f.get('airline'),
+            branchId:c.branch_id, source:'مباشر', date:todayStr(), sell, cost, paymentMethod:f.get('method') });
+        }
+      }
+      closeModal(); render();
+    }
     catch(err){ console.error(err); document.getElementById('claimChargeErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`; btn.disabled=false; btn.textContent=t('claimPaidBtn'); }
   };
 };
