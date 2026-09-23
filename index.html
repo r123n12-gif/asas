@@ -277,7 +277,7 @@ const T = {
     refundRejectedAlertTitle:'تنبيه: طلب استرجاع تم رفضه', handoverRejectedAlertTitle:'تنبيه: طلب تسليم ربح تم رفضه', depositRejectedAlertTitle:'تنبيه: طلب إيداع نقدي تم رفضه',
     chargeAlertTitle:'تنبيه: يوجد مبلغ مطلوب منك', acknowledgeChargeBtn:'تم الاطلاع', acknowledgedTag:'تم الاطلاع', chargeUnseenTag:'لم يُطّلع عليه بعد', chargeSettledTag:'مُسدَّد',
     claimPaidBtn:'أبلغت إني سدّدت', claimPaidNote:'اختر الطريقة اللي سدّدت فيها المبلغ. هذا يوصل كتنبيه للمحاسب عشان يأكّد الاستلام رسميًا.', claimPendingTag:'بانتظار تأكيد المحاسب',
-    linkTicketToggle:'هذا المبلغ يخص تذكرة معينة — أضيفها الآن', linkTicketNote:'حدد بيانات التذكرة عشان تُسجَّل بشكل صحيح بالنظام (بالمبيعات والتقارير)، بدل ما تبقى مجرد مبلغ معلّق.',
+    linkTicketToggle:'هذا المبلغ يخص تذكرة معينة — أضيفها الآن', linkTicketNote:'حدد بيانات التذكرة عشان تُسجَّل بشكل صحيح بالنظام (بالمبيعات والتقارير)، بدل ما تبقى مجرد مبلغ معلّق.', hideLinkTicketBtn:'إخفاء تفاصيل التذكرة',
     miscReceiptsTitle:'مبالغ مستلمة بدون تذكرة', miscReceiptsNote:'لتسجيل أي مبلغ كاش أو تحويل استلمته بدون ما يكون مرتبط بتذكرة معينة (سلفة، مبلغ قديم، أو أي سبب آخر) — يروح للمحاسب للتأكيد.',
     addMiscReceiptBtn:'+ تسجيل مبلغ بدون تذكرة', miscReceiptsHistoryTitle:'سجل المبالغ بدون تذكرة', miscReceiptNotePlaceholder:'مثلاً: سلفة قديمة، مبلغ زيادة من عميل، إلخ...',
     fieldBookingNote:'ملاحظة', bookingNotePlaceholder:'أي ملاحظة تبي المحاسب يشوفها بخصوص هذا الحجز (اختياري)...', depositNotePlaceholder:'أي ملاحظة تبي المحاسب يشوفها بخصوص هذا الإيداع (اختياري)...',
@@ -302,6 +302,7 @@ const T = {
     actualAmountPrompt:'أدخل المبلغ الفعلي اللي دخل البنك (لو مختلف عن سعر التذكرة، السعر يُصحَّح تلقائيًا):',
     refundedTag:'تم الرفند', refundPendingTag:'طلب رفند قيد المراجعة', refundRejectedTag:'رفض طلب الرفند', requestRefundBtn:'طلب رفند',
     modalRequestRefund:'طلب رفند', refundRequestNote:'أرفق نموذج/إيصال الرفند (من شركة الطيران أو المورد) ليقدَّم للمحاسب للمراجعة.',
+    quickRefundBtn:'↩️ طلب استرجاع', quickRefundNote:'اكتب رقم التذكرة أو اسم العميل عشان تلقى التذكرة وتبدأ طلب الاسترجاع مباشرة.', quickRefundTypeHint:'ابدأ الكتابة عشان تظهر النتائج...',
     fieldRefundReceipt:'نموذج/إيصال الرفند', fieldRefundNote:'ملاحظة (اختياري)', refundNotePlaceholder:'سبب الرفند...',
     submitRefundBtn:'إرسال طلب الرفند', pendingRefundsTitle:'طلبات الرفند بانتظار المراجعة', noPendingRefunds:'لا توجد طلبات رفند معلّقة.',
     navRefunds:'الاسترجاعات', subRefunds:'كل طلبات الاسترجاع — بانتظار المراجعة، ومعتمدة أو مرفوضة سابقًا', refundHistoryTitle:'سجل الاسترجاعات (معتمدة/مرفوضة)',
@@ -459,7 +460,7 @@ const T = {
     refundRejectedAlertTitle:'Alert: a refund request was rejected', handoverRejectedAlertTitle:'Alert: a profit handover request was rejected', depositRejectedAlertTitle:'Alert: a cash deposit request was rejected',
     chargeAlertTitle:'Alert: an amount is owed by you', acknowledgeChargeBtn:'Acknowledge', acknowledgedTag:'Acknowledged', chargeUnseenTag:'Not seen yet', chargeSettledTag:'Settled',
     claimPaidBtn:"I've paid this", claimPaidNote:"Pick the method you paid with. This alerts the accountant to officially confirm receipt.", claimPendingTag:'Awaiting accountant confirmation',
-    linkTicketToggle:'This amount is for a specific ticket — add it now', linkTicketNote:'Fill in the ticket details so it gets properly recorded in the system (sales and reports), instead of staying just a pending amount.',
+    linkTicketToggle:'This amount is for a specific ticket — add it now', linkTicketNote:'Fill in the ticket details so it gets properly recorded in the system (sales and reports), instead of staying just a pending amount.', hideLinkTicketBtn:'Hide ticket details',
     miscReceiptsTitle:'Amounts received without a ticket', miscReceiptsNote:'To record any cash or transfer amount you received that is not tied to a specific ticket (an advance, an old amount, or any other reason) — goes to the accountant for confirmation.',
     addMiscReceiptBtn:'+ Record an amount without a ticket', miscReceiptsHistoryTitle:'History of amounts without a ticket', miscReceiptNotePlaceholder:'e.g. old advance, extra amount from a customer, etc...',
     fieldBookingNote:'Note', bookingNotePlaceholder:'Any note you want the accountant to see about this booking (optional)...', depositNotePlaceholder:'Any note you want the accountant to see about this deposit (optional)...',
@@ -484,6 +485,7 @@ const T = {
     actualAmountPrompt:'Enter the actual amount that landed in the bank (if different from the ticket price, the price is corrected automatically):',
     refundedTag:'Refunded', refundPendingTag:'Refund request pending review', refundRejectedTag:'Refund request rejected', requestRefundBtn:'Request refund',
     modalRequestRefund:'Request refund', refundRequestNote:'Attach the refund form/receipt (from the airline or supplier) to submit it for accountant review.',
+    quickRefundBtn:'↩️ Request refund', quickRefundNote:'Type a ticket number or customer name to find the ticket and start a refund request directly.', quickRefundTypeHint:'Start typing to see results...',
     fieldRefundReceipt:'Refund form/receipt', fieldRefundNote:'Note (optional)', refundNotePlaceholder:'Reason for refund...',
     submitRefundBtn:'Submit refund request', pendingRefundsTitle:'Refund requests awaiting review', noPendingRefunds:'No pending refund requests.',
     navRefunds:'Refunds', subRefunds:'All refund requests — pending review, previously approved or rejected', refundHistoryTitle:'Refund history (approved/rejected)',
@@ -1593,6 +1595,7 @@ function renderBookings(){
         <button class="btn btn-ghost btn-sm" id="printReportBtn">${t('printReport')}</button>
         <button class="btn btn-ghost btn-sm" id="exportExcelBtn">${t('exportExcelBtn')}</button>
         ${u.role==='employee'?`<button class="btn btn-gold btn-sm" id="profitHandoverBtn">${t('profitHandoverBtn')}</button>`:''}
+        ${(mode==='employee'||isAdmin())?`<button class="btn btn-primary btn-sm" id="quickRefundBtn">${t('quickRefundBtn')}</button>`:''}
         ${!isAccountant()?`<button class="btn btn-primary btn-sm" id="addBookingBtn">${t('addBookingFull')}</button>`:''}
       </div></div>
       ${bookingsSearchTerm?`<p class="note">${t('bookingsSearchResultCount')}: ${list.length}</p>`:''}
@@ -1600,6 +1603,7 @@ function renderBookings(){
     </div>
     ${u.role==='employee'?myProfitHandoverHistoryHTML(u.id):''}`;
   if(document.getElementById('addBookingBtn')) document.getElementById('addBookingBtn').onclick = ()=>openBookingModal();
+  if(document.getElementById('quickRefundBtn')) document.getElementById('quickRefundBtn').onclick = ()=>openQuickRefundModal();
   document.getElementById('printReportBtn').onclick = openPrintReportModal;
   document.getElementById('exportExcelBtn').onclick = ()=>exportBookingsToExcel(list, mode);
   if(document.getElementById('profitHandoverBtn')) document.getElementById('profitHandoverBtn').onclick = openProfitHandoverModal;
@@ -1811,9 +1815,8 @@ window.uiClaimChargePaid = function(id){
       <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="method">
         <option value="cash">${t('payCash')}</option><option value="transfer">${t('payTransfer')}</option>
       </select></div>
-      <div class="field" style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" id="linkTicketToggle" style="width:auto;">
-        <label for="linkTicketToggle" style="margin:0;">${t('linkTicketToggle')}</label>
+      <div class="field">
+        <button type="button" class="btn btn-ghost btn-sm" id="linkTicketToggleBtn">${t('linkTicketToggle')}</button>
       </div>
       <div id="linkTicketBox" style="display:none;">
         <p class="note">${t('linkTicketNote')}</p>
@@ -1833,8 +1836,11 @@ window.uiClaimChargePaid = function(id){
         <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
       </div>
     </form>`);
-  document.getElementById('linkTicketToggle').onchange = (e)=>{
-    document.getElementById('linkTicketBox').style.display = e.target.checked ? '' : 'none';
+  let linkTicketOn = false;
+  document.getElementById('linkTicketToggleBtn').onclick = ()=>{
+    linkTicketOn = !linkTicketOn;
+    document.getElementById('linkTicketBox').style.display = linkTicketOn ? '' : 'none';
+    document.getElementById('linkTicketToggleBtn').textContent = linkTicketOn ? t('hideLinkTicketBtn') : t('linkTicketToggle');
   };
   document.getElementById('claimChargeForm').onsubmit = async (e)=>{
     e.preventDefault();
@@ -1842,7 +1848,7 @@ window.uiClaimChargePaid = function(id){
     const f = new FormData(e.target);
     try{
       await claimChargePaid(id, f.get('method'));
-      if(document.getElementById('linkTicketToggle').checked && c){
+      if(linkTicketOn && c){
         const sell = Number(f.get('sell'))||0, cost = Number(f.get('cost'))||0;
         if(f.get('customer') && sell>0){
           await addBooking({ customer:f.get('customer'), ticketNo:f.get('ticketNo'), airline:f.get('airline'),
@@ -2709,6 +2715,29 @@ function depositsTableHTML(list, showApprove){
       ${showApprove?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveDeposit('${d.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectDeposit('${d.id}')">${t('reject')}</button></td>`:''}
     </tr>${d.note?`<tr><td colspan="8" style="background:#EEF3F8;font-size:11.5px;color:var(--navy);">🗒️ ${esc(d.note)}</td></tr>`:''}`).join('')}</tbody></table></div>`;
 }
+function openQuickRefundModal(){
+  const u = currentUser();
+  const scope = isAdmin() ? bookings : bookings.filter(b=>b.created_by===u.id);
+  showModal(`
+    <div class="modal-head"><h3>${t('quickRefundBtn')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <p class="note">${t('quickRefundNote')}</p>
+    <div class="field"><input type="text" id="quickRefundSearchInput" placeholder="${t('bookingsSearchPlaceholder')}" autofocus></div>
+    <div id="quickRefundResults" style="max-height:320px;overflow-y:auto;margin-top:10px;"></div>`);
+  const renderResults = (term)=>{
+    const box = document.getElementById('quickRefundResults');
+    if(!term || term.trim().length<1){ box.innerHTML = `<p class="note">${t('quickRefundTypeHint')}</p>`; return; }
+    const low = term.trim().toLowerCase();
+    const matches = scope.filter(b=>!b.refunded && ((b.ticket_no||'').toLowerCase().includes(low) || (b.customer||'').toLowerCase().includes(low) || (b.booking_no||'').toString().includes(low))).slice(0,20);
+    if(matches.length===0){ box.innerHTML = `<div class="empty">${t('emptyData')}</div>`; return; }
+    box.innerHTML = matches.map(b=>`<div style="padding:8px;border-bottom:1px solid var(--line);cursor:pointer;" onclick="uiPickRefundTicket('${b.id}')">
+      <div style="font-weight:700;">${t('colNo')}: ${b.booking_no} — ${esc(b.customer)}</div>
+      <div class="note">${esc(b.ticket_no)||'—'} · ${money(b.sell)} · ${b.date}</div>
+    </div>`).join('');
+  };
+  renderResults('');
+  document.getElementById('quickRefundSearchInput').oninput = (e)=>renderResults(e.target.value);
+}
+window.uiPickRefundTicket = function(id){ openRefundRequestModal(id); };
 function openRefundRequestModal(bookingId){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) return;
