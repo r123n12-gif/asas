@@ -629,13 +629,21 @@ function outstandingEmployeeCharges(employeeId){
   return +employeeCharges.filter(c=>c.employee_id===employeeId && !c.settled).reduce((s,c)=>s+Number(c.amount||0),0).toFixed(2);
 }
 function bookingCashCostPortion(b){
-  if(b.refunded) return 0;
-  if(b.payment_method==='cash') return Number(b.cost)||0;
+  const sell = Number(b.sell)||0;
+  if(sell<=0) return 0;
+  const cost = Number(b.cost)||0;
+  let remainingSell = sell;
+  if(b.refunded){
+    const refundAmt = b.refund_amount!=null ? Number(b.refund_amount) : sell;
+    remainingSell = Math.max(0, sell - refundAmt);
+  }
+  if(b.payment_method==='cash') return +Math.min(cost, remainingSell).toFixed(2);
   if(b.payment_method==='split' && Array.isArray(b.payment_splits)){
     const cashAmt = b.payment_splits.filter(s=>s.method==='cash').reduce((s,r)=>s+Number(r.amount||0),0);
-    const sell = Number(b.sell)||0;
-    if(sell<=0 || cashAmt<=0) return 0;
-    return +(cashAmt * (Number(b.cost)||0) / sell).toFixed(2);
+    if(cashAmt<=0) return 0;
+    const proportionalCost = cashAmt * cost / sell;
+    const ratio = remainingSell / sell;
+    return +(proportionalCost * ratio).toFixed(2);
   }
   return 0;
 }
