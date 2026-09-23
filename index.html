@@ -303,6 +303,9 @@ const T = {
     refundedTag:'تم الرفند', refundPendingTag:'طلب رفند قيد المراجعة', refundRejectedTag:'رفض طلب الرفند', requestRefundBtn:'طلب رفند',
     modalRequestRefund:'طلب رفند', refundRequestNote:'أرفق نموذج/إيصال الرفند (من شركة الطيران أو المورد) ليقدَّم للمحاسب للمراجعة.',
     quickRefundBtn:'↩️ طلب استرجاع', quickRefundNote:'اكتب رقم التذكرة أو اسم العميل عشان تلقى التذكرة وتبدأ طلب الاسترجاع مباشرة.', quickRefundTypeHint:'ابدأ الكتابة عشان تظهر النتائج...',
+    newTicketRefundBtn:'التذكرة غير موجودة بالنظام؟ سجّلها هنا مع طلب الاسترجاع', newTicketRefundTitle:'تسجيل تذكرة جديدة + طلب استرجاع لها',
+    newTicketRefundNote:'عبّي بيانات التذكرة (اللي ما سجّلتها قبل بالنظام) وتفاصيل الاسترجاع بنفس الوقت — يروح الكل للمحاسب للموافقة النهائية.',
+    refundDetailsSectionTitle:'تفاصيل الاسترجاع',
     fieldRefundReceipt:'نموذج/إيصال الرفند', fieldRefundNote:'ملاحظة (اختياري)', refundNotePlaceholder:'سبب الرفند...',
     submitRefundBtn:'إرسال طلب الرفند', pendingRefundsTitle:'طلبات الرفند بانتظار المراجعة', noPendingRefunds:'لا توجد طلبات رفند معلّقة.',
     navRefunds:'الاسترجاعات', subRefunds:'كل طلبات الاسترجاع — بانتظار المراجعة، ومعتمدة أو مرفوضة سابقًا', refundHistoryTitle:'سجل الاسترجاعات (معتمدة/مرفوضة)',
@@ -486,6 +489,9 @@ const T = {
     refundedTag:'Refunded', refundPendingTag:'Refund request pending review', refundRejectedTag:'Refund request rejected', requestRefundBtn:'Request refund',
     modalRequestRefund:'Request refund', refundRequestNote:'Attach the refund form/receipt (from the airline or supplier) to submit it for accountant review.',
     quickRefundBtn:'↩️ Request refund', quickRefundNote:'Type a ticket number or customer name to find the ticket and start a refund request directly.', quickRefundTypeHint:'Start typing to see results...',
+    newTicketRefundBtn:"Ticket not in the system? Register it here with the refund request", newTicketRefundTitle:'Register a new ticket + request its refund',
+    newTicketRefundNote:"Fill in the ticket's details (that you haven't entered before) and the refund details at the same time — both go to the accountant for final approval.",
+    refundDetailsSectionTitle:'Refund details',
     fieldRefundReceipt:'Refund form/receipt', fieldRefundNote:'Note (optional)', refundNotePlaceholder:'Reason for refund...',
     submitRefundBtn:'Submit refund request', pendingRefundsTitle:'Refund requests awaiting review', noPendingRefunds:'No pending refund requests.',
     navRefunds:'Refunds', subRefunds:'All refund requests — pending review, previously approved or rejected', refundHistoryTitle:'Refund history (approved/rejected)',
@@ -2730,7 +2736,8 @@ function openQuickRefundModal(){
     <div class="modal-head"><h3>${t('quickRefundBtn')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <p class="note">${t('quickRefundNote')}</p>
     <div class="field"><input type="text" id="quickRefundSearchInput" placeholder="${t('bookingsSearchPlaceholder')}" autofocus></div>
-    <div id="quickRefundResults" style="max-height:320px;overflow-y:auto;margin-top:10px;"></div>`);
+    <div id="quickRefundResults" style="max-height:320px;overflow-y:auto;margin-top:10px;"></div>
+    <div style="margin-top:10px;text-align:center;"><button type="button" class="btn btn-ghost btn-sm" id="quickRefundNewTicketBtn">${t('newTicketRefundBtn')}</button></div>`);
   const renderResults = (term)=>{
     const box = document.getElementById('quickRefundResults');
     if(!term || term.trim().length<1){ box.innerHTML = `<p class="note">${t('quickRefundTypeHint')}</p>`; return; }
@@ -2744,6 +2751,64 @@ function openQuickRefundModal(){
   };
   renderResults('');
   document.getElementById('quickRefundSearchInput').oninput = (e)=>renderResults(e.target.value);
+  document.getElementById('quickRefundNewTicketBtn').onclick = ()=>openNewTicketRefundModal();
+}
+function openNewTicketRefundModal(){
+  const u = currentUser();
+  showModal(`
+    <div class="modal-head"><h3>${t('newTicketRefundTitle')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <p class="note">${t('newTicketRefundNote')}</p>
+    <form id="newTicketRefundForm">
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldCustomer')}</label><input type="text" name="customer" required></div>
+        <div class="field"><label>${t('fieldTicketNo')}</label><input type="text" name="ticketNo"></div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell" required min="0.01"></div>
+        <div class="field"><label>${t('fieldSystemFare')}</label><input type="number" step="0.01" name="cost" required min="0"></div>
+      </div>
+      <div class="field"><label>${t('fieldAirline')}</label><input type="text" name="airline"></div>
+      <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="originalMethod">
+        <option value="cash">${t('payCash')}</option><option value="transfer">${t('payTransfer')}</option>
+      </select></div>
+      <hr style="border-color:var(--line);margin:14px 0;">
+      <p class="note" style="font-weight:600;">${t('refundDetailsSectionTitle')}</p>
+      <div class="field"><label>${t('fieldRefundAmount')}</label><input type="number" step="0.01" name="refundAmount" required min="0.01"></div>
+      <p class="note">${t('refundAmountHint')}</p>
+      <div class="field"><label>${t('fieldRefundMethod')}</label><select name="refundMethod">
+        <option value="cash">${t('payCash')}</option><option value="transfer">${t('payTransfer')}</option>
+      </select></div>
+      <div class="field"><label>${t('fieldRefundReceipt')}</label><input type="file" name="receipt" accept="image/*,.pdf" required></div>
+      <div id="newTicketRefundErrorBox"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;">
+        <button type="submit" class="btn btn-primary" id="newTicketRefundSaveBtn">${t('submitRefundBtn')}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      </div>
+    </form>`);
+  document.getElementById('newTicketRefundForm').onsubmit = async (e)=>{
+    e.preventDefault();
+    const btn = document.getElementById('newTicketRefundSaveBtn');
+    const f = new FormData(e.target);
+    const file = f.get('receipt');
+    if(!file || !file.size){ document.getElementById('newTicketRefundErrorBox').innerHTML = `<div class="login-error">${t('receiptRequired')}</div>`; return; }
+    const sell = Number(f.get('sell'))||0;
+    const refundAmt = Number(f.get('refundAmount'));
+    if(!refundAmt || refundAmt<=0 || refundAmt>sell+0.01){
+      document.getElementById('newTicketRefundErrorBox').innerHTML = `<div class="login-error">${t('invalidRefundAmount')}</div>`; return;
+    }
+    btn.disabled=true; btn.textContent=t('uploading');
+    try{
+      await addBooking({ customer:f.get('customer'), ticketNo:f.get('ticketNo'), airline:f.get('airline'),
+        branchId:u.branch_id, source:'مباشر', date:todayStr(), sell, cost:Number(f.get('cost'))||0, paymentMethod:f.get('originalMethod') });
+      const newBooking = bookings[0];
+      await requestRefund(newBooking.id, file, null, f.get('refundMethod'), refundAmt);
+      closeModal(); render();
+    }catch(err){
+      console.error(err);
+      document.getElementById('newTicketRefundErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      btn.disabled=false; btn.textContent=t('submitRefundBtn');
+    }
+  };
 }
 window.uiPickRefundTicket = function(id){ openRefundRequestModal(id); };
 function openRefundRequestModal(bookingId){
