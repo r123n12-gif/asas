@@ -282,6 +282,7 @@ const T = {
     addMiscReceiptBtn:'+ تسجيل مبلغ بدون تذكرة', miscReceiptsHistoryTitle:'سجل المبالغ بدون تذكرة', miscReceiptNotePlaceholder:'مثلاً: سلفة قديمة، مبلغ زيادة من عميل، إلخ...',
     fieldBookingNote:'ملاحظة', bookingNotePlaceholder:'أي ملاحظة تبي المحاسب يشوفها بخصوص هذا الحجز (اختياري)...', depositNotePlaceholder:'أي ملاحظة تبي المحاسب يشوفها بخصوص هذا الإيداع (اختياري)...',
     settleChargeBtn:'تسديد', confirmSettleCharge:'هل تأكّد إن هذا المبلغ تسدّد فعليًا (ودّعه الموظف أو خُصم من مستحقاته)؟',
+    cancelChargeBtn:'إلغاء الطلب', confirmCancelCharge:'هل تأكّد إنك تبي تلغي هذا الطلب نهائيًا؟ (مثلاً لو سُجّل غلط على موظف خطأ) — يرجع القيد المحاسبي كأنه ما حصل.',
     kpiPendingAmounts:'مبالغ مستحقة (غير مؤكدة)', kpiPendingProfit:'ربح مستحق (لم يُسلَّم)',
     myBalanceTitle:'رصيدي المتبقي (المستحق)', myBalanceNote:'مبيعات لسا بانتظار تأكيد المحاسب، وربح لسا لم يُسلَّم للأدمن. تنقص تلقائيًا لحظة الاعتماد، وتبقى تفاصيلها هنا دائمًا للرجوع.', navMySales:'مبيعاتي', subMySales:'مبيعاتك وربحك الشخصي — يومي، شهري، أو سنوي', filterPeriod:'الفترة', mySalesTitle:'تفاصيل مبيعاتي',
     reconcileAmountColLabel:'عمود المبلغ', reconcileNameColLabel:'عمود اسم العميل', exportExcelBtn:'⬇️ تصدير Excel',
@@ -463,6 +464,7 @@ const T = {
     addMiscReceiptBtn:'+ Record an amount without a ticket', miscReceiptsHistoryTitle:'History of amounts without a ticket', miscReceiptNotePlaceholder:'e.g. old advance, extra amount from a customer, etc...',
     fieldBookingNote:'Note', bookingNotePlaceholder:'Any note you want the accountant to see about this booking (optional)...', depositNotePlaceholder:'Any note you want the accountant to see about this deposit (optional)...',
     settleChargeBtn:'Settle', confirmSettleCharge:'Confirm this amount has actually been settled (deposited by the employee or deducted from what they are owed)?',
+    cancelChargeBtn:'Cancel request', confirmCancelCharge:'Confirm you want to permanently cancel this request? (e.g. if it was registered on the wrong employee by mistake) — the journal entry will be reversed as if it never happened.',
     kpiPendingAmounts:'Pending amounts (unconfirmed)', kpiPendingProfit:'Pending profit (not handed over)',
     myBalanceTitle:'My remaining balance (outstanding)', myBalanceNote:"Sales still awaiting accountant confirmation, and profit not yet handed to the admin. These shrink automatically once approved, and their details always stay here for reference.", navMySales:'My Sales', subMySales:'Your personal sales and profit — daily, monthly, or yearly', filterPeriod:'Period', mySalesTitle:'My sales details',
     reconcileAmountColLabel:'Amount column', reconcileNameColLabel:'Customer name column', exportExcelBtn:'⬇️ Export Excel',
@@ -606,6 +608,20 @@ async function settleEmployeeCharge(id, method, bankName){
   }).select().single();
   if(jErr) throw jErr;
   journal.unshift(jIns);
+}
+async function cancelEmployeeCharge(id){
+  const c = employeeCharges.find(x=>x.id===id);
+  if(!c) throw new Error('charge not found');
+  if(c.settled) throw new Error('already settled');
+  const {data:jIns, error} = await sb.from('journal').insert({
+    date: todayStr(), branch_id: c.branch_id||null, desc_key:'jEmployeeChargeCancelled', desc_args:[userName(c.employee_id), c.reason||'-'],
+    debit_key: c.source==='bank' ? 'accBank' : 'accCashOnHand', credit_key:'accEmployeeReceivable', amount: Number(c.amount)||0
+  }).select().single();
+  if(error) throw error;
+  journal.unshift(jIns);
+  const {error:delErr} = await sb.from('employee_charges').delete().eq('id', id);
+  if(delErr) throw delErr;
+  employeeCharges = employeeCharges.filter(x=>x.id!==id);
 }
 function outstandingEmployeeCharges(employeeId){
   return +employeeCharges.filter(c=>c.employee_id===employeeId && !c.settled).reduce((s,c)=>s+Number(c.amount||0),0).toFixed(2);
@@ -1032,6 +1048,7 @@ function journalDesc(j){
     jManual:{ar:(a)=>`قيد يدوي: ${a[0]}`, en:(a)=>`Manual entry: ${a[0]}`},
     jEmployeeCharge:{ar:(a)=>`مبلغ مطلوب من الموظف ${a[0]} - ${a[1]}`, en:(a)=>`Amount charged to employee ${a[0]} - ${a[1]}`},
     jEmployeeChargeSettled:{ar:(a)=>`تسديد مبلغ مطلوب من ${a[0]} (${a[1]})`, en:(a)=>`Employee charge settled by ${a[0]} (${a[1]})`},
+    jEmployeeChargeCancelled:{ar:(a)=>`إلغاء مبلغ مطلوب من ${a[0]} - ${a[1]}`, en:(a)=>`Cancelled charge for employee ${a[0]} - ${a[1]}`},
     jMiscReceipt:{ar:(a)=>`مبلغ مستلم بدون تذكرة من ${a[0]} - ${a[1]}`, en:(a)=>`Amount received without a ticket from ${a[0]} - ${a[1]}`},
     jSupplierPay:{ar:(a)=>`دفعة لمورد ${a[0]} - حجز #${a[1]}`, en:(a)=>`Payment to supplier ${a[0]} - booking #${a[1]}`},
     jSupplierBulkPay:{ar:(a)=>`دفعة مجمّعة لمورد ${a[0]} (${a[1]} تذكرة)`, en:(a)=>`Bulk payment to supplier ${a[0]} (${a[1]} tickets)`},
@@ -1874,6 +1891,10 @@ window.uiSettleCharge = function(id){
     }
   };
 };
+window.uiCancelCharge = async function(id){
+  if(!confirm(t('confirmCancelCharge'))) return;
+  try{ await cancelEmployeeCharge(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+};
 function printEmployeeFinancialSummary(employeeId){
   const es = employeeFinancialSummary(employeeId);
   const showSell = canSeeSalesTotals();
@@ -2509,7 +2530,7 @@ function renderReports(){
       ${myCharges.length>0?`<div style="overflow-x:auto;margin-top:10px;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colAmount')}</th><th>${t('fieldChargeReason')}</th><th>${t('colDepositStatus')}</th>${isAdmin()||isAccountant()?'<th></th>':''}</tr></thead>
       <tbody>${myCharges.map(ch=>`<tr ${ch.payment_claimed && !ch.settled?'style="background:#FFF7E0;"':''}><td>${(ch.created_at||'').slice(0,10)}</td><td class="num">${money(ch.amount)}</td><td>${esc(ch.reason||'—')}</td>
         <td><span class="tag ${ch.settled?'collected':ch.payment_claimed?'pending':'pending'}">${ch.settled?t('chargeSettledTag'):ch.payment_claimed?`🔔 ${t('claimPendingTag')} (${ch.claimed_method==='cash'?t('payCash'):t('payTransfer')})`:(ch.acknowledged?t('acknowledgedTag'):t('chargeUnseenTag'))}</span></td>
-        ${(isAdmin()||isAccountant()) && !ch.settled?`<td><button class="btn btn-gold btn-sm" onclick="uiSettleCharge('${ch.id}')">${t('settleChargeBtn')}</button></td>`:isAdmin()||isAccountant()?'<td></td>':''}</tr>`).join('')}</tbody></table></div>`:''}
+        ${(isAdmin()||isAccountant()) && !ch.settled?`<td><div style="display:flex;flex-direction:column;gap:4px;min-width:90px;"><button class="btn btn-gold btn-sm" onclick="uiSettleCharge('${ch.id}')">${t('settleChargeBtn')}</button><button class="btn btn-danger btn-sm" onclick="uiCancelCharge('${ch.id}')">${t('cancelChargeBtn')}</button></div></td>`:isAdmin()||isAccountant()?'<td></td>':''}</tr>`).join('')}</tbody></table></div>`:''}
     </div>`; })() : ''}
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales', scoped)}</div>
     ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit', scoped)}</div>`:''}
