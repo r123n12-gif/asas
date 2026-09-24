@@ -917,7 +917,7 @@ async function settleSupplierPayment(bookingId){
 function supplierBalances(list){
   const map = {};
   list.forEach(b=>{
-    if(!b.supplier || !(Number(b.cost)>0)) return;
+    if(!b.supplier || !(Number(b.cost)>0) || bookingIsFullRefund(b)) return;
     if(!map[b.supplier]) map[b.supplier] = {owed:0, settled:0};
     if(b.supplier_settled) map[b.supplier].settled += Number(b.cost)||0;
     else map[b.supplier].owed += Number(b.cost)||0;
@@ -2414,7 +2414,7 @@ function renderLedger(){
   document.getElementById('supplierPayBtn').onclick = openSupplierPaymentModal;
 }
 function openSupplierPaymentModal(){
-  const unsettled = bookings.filter(b=>b.supplier && Number(b.cost)>0 && !b.supplier_settled);
+  const unsettled = bookings.filter(b=>b.supplier && Number(b.cost)>0 && !b.supplier_settled && !bookingIsFullRefund(b));
   const suppliers = [...new Set(unsettled.map(b=>b.supplier))];
   showModal(`
     <div class="modal-head"><h3>${t('modalSupplierPay')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
@@ -2422,6 +2422,10 @@ function openSupplierPaymentModal(){
     <div class="field"><label>${t('colSupplier')}</label><select id="supplierPaySel">
       ${suppliers.map(s=>`<option value="${s}">${s}</option>`).join('')}
     </select></div>
+    <div class="grid-2">
+      <div class="field"><label>${lang==='ar'?'الفاتورة حتى تاريخ':'Invoice up to date'}</label><input type="date" id="supplierPayTo"></div>
+      <div class="field"><label>${lang==='ar'?'مبلغ فاتورة المورد (اختياري)':'Supplier invoice amount (optional)'}</label><input type="number" step="0.01" id="supplierInvoiceAmt"></div>
+    </div>
     <div id="supplierPayListBox" style="margin-top:10px;"></div>
     <div id="supplierPayErrorBox"></div>
     <div style="margin-top:16px;display:flex;gap:10px;">
@@ -2431,23 +2435,35 @@ function openSupplierPaymentModal(){
   `);
   if(suppliers.length===0) return;
   const renderList = (supplierName)=>{
-    const list = unsettled.filter(b=>b.supplier===supplierName).sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.created_at||'').localeCompare(a.created_at||''));
+    const toD = document.getElementById('supplierPayTo').value;
+    const list = unsettled.filter(b=>b.supplier===supplierName && (!toD || (b.date||'')<=toD)).sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.created_at||'').localeCompare(a.created_at||''));
     const box = document.getElementById('supplierPayListBox');
-    box.innerHTML = `<div style="overflow-x:auto;"><table><thead><tr><th></th><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colAmount')}</th></tr></thead>
+    box.innerHTML = `<div style="overflow-x:auto;"><table><thead><tr><th><input type="checkbox" id="supPayAll" style="width:auto;" title="${lang==='ar'?'تحديد الكل':'Select all'}"></th><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colAmount')}</th></tr></thead>
       <tbody>${list.map(b=>`<tr><td><input type="checkbox" class="supPayChk" data-id="${b.id}" data-amt="${b.cost}" style="width:auto;"></td>
         <td class="num">${b.booking_no}</td><td>${b.date}</td><td>${esc(b.customer)}</td><td>${esc(b.ticket_no||'—')}</td><td class="num">${money(b.cost)}</td></tr>`).join('')}</tbody></table></div>
-      <div style="margin-top:10px;font-weight:700;">${t('selectedTotalLabel')}: <span id="supplierPayTotal">${money(0)}</span></div>`;
-    box.querySelectorAll('.supPayChk').forEach(chk=>{
-      chk.onchange = ()=>{
-        const checked = [...box.querySelectorAll('.supPayChk:checked')];
-        const total = checked.reduce((s,c)=>s+Number(c.dataset.amt||0),0);
-        document.getElementById('supplierPayTotal').textContent = money(total);
-        document.getElementById('supplierPaySubmitBtn').disabled = checked.length===0;
-      };
-    });
+      <div style="margin-top:10px;font-weight:700;">${t('selectedTotalLabel')}: <span id="supplierPayTotal">${money(0)}</span></div>
+      <div id="supplierPayDiff" style="margin-top:4px;font-size:13px;"></div>`;
+    const update = ()=>{
+      const checked = [...box.querySelectorAll('.supPayChk:checked')];
+      const total = +checked.reduce((s,c)=>s+Number(c.dataset.amt||0),0).toFixed(2);
+      document.getElementById('supplierPayTotal').textContent = money(total);
+      document.getElementById('supplierPaySubmitBtn').disabled = checked.length===0;
+      const inv = document.getElementById('supplierInvoiceAmt').value;
+      const diffBox = document.getElementById('supplierPayDiff');
+      if(inv===''){ diffBox.innerHTML=''; return; }
+      const diff = +(Number(inv) - total).toFixed(2);
+      diffBox.innerHTML = Math.abs(diff)<0.01
+        ? `<span style="color:#1f7a4d;">✔ ${lang==='ar'?'المحدد مطابق لفاتورة المورد':'Selection matches the supplier invoice'}</span>`
+        : `<span style="color:#b3261e;">⚠ ${lang==='ar'?'فرق عن فاتورة المورد':'Difference vs supplier invoice'}: ${money(diff)} — ${lang==='ar'?(diff>0?'الفاتورة أعلى: فيه تذاكر عند المورد غير مسجلة أو بتكلفة أقل بالنظام':'الفاتورة أقل: فيه تذاكر محددة ما فوترها المورد أو تكلفتها أعلى بالنظام'):(diff>0?'invoice higher':'invoice lower')}</span>`;
+    };
+    box.querySelectorAll('.supPayChk').forEach(chk=>{ chk.onchange = update; });
+    document.getElementById('supPayAll').onchange = (e)=>{ box.querySelectorAll('.supPayChk').forEach(c=>c.checked=e.target.checked); update(); };
+    document.getElementById('supplierInvoiceAmt').oninput = update;
+    update();
   };
   renderList(suppliers[0]);
   document.getElementById('supplierPaySel').onchange = (e)=>renderList(e.target.value);
+  document.getElementById('supplierPayTo').onchange = ()=>renderList(document.getElementById('supplierPaySel').value);
   document.getElementById('supplierPaySubmitBtn').onclick = async ()=>{
     const btn = document.getElementById('supplierPaySubmitBtn'); btn.disabled=true; btn.textContent=t('saving');
     const ids = [...document.querySelectorAll('.supPayChk:checked')].map(c=>c.dataset.id);
