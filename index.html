@@ -124,6 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 24.09-S</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -679,33 +680,31 @@ function bookingRefundAmount(b){
 }
 function bookingEffectiveSell(b){ return +Math.max(0, (Number(b.sell)||0) - bookingRefundAmount(b)).toFixed(2); }
 function bookingIsFullRefund(b){ return !!b.refunded && bookingRefundAmount(b) >= (Number(b.sell)||0) - 0.01; }
-function bookingCashCostPortion(b){
+function bookingCashNet(b){
   const sell = Number(b.sell)||0;
-  if(sell<=0) return 0;
-  const cost = Number(b.cost)||0;
   let cashIn = 0;
   if(b.payment_method==='cash') cashIn = sell;
   else if(b.payment_method==='split' && Array.isArray(b.payment_splits))
     cashIn = b.payment_splits.filter(s=>s.method==='cash').reduce((s,r)=>s+Number(r.amount||0),0);
   // a refund reduces the employee's cash only when it was paid out in cash
   const cashRefund = (b.refunded && (b.refund_method||'cash')==='cash') ? bookingRefundAmount(b) : 0;
-  const netCash = cashIn - cashRefund;
-  if(netCash<=0) return +netCash.toFixed(2);
-  const costShare = cost * cashIn / sell;
-  return +Math.min(costShare, netCash).toFixed(2);
+  return +(cashIn - cashRefund).toFixed(2);
+}
+function approvedHandovers(filterFn){
+  return profitHandovers.filter(h=>h.status==='approved' && filterFn(h)).reduce((s,h)=>s+Number(h.total_profit||0),0);
 }
 function miscCashReceived(filterFn){
   return miscReceipts.filter(r=>r.status==='confirmed' && r.method==='cash' && filterFn(r)).reduce((s,r)=>s+Number(r.amount||0),0);
 }
 function branchCashOnHand(branchId){
-  const costOfCash = bookings.filter(b=>b.branch_id===branchId).reduce((s,b)=>s+bookingCashCostPortion(b),0) + miscCashReceived(r=>r.branch_id===branchId);
+  const costOfCash = bookings.filter(b=>b.branch_id===branchId).reduce((s,b)=>s+bookingCashNet(b),0) + miscCashReceived(r=>r.branch_id===branchId);
   const approvedDeposits = deposits.filter(d=>d.branch_id===branchId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
-  return +(costOfCash-approvedDeposits).toFixed(2);
+  return +(costOfCash-approvedDeposits-approvedHandovers(h=>h.branch_id===branchId)).toFixed(2);
 }
 function employeeCashOnHand(employeeId){
-  const costOfCash = bookings.filter(b=>b.created_by===employeeId).reduce((s,b)=>s+bookingCashCostPortion(b),0) + miscCashReceived(r=>r.employee_id===employeeId);
+  const costOfCash = bookings.filter(b=>b.created_by===employeeId).reduce((s,b)=>s+bookingCashNet(b),0) + miscCashReceived(r=>r.employee_id===employeeId);
   const approvedDeposits = deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
-  return +(costOfCash-approvedDeposits).toFixed(2);
+  return +(costOfCash-approvedDeposits-approvedHandovers(h=>h.employee_id===employeeId)).toFixed(2);
 }
 function employeeCashBreakdownHTML(){
   const employees = users.filter(u=>u.role==='employee');
@@ -1061,6 +1060,13 @@ async function updateBooking(id, data){
   const prevB = bookings.find(b=>b.id===id);
   const alreadyConfirmed = !isSplit && method!=='cash' && !!prevB && prevB.payment_method===method &&
     (prevB.payment_status==='paid' || prevB.transfer_verified || journal.some(j=>j.booking_id===id && j.desc_key==='jBankReceipt'));
+  // money already confirmed in the bank cannot silently change: block price / method changes on confirmed transfers
+  const prevConfirmed = !!prevB && prevB.payment_method!=='cash' && (prevB.transfer_verified || journal.some(j=>j.booking_id===id && j.desc_key==='jBankReceipt')
+    || (Array.isArray(prevB.payment_splits) && prevB.payment_splits.some(x=>x.method!=='cash' && x.verified)));
+  if(prevConfirmed && (Math.abs((Number(data.sell)||0)-(Number(prevB.sell)||0))>0.004 || prevB.payment_method!==method))
+    throw new Error(lang==='ar'
+      ? 'لا يمكن تعديل مبلغ البيع أو طريقة الدفع لتذكرة تحويلها مؤكَّد في البنك — المبلغ المستلم ثابت. يمكن تعديل باقي البيانات (الاسم، التكلفة، المورد...).'
+      : 'Cannot change the sale amount or payment method of a ticket whose transfer is confirmed. Other fields can be edited.');
   const row = {
     date: data.date, customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
@@ -1902,11 +1908,11 @@ function employeeCashStatement(employeeId, from, to){
   const ar = lang==='ar';
   const all = [];
   bookings.filter(b=>b.created_by===employeeId).forEach(b=>{
-    const amt = bookingCashCostPortion(b);
+    const amt = bookingCashNet(b);
     if(Math.abs(amt)<0.005) return;
     const sell = Number(b.sell)||0;
     const cashIn = b.payment_method==='cash' ? sell : (Array.isArray(b.payment_splits) ? b.payment_splits.filter(x=>x.method==='cash').reduce((a,x)=>a+Number(x.amount||0),0) : 0);
-    let note = ar ? `كاش مستلم ${money(cashIn)} — تكلفة ${money(b.cost)}` : `Cash received ${money(cashIn)} — cost ${money(b.cost)}`;
+    let note = ar ? `كاش مستلم ${money(cashIn)} (تكلفة ${money(b.cost)} + ربح ${money(sell-Number(b.cost||0))})` : `Cash received ${money(cashIn)} (cost ${money(b.cost)} + profit ${money(sell-Number(b.cost||0))})`;
     if(b.refunded) note += ar ? ` — استرجاع ${money(bookingRefundAmount(b))} (${(b.refund_method||'cash')==='cash'?'كاش':'تحويل'})` : ` — refund ${money(bookingRefundAmount(b))} (${b.refund_method||'cash'})`;
     all.push({date:b.date||'', stamp:b.created_at||'', type: ar?'تذكرة':'Ticket', desc:`#${b.booking_no} ${b.customer||''}`, note, amt});
   });
@@ -1917,6 +1923,10 @@ function employeeCashStatement(employeeId, from, to){
   deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').forEach(d=>{
     all.push({date:(d.created_at||'').slice(0,10), stamp:d.created_at||'', type: ar?'إيداع معتمد':'Approved deposit', desc:destLabel(d.destination),
       note:(ar?'اعتُمد ':'approved ')+(d.reviewed_at||'').slice(0,10)+(d.note?` — ${d.note}`:''), amt:-(Number(d.amount)||0)});
+  });
+  profitHandovers.filter(h=>h.employee_id===employeeId && h.status==='approved').forEach(h=>{
+    all.push({date:(h.created_at||'').slice(0,10), stamp:h.created_at||'', type: ar?'أرباح سُلّمت للإدارة':'Profit handed to management', desc:(h.date_from||h.date_to)?`${h.date_from||'…'} → ${h.date_to||'…'}`:'—',
+      note:(ar?`${(h.booking_ids||[]).length} تذكرة — اعتُمد `:`${(h.booking_ids||[]).length} tickets — approved `)+(h.reviewed_at||'').slice(0,10), amt:-(Number(h.total_profit)||0)});
   });
   all.sort((a,b)=>a.date.localeCompare(b.date) || a.stamp.localeCompare(b.stamp));
   let bal = 0, opening = 0, periodIn = 0, periodOut = 0;
@@ -1940,14 +1950,14 @@ function employeeCashStatementHTML(employeeId, from, to){
   return `<div class="kpi-row" style="grid-template-columns:repeat(4,1fr);margin-bottom:10px;">
       ${kv(ar?'رصيد أول الفترة':'Opening balance', st.opening, 'var(--navy)')}
       ${kv(ar?'عليه خلال الفترة (+)':'Added in period (+)', st.periodIn, '#A8722C')}
-      ${kv(ar?'أودع خلال الفترة (−)':'Deposited in period (−)', st.periodOut, 'var(--teal)')}
+      ${kv(ar?'أودع / سلّم أرباح خلال الفترة (−)':'Deposited / profit handed (−)', st.periodOut, 'var(--teal)')}
       ${kv(ar?'رصيد آخر الفترة':'Closing balance', st.closing, 'var(--red)')}</div>
     ${st.rows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${ar?'النوع':'Type'}</th><th>${ar?'البيان':'Description'}</th><th>${ar?'تفاصيل':'Details'}</th><th>${ar?'له / عليه':'In / Out'}</th><th>${ar?'الرصيد':'Balance'}</th></tr></thead>
     <tbody>${st.rows.map(r=>`<tr><td>${r.date}</td><td>${r.type}</td><td>${esc(r.desc)}</td><td style="font-size:12px;">${esc(r.note)}</td>
       <td class="num" style="color:${r.amt<0?'#1f7a4d':'#A8722C'};font-weight:600;">${r.amt<0?'−':'+'} ${money(Math.abs(r.amt))}</td><td class="num">${money(r.bal)}</td></tr>`).join('')}</tbody></table></div>`}
     ${to?`<div class="note" style="margin-top:6px;">${ar?'رصيده الحالي (اليوم)':'Current balance (today)'}: <b>${money(st.current)}</b></div>`:''}
     ${st.pendingDeps.length?`<div class="note" style="margin-top:6px;color:#A8722C;">${ar?`يوجد ${st.pendingDeps.length} إيداع بانتظار اعتماد المحاسب بمجموع ${money(pendSum)} — غير مخصوم بعد.`:`${st.pendingDeps.length} deposit(s) awaiting approval totalling ${money(pendSum)} — not deducted yet.`}</div>`:''}
-    <p class="note" style="margin-top:6px;">${ar?'كل تذكرة كاش تضيف على الموظف قيمة تكلفتها فقط (الربح يُسلَّم منفصلًا للإدارة)، وكل إيداع معتمد ينقص منه بتاريخ الإيداع.':'Each cash ticket adds its cost only (profit is handed over separately); each approved deposit deducts on its deposit date.'}</p>`;
+    <p class="note" style="margin-top:6px;">${ar?'كل تذكرة كاش تضيف على الموظف كامل الكاش المستلم (التكلفة + الربح). ينقص منه: كل إيداع معتمد، وكل أرباح معتمدة سلّمها للإدارة — بما فيها أرباح تذاكر التحويل لأنها تُسلَّم من الكاش اللي بيده.':'Each cash ticket adds the full cash received (cost + profit). Deducted: approved deposits and approved profit handovers, including transfer-ticket profits (handed over from cash in hand).'}</p>`;
 }
 function employeeTransferStatement(employeeId, from, to){
   const rows = bookings.filter(b=>b.created_by===employeeId && inStmtRange(b.date||'', from, to)).flatMap(transferParts)
@@ -2578,9 +2588,87 @@ function integrityIssues(){
     const cogs = bal(rows,'accCogs','debit'), expCogs = (bookingIsFullRefund(b) || !b.cost_reviewed) ? 0 : +(Number(b.cost)||0).toFixed(2);
     if(Math.abs(cogs-expCogs)>0.05) add(ar?'التكلفة في القيود لا تطابق التذكرة':'Cost entries ≠ ticket', expCogs, cogs);
   });
+  profitHandovers.filter(h=>h.status==='approved' && Number(h.total_profit)>0).forEach(h=>{
+    if(!journal.some(j=>j.desc_key==='jProfitHandover' && (j.desc_args||[])[1]===h.id))
+      issues.push({b:null, issue: ar?`تسليم أرباح معتمد بدون قيد — ${userName(h.employee_id)} (${(h.created_at||'').slice(0,10)})`:`Approved profit handover without entry — ${userName(h.employee_id)}`, expected:+Number(h.total_profit).toFixed(2), actual:0});
+  });
+  miscReceipts.filter(r=>r.status==='confirmed').forEach(r=>{
+    if(!miscReceiptJournalRow(r)) issues.push({b:null, issue: ar?`مبلغ بدون تذكرة معتمد بدون قيد — ${userName(r.employee_id)}`:`Confirmed misc receipt without entry — ${userName(r.employee_id)}`, expected:+Number(r.amount).toFixed(2), actual:0});
+  });
   const orphans = journal.filter(j=>j.booking_id && !ids.has(j.booking_id));
   if(orphans.length) issues.push({b:null, issue: ar?`قيود مرتبطة بتذاكر محذوفة (${orphans.length})`:`Entries linked to deleted tickets (${orphans.length})`, expected:0, actual:+orphans.reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2)});
   return issues;
+}
+/* Rebuild a ticket's automatic journal entries from the ticket itself (the ticket is the source of truth). */
+async function repairBooking(bookingId){
+  const ar = lang==='ar';
+  let b = bookings.find(x=>x.id===bookingId);
+  if(!b) throw new Error('booking not found');
+  const notes = [];
+  // 0) split parts must add up to the ticket price — the parts reflect the money actually received
+  if(b.payment_method==='split' && Array.isArray(b.payment_splits)){
+    const tot = +b.payment_splits.reduce((a,x)=>a+Number(x.amount||0),0).toFixed(2);
+    if(Math.abs(tot-(Number(b.sell)||0))>0.004){
+      const profit = +(tot-(Number(b.cost)||0)).toFixed(2);
+      const {data:u, error} = await sb.from('bookings').update({sell:tot, profit_amount:profit, margin:profit, net_profit:profit}).eq('id', b.id).select().single();
+      if(error) throw error;
+      bookings[bookings.findIndex(x=>x.id===b.id)] = u; b = u;
+      notes.push(ar?`سعر التذكرة صُحّح إلى مجموع أجزاء الدفع ${money(tot)}`:`Ticket price set to split total ${money(tot)}`);
+    }
+  }
+  const rows = journal.filter(j=>j.booking_id===b.id);
+  const delIds = [];
+  const ins = [];
+  const saleArgs = [b.booking_no, b.airline||'-', b.customer];
+  // 1) sale rows
+  rows.filter(j=>j.desc_key==='jSale').forEach(j=>delIds.push(j.id));
+  if(b.payment_method==='split' && Array.isArray(b.payment_splits))
+    b.payment_splits.forEach(x=>ins.push({date:b.date, branch_id:b.branch_id, booking_id:b.id, desc_key:'jSale', desc_args:saleArgs, debit_key: x.method==='cash'?'accCashOnHand':'accCustomers', credit_key:'accSalesRev', amount:+Number(x.amount||0).toFixed(2)}));
+  else ins.push({date:b.date, branch_id:b.branch_id, booking_id:b.id, desc_key:'jSale', desc_args:saleArgs, debit_key: b.payment_method==='cash'?'accCashOnHand':'accCustomers', credit_key:'accSalesRev', amount:+(Number(b.sell)||0).toFixed(2)});
+  // 2) cost row
+  rows.filter(j=>j.desc_key==='jCost').forEach(j=>delIds.push(j.id));
+  if(b.cost_reviewed && Number(b.cost)>0) ins.push({date:b.date, branch_id:b.branch_id, booking_id:b.id, desc_key:'jCost', desc_args:[b.booking_no, b.airline||'-'], debit_key:'accCogs', credit_key:'accSuppliers', amount:+Number(b.cost).toFixed(2)});
+  // 3) duplicate bank receipts / card fees
+  const receipts = rows.filter(j=>j.desc_key==='jBankReceipt').sort((x,y)=>(x.created_at||'').localeCompare(y.created_at||''));
+  const fees = rows.filter(j=>j.desc_key==='jCardFee').sort((x,y)=>(x.created_at||'').localeCompare(y.created_at||''));
+  const feeRateOf = m=> m==='span'?0.008 : m==='installment'?0.07 : 0;
+  let expReceipts = [], expFees = [];
+  if(b.payment_method==='split' && Array.isArray(b.payment_splits)){
+    b.payment_splits.filter(x=>x.method!=='cash' && x.verified).forEach(x=>{
+      const amt = x.verified_amount!=null ? Number(x.verified_amount) : Number(x.amount)||0;
+      const fee = +(amt*feeRateOf(x.method)).toFixed(2);
+      expReceipts.push(+(amt-fee).toFixed(2)); if(fee>0) expFees.push(fee);
+    });
+  }
+  const keepMatching = (list, expected, keepFirstN)=>{
+    const used = new Set();
+    if(keepFirstN!=null){ list.forEach((j,k)=>{ if(k>=keepFirstN) delIds.push(j.id); }); return list.length>keepFirstN; }
+    expected.forEach(a=>{ const hit = list.find(j=>!used.has(j.id) && Math.abs(Number(j.amount)-a)<0.02); if(hit) used.add(hit.id); });
+    let removed = false;
+    list.forEach(j=>{ if(!used.has(j.id)){ delIds.push(j.id); removed = true; } });
+    return removed;
+  };
+  let removed = false;
+  if(b.payment_method==='split') removed = keepMatching(receipts, expReceipts) | keepMatching(fees, expFees);
+  else if(b.payment_method==='cash') removed = keepMatching(receipts, [], 0) | keepMatching(fees, [], 0);
+  else removed = keepMatching(receipts, null, 1) | keepMatching(fees, null, 1);
+  if(removed) notes.push(ar?'حُذف قيد بنكي زائد':'Extra bank entry removed');
+  // apply journal changes
+  if(delIds.length){ const {error} = await sb.from('journal').delete().in('id', delIds); if(error) throw error; const d = new Set(delIds); journal = journal.filter(j=>!d.has(j.id)); }
+  if(ins.length){ const {data, error} = await sb.from('journal').insert(ins).select(); if(error) throw error; journal.unshift(...data.reverse()); }
+  // 4) status must follow the bank entry
+  if(b.payment_method!=='cash' && b.payment_method!=='split'){
+    const has = journal.some(j=>j.booking_id===b.id && j.desc_key==='jBankReceipt');
+    if(has !== !!b.transfer_verified){
+      const upd = has ? {transfer_verified:true, payment_status:'paid'} : {transfer_verified:false, payment_status:'pending'};
+      const {error} = await sb.from('bookings').update(upd).eq('id', b.id); if(error) throw error;
+      Object.assign(b, upd);
+      notes.push(has ? (ar?'الحالة صُحّحت إلى مؤكَّد':'Status set to confirmed') : (ar?'الحالة رجعت "بانتظار التأكيد" ليؤكدها المحاسب من البنك':'Status reset to awaiting confirmation'));
+    }
+  }
+  // 5) anything still off needs a human decision
+  const left = integrityIssues().filter(x=>x.b && x.b.id===b.id);
+  return {notes, left};
 }
 function openIntegrityModal(){
   const ar = lang==='ar';
@@ -2589,9 +2677,11 @@ function openIntegrityModal(){
     <p class="note">${ar?'يطابق كل تذكرة مع قيودها المحاسبية: الإيراد، التكلفة، رصيد العملاء، قيود البنك.':'Matches every ticket against its journal entries: revenue, cost, receivable, bank entries.'}</p>
     ${list.length===0?`<div style="padding:16px;color:#1f7a4d;font-weight:700;">✔ ${ar?`لا توجد أي أخطاء — تم فحص ${bookings.length} تذكرة و ${journal.length} قيد.`:`No issues — checked ${bookings.length} tickets and ${journal.length} entries.`}</div>`
     :`<div class="login-error">${ar?`تم العثور على ${list.length} ملاحظة`:`${list.length} issue(s) found`}</div>
-    <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${ar?'الملاحظة':'Issue'}</th><th>${ar?'المفروض':'Expected'}</th><th>${ar?'الموجود':'Actual'}</th></tr></thead>
-    <tbody>${list.map(x=>`<tr><td class="num">${x.b?x.b.booking_no:'—'}</td><td>${x.b?esc(x.b.customer||''):'—'}</td><td>${x.b?userName(x.b.created_by):'—'}</td><td>${x.issue}</td>
-      <td class="num">${typeof x.expected==='number'?money(x.expected):x.expected}</td><td class="num">${typeof x.actual==='number'?money(x.actual):x.actual}</td></tr>`).join('')}</tbody></table></div>`}
+    <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${ar?'الملاحظة':'Issue'}</th><th>${ar?'المفروض':'Expected'}</th><th>${ar?'الموجود':'Actual'}</th><th></th></tr></thead>
+    <tbody>${list.map((x,i)=>{ const first = x.b && list.findIndex(y=>y.b && y.b.id===x.b.id)===i;
+      return `<tr><td class="num">${x.b?x.b.booking_no:'—'}</td><td>${x.b?esc(x.b.customer||''):'—'}</td><td>${x.b?userName(x.b.created_by):'—'}</td><td>${x.issue}</td>
+      <td class="num">${typeof x.expected==='number'?money(x.expected):x.expected}</td><td class="num">${typeof x.actual==='number'?money(x.actual):x.actual}</td>
+      <td>${first && isAdmin()?`<button class="btn btn-gold btn-sm" onclick="uiRepairBooking('${x.b.id}')">🔧 ${ar?'إصلاح':'Fix'}</button>`:''}</td></tr>`; }).join('')}</tbody></table></div>`}
     <div style="margin-top:12px;"><button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('cancel')}</button></div>`);
   const mEl = document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='1000px';
 }
@@ -3263,6 +3353,21 @@ window.uiApproveMiscReceipt = async function(id){
   const dupWarn = r ? miscDuplicateWarning(r.employee_id, r.amount, r.method) : '';
   if(dupWarn && !confirm(dupWarn)) return;
   try{ await approveMiscReceipt(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
+window.uiRepairBooking = async function(id){
+  const b = bookings.find(x=>x.id===id); if(!b) return;
+  const ar = lang==='ar';
+  if(!confirm(ar ? `إصلاح قيود التذكرة #${b.booking_no} (${b.customer||''})؟\n\nسيُعاد بناء قيود المبيعات والتكلفة من بيانات التذكرة نفسها، ويُحذف أي قيد بنكي مكرر، وتُضبط حالة التأكيد حسب قيد البنك.\nالتذكرة: ${money(b.sell)} — ${b.payment_method}`
+                 : `Rebuild entries of ticket #${b.booking_no} from the ticket data?`)) return;
+  try{
+    const r = await repairBooking(id);
+    let msg = r.notes.length ? r.notes.join('\n') : (ar?'أُعيد بناء القيود.':'Entries rebuilt.');
+    if(r.left.length) msg += '\n\n' + (ar?'⚠️ باقي يحتاج قرارك:\n':'⚠️ Still needs a decision:\n') + r.left.map(x=>`${x.issue}: ${ar?'المفروض':'expected'} ${money(x.expected)} / ${ar?'الموجود':'actual'} ${money(x.actual)}`).join('\n')
+      + (ar?'\n\n(غالبًا المبلغ المستلم في البنك يختلف عن سعر التذكرة — تواصل معي بالصورة)':'');
+    else msg += '\n\n✔ ' + (ar?'التذكرة سليمة الآن.':'Ticket is now consistent.');
+    alert(msg);
+    openIntegrityModal();
+  }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiCancelMiscReceipt = async function(id){
   const r = miscReceipts.find(x=>x.id===id); if(!r) return;
