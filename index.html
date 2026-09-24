@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F3</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F5</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -2847,7 +2847,9 @@ function integrityWarnings(){
   bookings.forEach(b=>{
     if(bookingIsFullRefund(b) || !b.cost_reviewed) return;
     const p = bookingProfitNow(b);
-    if(p < -0.004) w.push({b, issue: ar?`تذكرة بخسارة ${money(-p)} (تأكد إن البيع والسستم فير مو معكوسين)`:`Loss ticket ${money(-p)} (check sell / fare not swapped)`, sell:b.sell, cost:b.cost});
+    if(p < -0.004) w.push({b, refundLoss: !!b.refunded, issue: b.refunded
+      ? (ar?`خسارة ${money(-p)} بعد الاسترجاع — المرجّع للعميل أكثر مما رجّعه المورد + الربح (تأكد من المبلغين)`:`Loss ${money(-p)} after refund — check customer vs supplier refund`)
+      : (ar?`تذكرة بخسارة ${money(-p)} (تأكد إن البيع والسستم فير مو معكوسين)`:`Loss ticket ${money(-p)} (check sell / fare not swapped)`), sell:b.sell, cost:b.cost});
     else if(Number(b.cost)===0) w.push({b, issue: ar?'تكلفة صفر — الربح يساوي كامل سعر البيع':'Zero cost — profit equals full price', sell:b.sell, cost:b.cost});
   });
   return w;
@@ -2866,8 +2868,9 @@ function openIntegrityModal(){
       <td class="num">${typeof x.expected==='number'?money(x.expected):x.expected}</td><td class="num">${typeof x.actual==='number'?money(x.actual):x.actual}</td>
       <td>${first && (isAdmin()||isAccountant())?`<button class="btn btn-gold btn-sm" onclick="uiRepairBooking('${x.b.id}')">🔧 ${ar?'إصلاح':'Fix'}</button>`:''}</td></tr>`; }).join('')}</tbody></table></div>`}
     ${(()=>{ const w = integrityWarnings(); if(!w.length) return ''; return `<h4 style="margin:16px 0 6px;color:#A8722C;">⚠️ ${ar?`تنبيهات للمراجعة (${w.length}) — مو أخطاء محاسبية، لكن تستاهل نظرة`:`Review warnings (${w.length})`}</h4>
-      <div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${ar?'التنبيه':'Warning'}</th><th>${ar?'البيع':'Sell'}</th><th>${ar?'التكلفة':'Cost'}</th></tr></thead>
-      <tbody>${w.map(x=>`<tr><td class="num">${x.b.booking_no}</td><td>${esc(x.b.customer||'')}</td><td>${userName(x.b.created_by)}</td><td>${x.issue}</td><td class="num">${money(x.sell)}</td><td class="num">${money(x.cost)}</td></tr>`).join('')}</tbody></table></div>`; })()}
+      <div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${ar?'التنبيه':'Warning'}</th><th>${ar?'البيع':'Sell'}</th><th>${ar?'التكلفة':'Cost'}</th><th></th></tr></thead>
+      <tbody>${w.map(x=>`<tr><td class="num">${x.b.booking_no}</td><td>${esc(x.b.customer||'')}</td><td>${userName(x.b.created_by)}</td><td>${x.issue}</td><td class="num">${money(x.sell)}</td><td class="num">${money(x.cost)}</td>
+        <td>${isAdmin() && !x.refundLoss?`<button class="btn btn-gold btn-sm" onclick="uiFixTicketPrice('${x.b.id}')">🔧 ${ar?'تصحيح':'Fix'}</button>`:''}</td></tr>`).join('')}</tbody></table></div>`; })()}
     <div style="margin-top:12px;"><button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('cancel')}</button></div>`);
   const mEl = document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='1000px';
 }
@@ -3620,6 +3623,42 @@ window.uiRepairBooking = async function(id){
     alert(msg);
     openIntegrityModal();
   }catch(e){ console.error(e); alert(errTextPlain()); }
+};
+/* Correct a ticket's sale price / cost (admin) and rebuild its entries */
+function suggestTicketFix(b){
+  const sell = Number(b.sell)||0, cost = Number(b.cost)||0;
+  const gross = bookingConfirmedGross(b.id);
+  if(b.payment_method!=='cash' && b.payment_method!=='split' && gross>0) return {sell:gross, cost, why: lang==='ar'?'المبلغ اللي وصل البنك فعلًا':'amount actually received in bank'};
+  if(sell < cost*0.5) return {sell:+(cost+sell).toFixed(2), cost, why: lang==='ar'?`يبدو إن الموظف كتب الربح (${money(sell)}) مكان سعر البيع`:'profit seems typed as price'};
+  if(sell < cost) return {sell:cost, cost:sell, why: lang==='ar'?'يبدو إن البيع والسستم فير معكوسين':'sell and fare seem swapped'};
+  return {sell, cost, why:''};
+}
+async function fixTicketPrice(id, newSell, newCost){
+  const b = bookings.find(x=>x.id===id); if(!b) throw new Error('booking not found');
+  newSell = requirePositive(newSell); newCost = +Number(newCost).toFixed(2);
+  if(!(newCost>=0)) throw new Error(lang==='ar'?'التكلفة غير صحيحة.':'Invalid cost.');
+  if(b.payment_method==='split') throw new Error(lang==='ar'?'تذكرة دفع متعدد: عدّل أجزاء الدفع من شاشة التذكرة.':'Split ticket: edit it from the ticket screen.');
+  if(b.supplier_settled && Math.abs(newCost-(Number(b.cost)||0))>0.004) throw new Error(lang==='ar'?'تم سداد المورد لهذه التذكرة — لا يمكن تغيير التكلفة.':'Supplier already paid — cost cannot change.');
+  const gross = bookingConfirmedGross(id);
+  if(b.payment_method!=='cash' && gross>0 && Math.abs(newSell-gross)>0.01)
+    throw new Error(lang==='ar'?`التحويل مؤكد في البنك بمبلغ ${money(gross)} — سعر البيع لازم يساويه.`:`Transfer confirmed at ${money(gross)} — price must match.`);
+  const profit = +(newSell-newCost).toFixed(2);
+  const {data:u, error} = await sb.from('bookings').update({sell:newSell, cost:newCost, profit_amount:profit, margin:profit, net_profit:profit, cost_reviewed:true}).eq('id', id).select().single();
+  if(error) throw error;
+  bookings[bookings.findIndex(x=>x.id===id)] = u;
+  return await repairBooking(id);
+}
+window.uiFixTicketPrice = async function(id){
+  const b = bookings.find(x=>x.id===id); if(!b) return;
+  const ar = lang==='ar'; const sg = suggestTicketFix(b);
+  const vs = prompt(ar?`تذكرة #${b.booking_no} — ${b.customer||''}\nالمسجل: بيع ${money(b.sell)} / تكلفة ${money(b.cost)}\n${sg.why?`اقتراح: ${sg.why}\n`:''}\nسعر البيع الصحيح (اللي دفعه العميل):`:`Correct sale price:`, String(sg.sell));
+  if(vs===null || vs==='') return;
+  const vc = prompt(ar?'التكلفة الصحيحة (السستم فير):':'Correct cost (system fare):', String(sg.cost));
+  if(vc===null || vc==='') return;
+  const p = +(Number(vs)-Number(vc)).toFixed(2);
+  if(!confirm(ar?`تذكرة #${b.booking_no}\nالبيع: ${money(vs)}\nالتكلفة: ${money(vc)}\nالربح: ${money(p)}${p<0?' ⚠️ خسارة':''}\n\nتطبيق التصحيح؟`:`Apply: sell ${vs}, cost ${vc}, profit ${p}?`)) return;
+  try{ const r = await fixTicketPrice(id, vs, vc); alert(ar?`✔ تم تصحيح التذكرة #${b.booking_no}${r.left.length?'\n⚠️ باقي ملاحظة: '+r.left.map(x=>x.issue).join('، '):''}`:'Done'); openIntegrityModal(); }
+  catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiRecordSupplierRefund = async function(id){
   const b = bookings.find(x=>x.id===id); if(!b) return;
@@ -4457,6 +4496,7 @@ approveRefund = lockify(approveRefund, 'approveRefund');
 approveProfitHandover = lockify(approveProfitHandover, 'approveProfitHandover');
 repairBooking = lockify(repairBooking, 'repairBooking');
 recordSupplierRefund = lockify(recordSupplierRefund, 'recordSupplierRefund');
+fixTicketPrice = lockify(fixTicketPrice, 'fixTicketPrice');
 </script>
 </body>
 </html>
