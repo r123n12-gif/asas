@@ -1988,6 +1988,23 @@ function openStatementModal(kind, employeeId){
   };
 }
 function openCashStatementModal(employeeId){ openStatementModal('cash', employeeId); }
+/* Warn when an amount-without-ticket looks like it duplicates transfers already recorded on tickets */
+function miscDuplicateWarning(employeeId, amount, method){
+  if(method==='cash') return '';
+  const amt = +Number(amount||0).toFixed(2);
+  if(!(amt>0)) return '';
+  const parts = bookings.filter(b=>b.created_by===employeeId).flatMap(transferParts).filter(p=>p.status==='pending');
+  const total = +parts.reduce((a,p)=>a+p.counted,0).toFixed(2);
+  const single = parts.find(p=>Math.abs(p.counted-amt)<0.01);
+  const ar = lang==='ar';
+  if(parts.length && Math.abs(total-amt)<0.01)
+    return ar ? `⚠️ هذا المبلغ (${money(amt)}) يساوي بالضبط مجموع التحويلات المسجلة على تذاكر هذا الموظف وبانتظار التأكيد.\n\nإذا كان هو نفس التحويل، لا تسجله هنا — المحاسب يؤكد التذاكر من صفحة التحويلات البنكية، وإلا سيُحسب المبلغ مرتين.\n\nهل هو مبلغ مختلف فعلًا وتريد المتابعة؟`
+              : `⚠️ This amount (${money(amt)}) equals exactly the transfers already recorded on this employee's tickets awaiting confirmation.\n\nIf it is the same money, do not record it here — confirm the tickets on the bank transfers page, otherwise it is counted twice.\n\nIs it really a different amount?`;
+  if(single)
+    return ar ? `⚠️ هذا المبلغ (${money(amt)}) يساوي تحويل التذكرة #${single.b.booking_no} (${single.b.customer||''}) المسجل وبانتظار التأكيد.\n\nإذا كان هو نفس التحويل، لا تسجله هنا وإلا سيُحسب مرتين.\n\nهل هو مبلغ مختلف فعلًا وتريد المتابعة؟`
+              : `⚠️ This amount (${money(amt)}) equals the recorded transfer of ticket #${single.b.booking_no} awaiting confirmation.\n\nIf it is the same money it will be counted twice.\n\nIs it really a different amount?`;
+  return '';
+}
 function openAddChargeModal(employeeId){
   showModal(`
     <div class="modal-head"><h3>${t('addChargeBtn')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
@@ -3203,6 +3220,8 @@ function openMiscReceiptModal(){
       return;
     }
     const targetEmp = users.find(x=>x.id===targetEmployeeId);
+    const dupWarn = miscDuplicateWarning(targetEmployeeId, f.get('amount'), f.get('method'));
+    if(dupWarn && !confirm(dupWarn)){ btn.disabled=false; btn.textContent=canPickEmployee?t('sendChargeBtn'):t('sendMiscReceiptBtn'); return; }
     try{
       await submitMiscReceipt(targetEmployeeId, targetEmp?.branch_id||u.branch_id, f.get('amount'), f.get('method'), f.get('bankName'), f.get('note'));
       closeModal(); render();
@@ -3214,6 +3233,9 @@ function openMiscReceiptModal(){
   };
 }
 window.uiApproveMiscReceipt = async function(id){
+  const r = miscReceipts.find(x=>x.id===id);
+  const dupWarn = r ? miscDuplicateWarning(r.employee_id, r.amount, r.method) : '';
+  if(dupWarn && !confirm(dupWarn)) return;
   try{ await approveMiscReceipt(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiRejectMiscReceipt = async function(id){
