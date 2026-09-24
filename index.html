@@ -541,6 +541,16 @@ let route = 'dashboard';
 let branchFilter = 'all';
 let employeeFilter = 'all';
 
+let __lastErr = null, __lastErrAt = 0;
+(function(){ const orig = console.error.bind(console);
+  console.error = function(...a){ const e = a.find(x=>x && (x.message || x.code)); if(e){ __lastErr = e; __lastErrAt = Date.now(); } orig(...a); }; })();
+function errDetail(){
+  if(!__lastErr || Date.now()-__lastErrAt > 3000) return '';
+  const e = __lastErr;
+  return [e.message, e.details, e.hint].filter(Boolean).join(' | ') + (e.code ? ` (${e.code})` : '');
+}
+function errText(){ const d = errDetail(); return d ? `${t('connError')}<div dir="ltr" style="font-size:12px;margin-top:6px;opacity:.85;word-break:break-word;">${esc(d)}</div>` : t('connError'); }
+function errTextPlain(){ const d = errDetail(); return d ? `${t('connError')}\n\n${d}` : t('connError'); }
 async function fetchAll(){
   const [b, u, bk, jr, ex, dp, ph, ec, mr] = await Promise.all([
     sb.from('branches').select('*').order('created_at'),
@@ -590,12 +600,12 @@ async function addEmployeeCharge(employeeId, branchId, amount, reason, source){
     created_by: currentUser()?.id||null, acknowledged:false, settled:false };
   const {data, error} = await sb.from('employee_charges').insert(row).select().single();
   if(error) throw error;
-  employeeCharges.unshift(data);
   const {data:jIns, error:jErr} = await sb.from('journal').insert({
     date: todayStr(), branch_id: branchId||null, desc_key:'jEmployeeCharge', desc_args:[userName(employeeId), reason||'-'],
     debit_key:'accEmployeeReceivable', credit_key: source==='bank' ? 'accBank' : 'accCashOnHand', amount: Number(amount)||0
   }).select().single();
-  if(jErr) throw jErr;
+  if(jErr){ await sb.from('employee_charges').delete().eq('id', data.id); throw jErr; }
+  employeeCharges.unshift(data);
   journal.unshift(jIns);
 }
 async function acknowledgeEmployeeCharge(id){
@@ -1238,7 +1248,7 @@ async function boot(){
     startAutoRefresh();
   }catch(e){
     console.error(e);
-    app.innerHTML = `<div class="login-wrap"><div class="login-card"><div class="login-error">${t('connError')}</div>
+    app.innerHTML = `<div class="login-wrap"><div class="login-card"><div class="login-error">${errText()}</div>
       <button class="btn btn-ghost" style="width:100%" onclick="location.reload()">Retry / إعادة المحاولة</button></div></div>`;
   }
 }
@@ -1354,7 +1364,7 @@ function renderLogin(app){
       else{ document.getElementById('loginErrorBox').innerHTML = `<div class="login-error">${t('loginError')}</div>`; btn.disabled=false; btn.textContent=t('loginBtn'); }
     }catch(err){
       console.error(err);
-      document.getElementById('loginErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      document.getElementById('loginErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`;
       btn.disabled=false; btn.textContent=t('loginBtn');
     }
   };
@@ -1715,7 +1725,7 @@ function openProfitHandoverModal(){
     document.getElementById('phSubmitBtn').onclick = async ()=>{
       const btn = document.getElementById('phSubmitBtn'); btn.disabled=true; btn.textContent=t('saving');
       try{ await submitProfitHandover(dateFrom, dateTo, list); closeModal(); render(); }
-      catch(err){ console.error(err); alert(t('connError')); btn.disabled=false; btn.textContent=t('submitHandoverBtn'); }
+      catch(err){ console.error(err); alert(errTextPlain()); btn.disabled=false; btn.textContent=t('submitHandoverBtn'); }
     };
     document.getElementById('phPrintBtn').onclick = ()=> printProfitHandoverReport(list, total, dateFrom, dateTo, u);
   };
@@ -1738,7 +1748,7 @@ function printProfitHandoverReport(list, total, dateFrom, dateTo, u){
     <div class="total">${t('totalProfitLabel')}: ${money(total)}</div>
     </body></html>`;
   const w = window.open('', '_blank');
-  if(!w){ alert(t('connError')); return; }
+  if(!w){ alert(errTextPlain()); return; }
   w.document.open(); w.document.write(html); w.document.close();
   setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
 }
@@ -1832,6 +1842,54 @@ function exportReportsToExcel(rows, groupBy, nameHeader){
   XLSX.utils.book_append_sheet(wb, ws, 'Report');
   XLSX.writeFile(wb, `branch-employee-report-${todayStr()}.xlsx`);
 }
+function employeeCashStatement(employeeId){
+  const ar = lang==='ar';
+  const rows = [];
+  bookings.filter(b=>b.created_by===employeeId).forEach(b=>{
+    const amt = bookingCashCostPortion(b);
+    if(Math.abs(amt)<0.005) return;
+    const sell = Number(b.sell)||0;
+    let cashIn = b.payment_method==='cash' ? sell : (Array.isArray(b.payment_splits) ? b.payment_splits.filter(x=>x.method==='cash').reduce((a,x)=>a+Number(x.amount||0),0) : 0);
+    let note = ar ? `كاش مستلم ${money(cashIn)} — تكلفة ${money(b.cost)}` : `Cash received ${money(cashIn)} — cost ${money(b.cost)}`;
+    if(b.refunded) note += ar ? ` — استرجاع ${money(bookingRefundAmount(b))} (${(b.refund_method||'cash')==='cash'?'كاش':'تحويل'})` : ` — refund ${money(bookingRefundAmount(b))} (${b.refund_method||'cash'})`;
+    rows.push({date:b.date||'', stamp:b.created_at||'', type: ar?'تذكرة':'Ticket', desc:`#${b.booking_no} ${b.customer||''}`, note, amt});
+  });
+  miscReceipts.filter(r=>r.employee_id===employeeId && r.status==='confirmed' && r.method==='cash').forEach(r=>{
+    rows.push({date:(r.confirmed_at||r.created_at||'').slice(0,10), stamp:r.created_at||'', type: ar?'مبلغ بدون تذكرة':'Misc receipt', desc:r.note||'—',
+      note: ar?`سجّله: ${userName(r.created_by)}`:`Recorded by ${userName(r.created_by)}`, amt:Number(r.amount)||0});
+  });
+  deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').forEach(d=>{
+    rows.push({date:(d.reviewed_at||d.created_at||'').slice(0,10), stamp:d.created_at||'', type: ar?'إيداع معتمد':'Approved deposit', desc:destLabel(d.destination), note:d.note||'', amt:-(Number(d.amount)||0)});
+  });
+  rows.sort((a,b)=>(a.date).localeCompare(b.date) || a.stamp.localeCompare(b.stamp));
+  let bal = 0; rows.forEach(r=>{ bal = +(bal + r.amt).toFixed(2); r.bal = bal; });
+  const pendingDeps = deposits.filter(d=>d.submitted_by===employeeId && d.status==='pending');
+  return {rows: rows.reverse(), total: bal, pendingDeps};
+}
+function employeeCashStatementHTML(employeeId){
+  const ar = lang==='ar';
+  const st = employeeCashStatement(employeeId);
+  const pendSum = st.pendingDeps.reduce((a,d)=>a+Number(d.amount||0),0);
+  return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${ar?'النوع':'Type'}</th><th>${ar?'البيان':'Description'}</th><th>${ar?'تفاصيل':'Details'}</th><th>${ar?'له / عليه':'In / Out'}</th><th>${ar?'الرصيد':'Balance'}</th></tr></thead>
+    <tbody>${st.rows.map(r=>`<tr><td>${r.date}</td><td>${r.type}</td><td>${esc(r.desc)}</td><td style="font-size:12px;">${esc(r.note)}</td>
+      <td class="num" style="color:${r.amt<0?'#1f7a4d':'#A8722C'};font-weight:600;">${r.amt<0?'−':'+'} ${money(Math.abs(r.amt))}</td><td class="num">${money(r.bal)}</td></tr>`).join('')}</tbody></table></div>
+    <div style="margin-top:10px;font-weight:700;">${t('efsCashOnHand')}: ${money(st.total)}</div>
+    ${st.pendingDeps.length?`<div class="note" style="margin-top:6px;color:#A8722C;">${ar?`يوجد ${st.pendingDeps.length} إيداع بانتظار اعتماد المحاسب بمجموع ${money(pendSum)} — غير مخصوم بعد. بعد الاعتماد يصبح الرصيد ${money(st.total-pendSum)}.`:`${st.pendingDeps.length} deposit(s) awaiting approval totalling ${money(pendSum)} — not deducted yet. After approval: ${money(st.total-pendSum)}.`}</div>`:''}
+    <p class="note" style="margin-top:6px;">${ar?'كل تذكرة كاش تضيف على الموظف قيمة تكلفتها فقط (الربح يُسلَّم منفصلًا للإدارة)، وكل إيداع معتمد ينقص منه.':'Each cash ticket adds its cost only (profit is handed over separately); each approved deposit deducts.'}</p>`;
+}
+function openCashStatementModal(employeeId){
+  showModal(`<div class="modal-head"><h3>${lang==='ar'?'كشف الكاش التفصيلي':'Detailed cash statement'} — ${esc(userName(employeeId))}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    ${employeeCashStatementHTML(employeeId)}
+    <div style="display:flex;gap:8px;margin-top:12px;"><button class="btn btn-primary btn-sm" id="cashStmtPrintBtn">${t('printReport')}</button><button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('cancel')}</button></div>`);
+  const mEl = document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='960px';
+  document.getElementById('cashStmtPrintBtn').onclick = ()=>{
+    const w = window.open('', '_blank'); if(!w) return;
+    w.document.write(`<!DOCTYPE html><html lang="${lang}" dir="${lang==='ar'?'rtl':'ltr'}"><head><meta charset="UTF-8"><title>${esc(userName(employeeId))}</title>
+      <style>body{font-family:Tahoma,Arial,sans-serif;padding:20px;font-size:13px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:6px;text-align:start}th{background:#f2f2f2}.num{direction:ltr;text-align:right}</style></head>
+      <body><h2>${lang==='ar'?'كشف الكاش التفصيلي':'Detailed cash statement'} — ${esc(userName(employeeId))}</h2><p>${todayStr()}</p>${employeeCashStatementHTML(employeeId)}</body></html>`);
+    w.document.close(); setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
+  };
+}
 function openAddChargeModal(employeeId){
   showModal(`
     <div class="modal-head"><h3>${t('addChargeBtn')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
@@ -1858,13 +1916,13 @@ function openAddChargeModal(employeeId){
       closeModal(); render();
     }catch(err){
       console.error(err);
-      document.getElementById('addChargeErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      document.getElementById('addChargeErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`;
       btn.disabled=false; btn.textContent=t('sendChargeBtn');
     }
   };
 }
 window.uiAcknowledgeCharge = async function(id){
-  try{ await acknowledgeEmployeeCharge(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+  try{ await acknowledgeEmployeeCharge(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiClaimChargePaid = function(id){
   const c = employeeCharges.find(x=>x.id===id);
@@ -1917,7 +1975,7 @@ window.uiClaimChargePaid = function(id){
       }
       closeModal(); render();
     }
-    catch(err){ console.error(err); document.getElementById('claimChargeErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`; btn.disabled=false; btn.textContent=t('claimPaidBtn'); }
+    catch(err){ console.error(err); document.getElementById('claimChargeErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`; btn.disabled=false; btn.textContent=t('claimPaidBtn'); }
   };
 };
 window.uiSettleCharge = function(id){
@@ -1952,14 +2010,14 @@ window.uiSettleCharge = function(id){
       closeModal(); render();
     }catch(err){
       console.error(err);
-      document.getElementById('settleChargeErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      document.getElementById('settleChargeErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`;
       btn.disabled=false; btn.textContent=t('settleChargeBtn');
     }
   };
 };
 window.uiCancelCharge = async function(id){
   if(!confirm(t('confirmCancelCharge'))) return;
-  try{ await cancelEmployeeCharge(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+  try{ await cancelEmployeeCharge(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 function printEmployeeFinancialSummary(employeeId){
   const es = employeeFinancialSummary(employeeId);
@@ -1985,7 +2043,7 @@ function printEmployeeFinancialSummary(employeeId){
     <table><tbody>${rows.map(r=>`<tr><th>${r[0]}</th><td>${r[1]}</td></tr>`).join('')}</tbody></table>
     </body></html>`;
   const w = window.open('', '_blank');
-  if(!w){ alert(t('connError')); return; }
+  if(!w){ alert(errTextPlain()); return; }
   w.document.open(); w.document.write(html); w.document.close();
   setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
 }
@@ -2005,7 +2063,7 @@ function printGenericTable(title, headers, rows){
     </table>
     </body></html>`;
   const w = window.open('', '_blank');
-  if(!w){ alert(t('connError')); return; }
+  if(!w){ alert(errTextPlain()); return; }
   w.document.open(); w.document.write(html); w.document.close();
   setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
 }
@@ -2030,7 +2088,7 @@ function printTicketDetails(list){
     ${list.length===0?`<p>${t('emptyData')}</p>`:bookingsTableHTML(list)}
     </body></html>`;
   const w = window.open('', '_blank');
-  if(!w){ alert(t('connError')); return; }
+  if(!w){ alert(errTextPlain()); return; }
   w.document.open(); w.document.write(html); w.document.close();
   setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
 }
@@ -2059,7 +2117,7 @@ function printBranchEmployeeReport(rows, groupBy, nameHeader){
     </table>
     </body></html>`;
   const w = window.open('', '_blank');
-  if(!w){ alert(t('connError')); return; }
+  if(!w){ alert(errTextPlain()); return; }
   w.document.open(); w.document.write(html); w.document.close();
   setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
 }
@@ -2118,7 +2176,7 @@ function generateBranchReport(branchId, employeeId, dateFrom, dateTo){
     ${bodyHtml}
     </body></html>`;
   const w = window.open('', '_blank');
-  if(!w){ alert(t('connError')); return; }
+  if(!w){ alert(errTextPlain()); return; }
   w.document.open(); w.document.write(html); w.document.close();
   w.onload = ()=>{ w.focus(); w.print(); };
   setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
@@ -2275,12 +2333,12 @@ function openBookingModal(existing){
       closeModal(); render();
     }catch(err){
       console.error(err);
-      document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`;
       btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking');
     }
   };
 }
-window.uiCollectCommission = async function(id){ try{ await collectCommission(id); render(); }catch(e){ alert(t('connError')); } };
+window.uiCollectCommission = async function(id){ try{ await collectCommission(id); render(); }catch(e){ alert(errTextPlain()); } };
 window.uiEditBooking = function(id){
   const b = bookings.find(x=>x.id===id);
   if(!b){ console.error('uiEditBooking: booking not found for id', id); alert('تعذر إيجاد هذا الحجز، حدّث الصفحة وحاول من جديد.'); return; }
@@ -2294,7 +2352,7 @@ window.uiDeleteBooking = async function(id){
 };
 window.uiRequestEdit = async function(id){
   const note = prompt(t('editNotePrompt'))||'';
-  try{ await requestBookingEdit(id, note); render(); }catch(e){ alert(t('connError')); }
+  try{ await requestBookingEdit(id, note); render(); }catch(e){ alert(errTextPlain()); }
 };
 
 /* ===================== LEDGER ===================== */
@@ -2394,7 +2452,7 @@ function openSupplierPaymentModal(){
     const btn = document.getElementById('supplierPaySubmitBtn'); btn.disabled=true; btn.textContent=t('saving');
     const ids = [...document.querySelectorAll('.supPayChk:checked')].map(c=>c.dataset.id);
     try{ await settleSupplierBulk(ids); closeModal(); render(); }
-    catch(err){ console.error(err); document.getElementById('supplierPayErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`; btn.disabled=false; btn.textContent=t('registerPaymentBtn'); }
+    catch(err){ console.error(err); document.getElementById('supplierPayErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`; btn.disabled=false; btn.textContent=t('registerPaymentBtn'); }
   };
 }
 function openManualJournalModal(){
@@ -2432,7 +2490,7 @@ function openManualJournalModal(){
     try{
       await addManualJournalEntry({branchId:f.get('branchId'), desc:f.get('desc'), debitKey:f.get('debitKey'), creditKey:f.get('creditKey'), amount:f.get('amount'), date:f.get('date')});
       closeModal(); render();
-    }catch(err){ console.error(err); document.getElementById('manualJournalErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`; btn.disabled=false; btn.textContent=t('save'); }
+    }catch(err){ console.error(err); document.getElementById('manualJournalErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`; btn.disabled=false; btn.textContent=t('save'); }
   };
 }
 function openExpenseModal(){
@@ -2460,7 +2518,7 @@ function openExpenseModal(){
     try{
       await addManualExpense({branchId:f.get('branchId'), desc:f.get('desc'), amount:f.get('amount'), date:f.get('date')});
       closeModal(); render();
-    }catch(err){ document.getElementById('expenseErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`; btn.disabled=false; btn.textContent=t('save'); }
+    }catch(err){ document.getElementById('expenseErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`; btn.disabled=false; btn.textContent=t('save'); }
   };
 }
 
@@ -2592,7 +2650,7 @@ function renderReports(){
         <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsCashOnHand')}</div><div class="kpi-value">${money(es.cashOnHand)}</div></div>
         <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('efsCharges')}</div><div class="kpi-value">${money(es.charges)}</div></div>
       </div>
-      ${isAdmin()||isAccountant()?`<button class="btn btn-primary btn-sm" id="addChargeBtn" style="margin-top:10px;">${t('addChargeBtn')}</button>`:''}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">${isAdmin()||isAccountant()?`<button class="btn btn-primary btn-sm" id="addChargeBtn">${t('addChargeBtn')}</button>`:''}<button class="btn btn-ghost btn-sm" id="cashStmtBtn">${lang==='ar'?'📄 كشف الكاش التفصيلي':'📄 Detailed cash statement'}</button></div>
       ${myCharges.length>0?`<div style="overflow-x:auto;margin-top:10px;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colAmount')}</th><th>${t('fieldChargeReason')}</th><th>${t('colDepositStatus')}</th>${isAdmin()||isAccountant()?'<th></th>':''}</tr></thead>
       <tbody>${myCharges.map(ch=>`<tr ${ch.payment_claimed && !ch.settled?'style="background:#FFF7E0;"':''}><td>${(ch.created_at||'').slice(0,10)}</td><td class="num">${money(ch.amount)}</td><td>${esc(ch.reason||'—')}</td>
         <td><span class="tag ${ch.settled?'collected':ch.payment_claimed?'pending':'pending'}">${ch.settled?t('chargeSettledTag'):ch.payment_claimed?`🔔 ${t('claimPendingTag')} (${ch.claimed_method==='cash'?t('payCash'):t('payTransfer')})`:(ch.acknowledged?t('acknowledgedTag'):t('chargeUnseenTag'))}</span></td>
@@ -2650,6 +2708,7 @@ function renderReports(){
   document.getElementById('reportPrintBtnTop').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
   if(document.getElementById('efsPrintBtn')) document.getElementById('efsPrintBtn').onclick = ()=>printEmployeeFinancialSummary(reportEmployeeFilter);
   if(document.getElementById('addChargeBtn')) document.getElementById('addChargeBtn').onclick = ()=>openAddChargeModal(reportEmployeeFilter);
+  if(document.getElementById('cashStmtBtn')) document.getElementById('cashStmtBtn').onclick = ()=>openCashStatementModal(reportEmployeeFilter);
   document.getElementById('reportExcelBtnTop').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
   document.getElementById('reportGroupBySel').onchange = (e)=>{ reportGroupBy = e.target.value; renderReports(); };
   document.getElementById('reportSearchInput').oninput = (e)=>{ reportSearchTerm = e.target.value; renderReports(); };
@@ -2851,7 +2910,7 @@ function openNewTicketRefundModal(){
       closeModal(); render();
     }catch(err){
       console.error(err);
-      document.getElementById('newTicketRefundErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      document.getElementById('newTicketRefundErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`;
       btn.disabled=false; btn.textContent=t('submitRefundBtn');
     }
   };
@@ -2899,7 +2958,7 @@ function openRefundRequestModal(bookingId){
       closeModal(); render();
     }catch(err){
       console.error(err);
-      document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`;
       btn.disabled=false; btn.textContent=t('submitRefundBtn');
     }
   };
@@ -2938,14 +2997,14 @@ window.uiApproveRefund = function(id){
       closeModal(); render();
     }catch(err){
       console.error(err);
-      document.getElementById('approveRefundErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      document.getElementById('approveRefundErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`;
       btn.disabled=false; btn.textContent=t('approve');
     }
   };
 };
 window.uiRejectRefund = async function(id){
   const note = prompt(t('rejectReason'))||'';
-  try{ await rejectRefund(id, note); render(); }catch(e){ console.error(e); alert(t('connError')); }
+  try{ await rejectRefund(id, note); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 function openMiscReceiptModal(){
   const u = currentUser();
@@ -2991,17 +3050,17 @@ function openMiscReceiptModal(){
       closeModal(); render();
     }catch(err){
       console.error(err);
-      document.getElementById('miscReceiptErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      document.getElementById('miscReceiptErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`;
       btn.disabled=false; btn.textContent=canPickEmployee?t('sendChargeBtn'):t('sendMiscReceiptBtn');
     }
   };
 }
 window.uiApproveMiscReceipt = async function(id){
-  try{ await approveMiscReceipt(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+  try{ await approveMiscReceipt(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiRejectMiscReceipt = async function(id){
   const note = prompt(t('refundRejectReasonLabel'))||'';
-  try{ await rejectMiscReceipt(id, note); render(); }catch(e){ console.error(e); alert(t('connError')); }
+  try{ await rejectMiscReceipt(id, note); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 function openDepositModal(){
   const u = currentUser();
@@ -3050,15 +3109,15 @@ function openDepositModal(){
       closeModal(); render();
     }catch(err){
       console.error(err);
-      document.getElementById('depositErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      document.getElementById('depositErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`;
       btn.disabled=false; btn.textContent=t('submitDeposit');
     }
   };
 }
-window.uiApproveDeposit = async function(id){ try{ await approveDeposit(id); render(); }catch(e){ alert(t('connError')); } };
+window.uiApproveDeposit = async function(id){ try{ await approveDeposit(id); render(); }catch(e){ alert(errTextPlain()); } };
 window.uiRejectDeposit = async function(id){
   const reason = prompt(t('rejectReason'))||'';
-  try{ await rejectDeposit(id, reason); render(); }catch(e){ alert(t('connError')); }
+  try{ await rejectDeposit(id, reason); render(); }catch(e){ alert(errTextPlain()); }
 };
 window.uiVerifyTransfer = async function(id){
   const b = bookings.find(x=>x.id===id);
@@ -3073,13 +3132,13 @@ window.uiVerifyTransfer = async function(id){
 window.uiRejectTransfer = async function(id){
   if(!confirm(t('confirmRejectTransfer'))) return;
   const note = prompt(t('editNotePrompt'))||'';
-  try{ await rejectTransfer(id, note); render(); }catch(e){ console.error(e); alert(t('connError')); }
+  try{ await rejectTransfer(id, note); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiVerifySplitPayment = async function(id, splitIndex){
   if(!confirm(t('confirmVerifySplit'))) return;
-  try{ await verifySplitPayment(id, splitIndex); render(); }catch(e){ console.error(e); alert(t('connError')); }
+  try{ await verifySplitPayment(id, splitIndex); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
-window.uiSettleSupplier = async function(id){ try{ await settleSupplierPayment(id); render(); }catch(e){ console.error(e); alert(t('connError')); } };
+window.uiSettleSupplier = async function(id){ try{ await settleSupplierPayment(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); } };
 window.uiReviewCost = function(id){
   if(!isAdmin()){ alert(t('adminOnlyAction')); return; }
   const b = bookings.find(x=>x.id===id);
@@ -3088,7 +3147,7 @@ window.uiReviewCost = function(id){
   if(val===null) return;
   const net = Number(val);
   if(isNaN(net) || net<0){ alert(t('invalidNumber')); return; }
-  reviewBookingCost(id, net).then(render).catch(e=>{ console.error(e); alert(t('connError')); });
+  reviewBookingCost(id, net).then(render).catch(e=>{ console.error(e); alert(errTextPlain()); });
 };
 
 /* ===================== USERS ===================== */
@@ -3117,7 +3176,7 @@ window.uiToggleUserActive = async function(id){
     const {error} = await sb.from('app_users').update({active:newActive}).eq('id', id);
     if(error) throw error;
     u.active = newActive; render();
-  }catch(e){ console.error(e); alert(t('connError')); }
+  }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiEditUser = function(id){
   const u = users.find(x=>x.id===id);
@@ -3201,14 +3260,14 @@ function openUserModal(){
       }
       users.push({ id:newId, name:f.get('name'), username, role, branch_id: role==='employee'?branchId:null });
       closeModal(); render();
-    }catch(err){ console.error(err); document.getElementById('userErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`; btn.disabled=false; btn.textContent=t('add'); }
+    }catch(err){ console.error(err); document.getElementById('userErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`; btn.disabled=false; btn.textContent=t('add'); }
   };
 }
 window.uiDeleteUser = async function(id){
   if(id===currentUser().id){ alert(t('cannotDeleteSelf')); return; }
   if(!confirm(t('confirmDeleteUser'))) return;
   try{ const {error} = await sb.from('app_users').delete().eq('id', id); if(error) throw error; users = users.filter(u=>u.id!==id); if(employeeFilter===id) employeeFilter='all'; render(); }
-  catch(e){ alert(t('connError')); }
+  catch(e){ alert(errTextPlain()); }
 };
 
 /* ===================== SETTINGS ===================== */
@@ -3271,11 +3330,11 @@ function renderProfits(){
 
 window.uiApproveProfitHandover = async function(id){
   if(!confirm(t('confirmApproveHandover'))) return;
-  try{ await approveProfitHandover(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+  try{ await approveProfitHandover(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiRejectProfitHandover = async function(id){
   const note = prompt(t('rejectReason'))||'';
-  try{ await rejectProfitHandover(id, note); render(); }catch(e){ console.error(e); alert(t('connError')); }
+  try{ await rejectProfitHandover(id, note); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 function renderSettings(){
   document.getElementById('pageSub').textContent = t('subSettings');
@@ -3310,13 +3369,13 @@ function renderSettings(){
         const {data:ins, error} = await sb.from('branches').insert({name:f.get('name')}).select().single();
         if(error) throw error;
         branches.push(ins); closeModal(); render();
-      }catch(err){ document.getElementById('branchErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`; btn.disabled=false; btn.textContent=t('add'); }
+      }catch(err){ document.getElementById('branchErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`; btn.disabled=false; btn.textContent=t('add'); }
     };
   };
 }
 window.uiDeleteExpense = async function(id){
   if(!confirm(t('confirmDeleteExpense'))) return;
-  try{ await deleteManualExpense(id); render(); }catch(e){ console.error(e); alert(t('connError')); }
+  try{ await deleteManualExpense(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiRemoveBranch = async function(id){
   if(!confirm(t('confirmDeleteBranch'))) return;
@@ -3344,7 +3403,7 @@ async function exportFullBackup(){
     a.href = url; a.download = `asas-backup-${stamp}.json`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }catch(err){ console.error(err); alert(t('connError')); }
+  }catch(err){ console.error(err); alert(errTextPlain()); }
   finally{ btn.disabled=false; btn.textContent=t('exportBackupBtn'); }
 }
 
@@ -3779,13 +3838,13 @@ function openMyAccountModal(){
       closeModal(); alert(t('accountUpdated')); render();
     }catch(err){
       console.error(err);
-      document.getElementById('myAccountErrorBox').innerHTML = `<div class="login-error">${t('connError')}</div>`;
+      document.getElementById('myAccountErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`;
       btn.disabled=false; btn.textContent=t('saveAccount');
     }
   };
 }
 function showModal(html){ document.getElementById('modalBody').innerHTML = html; document.getElementById('overlay').classList.add('show'); }
-function closeModal(){ document.getElementById('overlay').classList.remove('show'); }
+function closeModal(){ document.getElementById('overlay').classList.remove('show'); const mEl=document.querySelector('#overlay .modal'); if(mEl) mEl.style.width=''; }
 window.closeModal = closeModal;
 document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal(); });
 
