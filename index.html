@@ -272,7 +272,7 @@ const T = {
     quickAllTime:'كل الوقت',
     applySearchBtn:'بحث / تطبيق الفلاتر', searchResultTitle:'نتيجة البحث',
     employeeFinSummaryTitle:'الملخص المالي للموظف', employeeFinSummaryNote:'نظرة شاملة على وضع الموظف المالي: كم باع، كم ودّع، كم تحويل تأكّد، وكم باقي عليه غير مسوّى (بغض النظر عن الفترة المحددة فوق).',
-    efsTotalSales:'إجمالي المبيعات (كل الوقت)', efsDeposited:'إجمالي المودّع (كاش معتمد)', efsTransferred:'إجمالي التحويلات المؤكّدة', efsPendingBalance:'الباقي عليه (غير مؤكد)', efsCashOnHand:'كاش لسا بعهدته', efsCharges:'مبالغ مطلوبة (قيود يدوية)',
+    efsTotalSales:'إجمالي المبيعات (كل الوقت)', efsDeposited:'إجمالي المودّع (كاش معتمد)', efsTransferred:'إجمالي التحويلات المؤكّدة', efsPendingBalance:'إجمالي الباقي عليه', efsCashOnHand:'كاش لسا بعهدته', efsCharges:'مبالغ مطلوبة (قيود يدوية)',
     addChargeBtn:'+ تسجيل مبلغ مطلوب من الموظف', fieldChargeReason:'السبب', chargeReasonPlaceholder:'مثلاً: عجز صندوق، سلفة، إلخ...', sendChargeBtn:'إرسال للموظف',
     chargeSourceLabel:'مصدر المبلغ', chargeSourceCash:'نقدي من الصندوق', chargeSourceBank:'سحب من حساب البنك (أونلاين)',
     sendMiscReceiptBtn:'تسجيل', pleaseSelectEmployee:'الرجاء اختيار الموظف المعني بهذا المبلغ', miscReceiptRejectedAlertTitle:'تنبيه: طلب مبلغ بدون تذكرة تم رفضه',
@@ -458,7 +458,7 @@ const T = {
     quickAllTime:'All time',
     applySearchBtn:'Search / Apply filters', searchResultTitle:'Search result',
     employeeFinSummaryTitle:'Employee financial summary', employeeFinSummaryNote:"A full picture of the employee's financial status: total sales, total deposited, confirmed transfers, and what's still outstanding (regardless of the period selected above).",
-    efsTotalSales:'Total sales (all-time)', efsDeposited:'Total deposited (approved cash)', efsTransferred:'Total confirmed transfers', efsPendingBalance:'Outstanding balance (unconfirmed)', efsCashOnHand:'Cash still in their custody', efsCharges:'Amounts owed (manual entries)',
+    efsTotalSales:'Total sales (all-time)', efsDeposited:'Total deposited (approved cash)', efsTransferred:'Total confirmed transfers', efsPendingBalance:'Total outstanding', efsCashOnHand:'Cash still in their custody', efsCharges:'Amounts owed (manual entries)',
     addChargeBtn:'+ Charge employee an amount', fieldChargeReason:'Reason', chargeReasonPlaceholder:'e.g. cash shortage, advance, etc...', sendChargeBtn:'Send to employee',
     chargeSourceLabel:'Source of the amount', chargeSourceCash:'Cash from the till', chargeSourceBank:'Withdrawn from bank account (online)',
     sendMiscReceiptBtn:'Register', pleaseSelectEmployee:'Please select the employee this amount concerns', miscReceiptRejectedAlertTitle:'Alert: a no-ticket amount request was rejected',
@@ -555,6 +555,7 @@ async function fetchAll(){
   ]);
   if(b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error||mr.error) throw (b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error||mr.error);
   branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[]; deposits = dp.data||[]; profitHandovers = ph.data||[]; employeeCharges = ec.data||[]; miscReceipts = mr.data||[];
+  bookings.sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.created_at||'').localeCompare(a.created_at||''));
 }
 /* ===================== CASH DEPOSITS ===================== */
 /* ===================== MISC RECEIPTS (payment without a ticket) ===================== */
@@ -637,32 +638,38 @@ async function cancelEmployeeCharge(id){
 function outstandingEmployeeCharges(employeeId){
   return +employeeCharges.filter(c=>c.employee_id===employeeId && !c.settled).reduce((s,c)=>s+Number(c.amount||0),0).toFixed(2);
 }
+function bookingRefundAmount(b){
+  if(!b || !b.refunded) return 0;
+  const sell = Number(b.sell)||0;
+  return +Math.min(sell, b.refund_amount!=null ? Number(b.refund_amount) : sell).toFixed(2);
+}
+function bookingEffectiveSell(b){ return +Math.max(0, (Number(b.sell)||0) - bookingRefundAmount(b)).toFixed(2); }
+function bookingIsFullRefund(b){ return !!b.refunded && bookingRefundAmount(b) >= (Number(b.sell)||0) - 0.01; }
 function bookingCashCostPortion(b){
   const sell = Number(b.sell)||0;
   if(sell<=0) return 0;
   const cost = Number(b.cost)||0;
-  let remainingSell = sell;
-  if(b.refunded){
-    const refundAmt = b.refund_amount!=null ? Number(b.refund_amount) : sell;
-    remainingSell = Math.max(0, sell - refundAmt);
-  }
-  if(b.payment_method==='cash') return +Math.min(cost, remainingSell).toFixed(2);
-  if(b.payment_method==='split' && Array.isArray(b.payment_splits)){
-    const cashAmt = b.payment_splits.filter(s=>s.method==='cash').reduce((s,r)=>s+Number(r.amount||0),0);
-    if(cashAmt<=0) return 0;
-    const proportionalCost = cashAmt * cost / sell;
-    const ratio = remainingSell / sell;
-    return +(proportionalCost * ratio).toFixed(2);
-  }
-  return 0;
+  let cashIn = 0;
+  if(b.payment_method==='cash') cashIn = sell;
+  else if(b.payment_method==='split' && Array.isArray(b.payment_splits))
+    cashIn = b.payment_splits.filter(s=>s.method==='cash').reduce((s,r)=>s+Number(r.amount||0),0);
+  // a refund reduces the employee's cash only when it was paid out in cash
+  const cashRefund = (b.refunded && (b.refund_method||'cash')==='cash') ? bookingRefundAmount(b) : 0;
+  const netCash = cashIn - cashRefund;
+  if(netCash<=0) return +netCash.toFixed(2);
+  const costShare = cost * cashIn / sell;
+  return +Math.min(costShare, netCash).toFixed(2);
+}
+function miscCashReceived(filterFn){
+  return miscReceipts.filter(r=>r.status==='confirmed' && r.method==='cash' && filterFn(r)).reduce((s,r)=>s+Number(r.amount||0),0);
 }
 function branchCashOnHand(branchId){
-  const costOfCash = bookings.filter(b=>b.branch_id===branchId).reduce((s,b)=>s+bookingCashCostPortion(b),0);
+  const costOfCash = bookings.filter(b=>b.branch_id===branchId).reduce((s,b)=>s+bookingCashCostPortion(b),0) + miscCashReceived(r=>r.branch_id===branchId);
   const approvedDeposits = deposits.filter(d=>d.branch_id===branchId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
   return +(costOfCash-approvedDeposits).toFixed(2);
 }
 function employeeCashOnHand(employeeId){
-  const costOfCash = bookings.filter(b=>b.created_by===employeeId).reduce((s,b)=>s+bookingCashCostPortion(b),0);
+  const costOfCash = bookings.filter(b=>b.created_by===employeeId).reduce((s,b)=>s+bookingCashCostPortion(b),0) + miscCashReceived(r=>r.employee_id===employeeId);
   const approvedDeposits = deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
   return +(costOfCash-approvedDeposits).toFixed(2);
 }
@@ -731,6 +738,11 @@ async function rejectTransfer(bookingId, note){
 async function verifyPaymentReceived(bookingId, actualAmount){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) return;
+  if(journal.some(j=>j.booking_id===bookingId && j.desc_key==='jBankReceipt')){
+    await sb.from('bookings').update({transfer_verified:true, payment_status:'paid'}).eq('id', bookingId);
+    b.transfer_verified = true; b.payment_status='paid';
+    throw new Error(lang==='ar' ? 'هذا التحويل مؤكَّد مسبقًا (تم تصحيح حالته فقط بدون قيد جديد).' : 'This transfer was already confirmed (status corrected, no new entry).');
+  }
   let sell = Number(b.sell)||0;
   if(actualAmount!==undefined && actualAmount!==null && !isNaN(actualAmount) && +actualAmount!==sell){
     const newSell = +Number(actualAmount).toFixed(2);
@@ -772,6 +784,11 @@ async function reviewBookingCost(bookingId, netCost){
   if(error) throw error;
   const idx = bookings.findIndex(x=>x.id===bookingId); if(idx>-1) bookings[idx]=updated;
   const existingCost = journal.find(j=>j.booking_id===bookingId && j.desc_key==='jCost');
+  if(net<=0 && existingCost){
+    const {error:eD} = await sb.from('journal').delete().eq('id', existingCost.id);
+    if(eD) throw eD;
+    journal = journal.filter(j=>j.id!==existingCost.id);
+  }
   if(net>0){
     if(existingCost){
       const {data:u2, error:e2} = await sb.from('journal').update({amount:net}).eq('id', existingCost.id).select().single();
@@ -835,28 +852,26 @@ async function rejectRefund(bookingId, note){
 async function postRefundReversal(bookingId){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) return;
-  const sellAmt = +Number(b.sell||0).toFixed(2);
-  const refundAmt = b.refund_amount!=null ? +Number(b.refund_amount).toFixed(2) : sellAmt;
-  const fullRefund = refundAmt >= sellAmt - 0.01;
-  const origRows = journal.filter(j=>j.booking_id===bookingId);
-  if(origRows.length===0) return;
-  let remaining = refundAmt;
-  const reversedRows = [];
-  origRows.forEach(j=>{
-    if(j.desc_key==='jCost'){
-      if(!fullRefund) return;
-      reversedRows.push({ date:todayStr(), branch_id:j.branch_id, booking_id:bookingId,
-        desc_key:'jRefund', desc_args:[b.booking_no], debit_key:j.credit_key, credit_key:j.debit_key, amount:j.amount });
-      return;
-    }
-    const amt = +Math.min(j.amount, remaining).toFixed(2);
-    if(amt<=0) return;
-    remaining = +(remaining-amt).toFixed(2);
-    reversedRows.push({ date:todayStr(), branch_id:j.branch_id, booking_id:bookingId,
-      desc_key:'jRefund', desc_args:[b.booking_no], debit_key:j.credit_key, credit_key:j.debit_key, amount:amt });
-  });
-  if(reversedRows.length>0){
-    const {data:jIns, error:jErr} = await sb.from('journal').insert(reversedRows).select();
+  if(journal.some(j=>j.booking_id===bookingId && j.desc_key==='jRefund')) return; // already posted
+  const refundAmt = bookingRefundAmount({...b, refunded:true});
+  if(refundAmt<=0) return;
+  const hasBankReceipt = journal.some(j=>j.booking_id===bookingId && j.desc_key==='jBankReceipt');
+  // customer money that was never confirmed in the bank: refunding it just cancels the receivable
+  let unconfirmed = 0;
+  if(b.payment_method==='split' && Array.isArray(b.payment_splits)) unconfirmed = b.payment_splits.filter(s=>s.method!=='cash' && !s.verified).reduce((a,s)=>a+Number(s.amount||0),0);
+  else if(b.payment_method!=='cash' && !hasBankReceipt) unconfirmed = Number(b.sell)||0;
+  const fromReceivable = +Math.min(refundAmt, unconfirmed).toFixed(2);
+  const paidOut = +(refundAmt - fromReceivable).toFixed(2);
+  const base = { date:todayStr(), branch_id:b.branch_id, booking_id:bookingId, desc_key:'jRefund', desc_args:[b.booking_no] };
+  const rows = [];
+  if(fromReceivable>0) rows.push({...base, debit_key:'accSalesRev', credit_key:'accCustomers', amount:fromReceivable});
+  if(paidOut>0) rows.push({...base, debit_key:'accSalesRev', credit_key:(b.refund_method||'cash')==='cash' ? 'accCashOnHand' : 'accBank', amount:paidOut});
+  if(refundAmt >= (Number(b.sell)||0) - 0.01){
+    const costRow = journal.find(j=>j.booking_id===bookingId && j.desc_key==='jCost');
+    if(costRow) rows.push({...base, debit_key:'accSuppliers', credit_key:'accCogs', amount:costRow.amount});
+  }
+  if(rows.length>0){
+    const {data:jIns, error:jErr} = await sb.from('journal').insert(rows).select();
     if(jErr) throw jErr;
     journal.unshift(...jIns.reverse());
   }
@@ -866,7 +881,7 @@ async function approveRefund(bookingId, refundMethod, refundProofUrl){
   if(!b) return;
   const {error} = await sb.from('bookings').update({refund_status:'approved', refunded:true, refund_method:refundMethod||b.refund_method||null, refund_proof_url:refundProofUrl||null, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}).eq('id', bookingId);
   if(error) throw error;
-  b.refund_status='approved'; b.refunded=true; b.refund_method=refundMethod||null; b.refund_proof_url=refundProofUrl||null;
+  b.refund_status='approved'; b.refunded=true; b.refund_method=refundMethod||b.refund_method||null; b.refund_proof_url=refundProofUrl||null;
   await postRefundReversal(bookingId);
 }
 async function settleSupplierPayment(bookingId){
@@ -992,15 +1007,18 @@ async function updateBooking(id, data){
   const method = data.paymentMethod;
   const isSplit = method==='split' && Array.isArray(data.paymentSplits) && data.paymentSplits.length>1;
   const allSettled = isSplit && data.paymentSplits.every(s=>s.method==='cash'||s.verified);
+  const prevB = bookings.find(b=>b.id===id);
+  const alreadyConfirmed = !isSplit && method!=='cash' && !!prevB && prevB.payment_method===method &&
+    (prevB.payment_status==='paid' || prevB.transfer_verified || journal.some(j=>j.booking_id===id && j.desc_key==='jBankReceipt'));
   const row = {
     date: data.date, customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, profit_amount: profit, margin: profit, net_profit: profit, cost_reviewed: true,
-    payment_method: method, payment_status: isSplit ? (allSettled?'paid':'pending') : (method==='cash' ? 'paid' : 'pending'),
+    payment_method: method, payment_status: isSplit ? (allSettled?'paid':'pending') : ((method==='cash' || alreadyConfirmed) ? 'paid' : 'pending'),
     bank_name: method==='transfer' ? (data.bankName||null) : method==='installment' ? (data.installmentProvider||null) : null,
     payment_splits: isSplit ? data.paymentSplits.map(s=>({...s, verified: s.method==='cash' ? true : !!s.verified})) : null,
-    transfer_verified: isSplit ? allSettled : (method==='cash'),
+    transfer_verified: isSplit ? allSettled : (method==='cash' || alreadyConfirmed),
     edit_requested:false, edit_note:null, note: data.note||null
   };
   const {data:updated, error} = await sb.from('bookings').update(row).eq('id', id).select().single();
@@ -1111,13 +1129,19 @@ async function addManualJournalEntry(data){
 }
 function employeeFinancialSummary(employeeId){
   const myBookings = bookings.filter(b=>b.created_by===employeeId && !b.refunded);
-  const totalSales = myBookings.reduce((s,b)=>s+Number(b.sell||0),0);
+  const totalSales = +bookings.filter(b=>b.created_by===employeeId).reduce((s,b)=>s+bookingEffectiveSell(b),0).toFixed(2);
   const totalDeposited = deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
-  const totalTransferred = myBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span') && b.payment_status==='paid').reduce((s,b)=>s+Number(b.sell||0),0);
+  const totalTransferred = +myBookings.reduce((s,b)=>{
+    if(b.payment_method==='split' && Array.isArray(b.payment_splits))
+      return s + b.payment_splits.filter(x=>x.method!=='cash' && x.verified).reduce((a,x)=>a+Number(x.amount||0),0);
+    if(b.payment_method!=='cash' && b.payment_status==='paid') return s + Number(b.sell||0);
+    return s;
+  },0).toFixed(2);
   const cashOnHand = employeeCashOnHand(employeeId);
   const charges = outstandingEmployeeCharges(employeeId);
-  const pendingAmt = +(pendingConfirmationAmount(myBookings) + cashOnHand + charges).toFixed(2);
-  return {totalSales, totalDeposited, totalTransferred, pendingAmt, cashOnHand, charges};
+  const pendingTransfers = pendingConfirmationAmount(myBookings);
+  const pendingAmt = +(pendingTransfers + cashOnHand + charges).toFixed(2);
+  return {totalSales, totalDeposited, totalTransferred, pendingAmt, pendingTransfers, cashOnHand, charges};
 }
 function pendingConfirmationAmount(list){
   let total = 0;
@@ -1136,17 +1160,17 @@ function pendingProfitHandoverAmount(list){
   return +list.filter(b=>b.cost_reviewed && !b.refunded && !lockedIds.has(b.id)).reduce((s,b)=>s+Number(b.profit_amount||0),0).toFixed(2);
 }
 function computeTotals(bookingsList, expensesList){
-  const active = bookingsList.filter(b=>!b.refunded);
-  const sales = active.reduce((s,b)=>s+Number(b.sell),0);
+  const active = bookingsList.filter(b=>!bookingIsFullRefund(b));
+  const sales = active.reduce((s,b)=>s+bookingEffectiveSell(b),0);
   const reviewed = active.filter(b=>b.cost_reviewed);
   const pendingReview = active.filter(b=>!b.cost_reviewed);
   const cost = reviewed.reduce((s,b)=>s+Number(b.cost),0);
   const commission = active.reduce((s,b)=>s+Number(b.commission),0);
   const expenses = expensesList.reduce((s,e)=>s+Number(e.amount),0);
   const revenue = sales+commission;
-  const reviewedProfit = reviewed.reduce((s,b)=>s+Number(b.profit_amount||0),0);
+  const reviewedProfit = reviewed.reduce((s,b)=>s+(b.refunded ? bookingEffectiveSell(b)-Number(b.cost||0) : Number(b.profit_amount||0)),0);
   const netProfit = reviewedProfit+commission-expenses;
-  const pendingReviewSales = pendingReview.reduce((s,b)=>s+Number(b.sell),0);
+  const pendingReviewSales = pendingReview.reduce((s,b)=>s+bookingEffectiveSell(b),0);
   const pendingCommission = active.filter(b=>b.commission_status==='pending').reduce((s,b)=>s+Number(b.commission),0);
   return {sales,cost,commission,expenses,revenue,netProfit,pendingCommission,pendingReviewCount:pendingReview.length,pendingReviewSales,count:active.length};
 }
@@ -2029,10 +2053,10 @@ function generateBranchReport(branchId, employeeId, dateFrom, dateTo){
   let docTitleScope = '';
   if(branchId==='all'){
     docTitleScope = t('allBranches');
-    const grandList = baseBookings.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+    const grandList = baseBookings.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.created_at||'').localeCompare(a.created_at||''));
     const grandExp = manualExpenses.filter(e=>inRange(e.date||''));
     branches.forEach(br=>{
-      const list = baseBookings.filter(b=>b.branch_id===br.id).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+      const list = baseBookings.filter(b=>b.branch_id===br.id).sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.created_at||'').localeCompare(a.created_at||''));
       const exp = manualExpenses.filter(e=>e.branch_id===br.id && inRange(e.date||''));
       if(list.length===0 && exp.length===0) return;
       const tt = computeTotals(list, exp);
@@ -2042,7 +2066,7 @@ function generateBranchReport(branchId, employeeId, dateFrom, dateTo){
     bodyHtml += `<h2 style="margin-top:26px;">${t('grandTotalTitle')}</h2>${totalsKpisHTML(grandTt)}`;
   }else{
     docTitleScope = branchName(branchId);
-    const list = baseBookings.filter(b=>b.branch_id===branchId).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+    const list = baseBookings.filter(b=>b.branch_id===branchId).sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.created_at||'').localeCompare(a.created_at||''));
     const exp = manualExpenses.filter(e=>e.branch_id===branchId && inRange(e.date||''));
     const tt = computeTotals(list, exp);
     bodyHtml = `<h2>${t('reportTotalsTitle')}</h2>${totalsKpisHTML(tt)}<h2>${t('reportBookingsTitle')}</h2>${bookingsTableHTML(list)}`;
@@ -2330,7 +2354,7 @@ function openSupplierPaymentModal(){
   `);
   if(suppliers.length===0) return;
   const renderList = (supplierName)=>{
-    const list = unsettled.filter(b=>b.supplier===supplierName).sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+    const list = unsettled.filter(b=>b.supplier===supplierName).sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.created_at||'').localeCompare(a.created_at||''));
     const box = document.getElementById('supplierPayListBox');
     box.innerHTML = `<div style="overflow-x:auto;"><table><thead><tr><th></th><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colAmount')}</th></tr></thead>
       <tbody>${list.map(b=>`<tr><td><input type="checkbox" class="supPayChk" data-id="${b.id}" data-amt="${b.cost}" style="width:auto;"></td>
@@ -2545,7 +2569,7 @@ function renderReports(){
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('efsTransferred')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.totalTransferred):moneyOrHidden(0)}</div></div>
       </div>
       <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-top:10px;">
-        <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsPendingBalance')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.pendingAmt):moneyOrHidden(0)}</div></div>
+        <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsPendingBalance')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.pendingAmt):moneyOrHidden(0)}</div>${canSeeSalesTotals()?`<div style="font-size:12px;color:var(--muted,#666);margin-top:4px;line-height:1.6;">${lang==='ar'?'تحويلات بانتظار التأكيد':'Transfers awaiting confirmation'}: ${money(es.pendingTransfers)}<br>+ ${t('efsCashOnHand')}: ${money(es.cashOnHand)}<br>+ ${t('efsCharges')}: ${money(es.charges)}</div>`:''}</div>
         <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsCashOnHand')}</div><div class="kpi-value">${money(es.cashOnHand)}</div></div>
         <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('efsCharges')}</div><div class="kpi-value">${money(es.charges)}</div></div>
       </div>
