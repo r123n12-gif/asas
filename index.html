@@ -286,7 +286,7 @@ const T = {
     fieldBookingNote:'ملاحظة', bookingNotePlaceholder:'أي ملاحظة تبي المحاسب يشوفها بخصوص هذا الحجز (اختياري)...', depositNotePlaceholder:'أي ملاحظة تبي المحاسب يشوفها بخصوص هذا الإيداع (اختياري)...',
     settleChargeBtn:'تسديد', confirmSettleCharge:'هل تأكّد إن هذا المبلغ تسدّد فعليًا (ودّعه الموظف أو خُصم من مستحقاته)؟',
     cancelChargeBtn:'إلغاء الطلب', confirmCancelCharge:'هل تأكّد إنك تبي تلغي هذا الطلب نهائيًا؟ (مثلاً لو سُجّل غلط على موظف خطأ) — يرجع القيد المحاسبي كأنه ما حصل.',
-    kpiPendingAmounts:'مبالغ مستحقة (غير مؤكدة)', kpiPendingProfit:'ربح مستحق (لم يُسلَّم)',
+    kpiPendingAmounts:'مبالغ مستحقة حتى اليوم (غير مؤكدة)', kpiPendingProfit:'ربح مستحق (لم يُسلَّم)',
     myBalanceTitle:'رصيدي المتبقي (المستحق)', myBalanceNote:'مبيعات لسا بانتظار تأكيد المحاسب، وربح لسا لم يُسلَّم للأدمن. تنقص تلقائيًا لحظة الاعتماد، وتبقى تفاصيلها هنا دائمًا للرجوع.', navMySales:'مبيعاتي', subMySales:'مبيعاتك وربحك الشخصي — يومي، شهري، أو سنوي', filterPeriod:'الفترة', mySalesTitle:'تفاصيل مبيعاتي',
     reconcileAmountColLabel:'عمود المبلغ', reconcileNameColLabel:'عمود اسم العميل', exportExcelBtn:'⬇️ تصدير Excel',
     reconcileAirlineColLabel:'عمود شركة الطيران (اختياري)', reconcileNoneOpt:'بدون', reconcileOptionalNote:'اختياري',
@@ -472,7 +472,7 @@ const T = {
     fieldBookingNote:'Note', bookingNotePlaceholder:'Any note you want the accountant to see about this booking (optional)...', depositNotePlaceholder:'Any note you want the accountant to see about this deposit (optional)...',
     settleChargeBtn:'Settle', confirmSettleCharge:'Confirm this amount has actually been settled (deposited by the employee or deducted from what they are owed)?',
     cancelChargeBtn:'Cancel request', confirmCancelCharge:'Confirm you want to permanently cancel this request? (e.g. if it was registered on the wrong employee by mistake) — the journal entry will be reversed as if it never happened.',
-    kpiPendingAmounts:'Pending amounts (unconfirmed)', kpiPendingProfit:'Pending profit (not handed over)',
+    kpiPendingAmounts:'Outstanding as of today (unconfirmed)', kpiPendingProfit:'Pending profit (not handed over)',
     myBalanceTitle:'My remaining balance (outstanding)', myBalanceNote:"Sales still awaiting accountant confirmation, and profit not yet handed to the admin. These shrink automatically once approved, and their details always stay here for reference.", navMySales:'My Sales', subMySales:'Your personal sales and profit — daily, monthly, or yearly', filterPeriod:'Period', mySalesTitle:'My sales details',
     reconcileAmountColLabel:'Amount column', reconcileNameColLabel:'Customer name column', exportExcelBtn:'⬇️ Export Excel',
     reconcileAirlineColLabel:'Airline column (optional)', reconcileNoneOpt:'None', reconcileOptionalNote:'optional',
@@ -725,15 +725,21 @@ async function rejectDeposit(id, notes){
 async function verifySplitPayment(bookingId, splitIndex){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b || !Array.isArray(b.payment_splits)) return;
-  const splits = b.payment_splits.map((s,i)=> i===splitIndex ? {...s, verified:true, verified_by:currentUser()?.id||null, verified_at:new Date().toISOString()} : s);
+  if(b.payment_splits[splitIndex] && b.payment_splits[splitIndex].verified) throw new Error(lang==='ar'?'هذا الجزء مؤكَّد مسبقًا.':'This part is already confirmed.');
+  const partBefore = transferParts(b).find(p=>p.part===splitIndex);
+  if(!partBefore || partBefore.status!=='pending') throw new Error(lang==='ar'?'لا يوجد مبلغ بانتظار التأكيد في هذا الجزء (قد يكون مسترجعًا).':'Nothing awaiting confirmation in this part (it may be refunded).');
+  const confirmedAmt = (partBefore && partBefore.status==='pending') ? partBefore.counted : null;
+  const splits = b.payment_splits.map((s,i)=> i===splitIndex ? {...s, verified:true, verified_by:currentUser()?.id||null, verified_at:new Date().toISOString(),
+    ...(confirmedAmt!=null && Math.abs(confirmedAmt-(Number(s.amount)||0))>0.004 ? {verified_amount:confirmedAmt} : {})} : s);
   const allVerified = splits.every(s=>s.verified || s.method==='cash');
   const {error} = await sb.from('bookings').update({payment_splits:splits, payment_status: allVerified?'paid':'pending', transfer_verified: allVerified}).eq('id', bookingId);
   if(error) throw error;
   b.payment_splits = splits; b.payment_status = allVerified?'paid':'pending'; b.transfer_verified = allVerified;
   const s = splits[splitIndex];
+  const partAmt = (partBefore && partBefore.status==='pending') ? partBefore.counted : Number(s.amount)||0;
   const feeRate = s.method==='span'?0.008:s.method==='installment'?0.07:0;
-  const feeAmount = +(Number(s.amount)*feeRate).toFixed(2);
-  const netToBank = +(Number(s.amount)-feeAmount).toFixed(2);
+  const feeAmount = +(partAmt*feeRate).toFixed(2);
+  const netToBank = +(partAmt-feeAmount).toFixed(2);
   const jRows = [{date:todayStr(), branch_id:b.branch_id, booking_id:b.id, desc_key:'jBankReceipt', desc_args:[b.booking_no, b.customer], debit_key:'accBank', credit_key:'accCustomers', amount:netToBank}];
   if(feeAmount>0) jRows.push({date:todayStr(), branch_id:b.branch_id, booking_id:b.id, desc_key:'jCardFee', desc_args:[b.booking_no], debit_key:'accExpenses', credit_key:'accCustomers', amount:feeAmount});
   const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
@@ -748,6 +754,7 @@ async function rejectTransfer(bookingId, note){
 async function verifyPaymentReceived(bookingId, actualAmount){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) return;
+  if(b.refunded && bookingPendingAmount(b)<=0) throw new Error(lang==='ar'?'لا يوجد مبلغ بانتظار التأكيد في هذه التذكرة (مسترجعة).':'Nothing awaiting confirmation on this ticket (refunded).');
   if(journal.some(j=>j.booking_id===bookingId && j.desc_key==='jBankReceipt')){
     await sb.from('bookings').update({transfer_verified:true, payment_status:'paid'}).eq('id', bookingId);
     b.transfer_verified = true; b.payment_status='paid';
@@ -755,7 +762,7 @@ async function verifyPaymentReceived(bookingId, actualAmount){
   }
   let sell = Number(b.sell)||0;
   if(b.refunded){
-    sell = (actualAmount!==undefined && actualAmount!==null && !isNaN(actualAmount)) ? +Number(actualAmount).toFixed(2) : bookingEffectiveSell(b);
+    sell = (actualAmount!==undefined && actualAmount!==null && !isNaN(actualAmount)) ? +Number(actualAmount).toFixed(2) : bookingPendingAmount(b);
   }else if(actualAmount!==undefined && actualAmount!==null && !isNaN(actualAmount) && +actualAmount!==sell){
     const newSell = +Number(actualAmount).toFixed(2);
     const newProfit = b.cost_reviewed ? +(newSell-Number(b.cost||0)).toFixed(2) : b.profit_amount;
@@ -775,9 +782,10 @@ async function verifyPaymentReceived(bookingId, actualAmount){
   const feeRate = isSpan ? 0.008 : isInstallment ? 0.07 : 0;
   const feeAmount = feeRate>0 ? +(sell*feeRate).toFixed(2) : 0;
   const netToBank = +(sell-feeAmount).toFixed(2);
+  const verifiedAmt = (b.refunded && Math.abs(sell-(Number(b.sell)||0))>0.004) ? sell : null;
   const {error} = await sb.from('bookings').update({transfer_verified:true, transfer_verified_by:currentUser()?.id||null, transfer_verified_at:new Date().toISOString(), payment_status:'paid'}).eq('id', bookingId);
   if(error) throw error;
-  b.transfer_verified = true; b.payment_status='paid';
+  b.transfer_verified = true; b.payment_status='paid'; if(verifiedAmt!=null) b.verified_amount = verifiedAmt;
   const jRows = [{ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
     desc_key:'jBankReceipt', desc_args:[b.booking_no, b.customer], debit_key:'accBank', credit_key:'accCustomers', amount:netToBank }];
   if(feeAmount>0) jRows.push({ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
@@ -879,7 +887,7 @@ async function postRefundReversal(bookingId){
   let unconfirmed = 0;
   if(b.payment_method==='split' && Array.isArray(b.payment_splits)) unconfirmed = b.payment_splits.filter(s=>s.method!=='cash' && !s.verified).reduce((a,s)=>a+Number(s.amount||0),0);
   else if(b.payment_method!=='cash' && !hasBankReceipt) unconfirmed = Number(b.sell)||0;
-  const fromReceivable = +Math.min(refundAmt, unconfirmed).toFixed(2);
+  const fromReceivable = (b.refund_method||'cash')==='cash' ? 0 : +Math.min(refundAmt, unconfirmed).toFixed(2);
   const paidOut = +(refundAmt - fromReceivable).toFixed(2);
   const base = { date:todayStr(), branch_id:b.branch_id, booking_id:bookingId, desc_key:'jRefund', desc_args:[b.booking_no] };
   const rows = [];
@@ -1161,23 +1169,32 @@ function transferParts(b){
   const out = [];
   if(!b) return out;
   const full = bookingIsFullRefund(b);
+  // A refund paid by transfer first cancels customer money not yet confirmed (bank in = bank out).
+  // A refund paid in CASH does not: the customer's transfer still has to be confirmed in the bank.
+  let refundLeft = (b.refunded && (b.refund_method||'cash')!=='cash') ? bookingRefundAmount(b) : 0;
+  const push = (part, amt, method, bank, verified, verifiedAmt, confirmedAt)=>{
+    if(verified){
+      out.push({b, part, amount:amt, counted: full ? 0 : (verifiedAmt!=null ? +Number(verifiedAmt).toFixed(2) : amt), status: full ? 'refunded' : 'confirmed', method, bank, confirmedAt});
+      return;
+    }
+    const take = +Math.min(amt, refundLeft).toFixed(2); refundLeft = +(refundLeft - take).toFixed(2);
+    const rest = +(amt - take).toFixed(2);
+    out.push({b, part, amount:amt, counted: rest>0.004 ? rest : 0, status: rest>0.004 ? 'pending' : 'refunded', method, bank, confirmedAt:null});
+  };
   if(b.payment_method==='split' && Array.isArray(b.payment_splits)){
     b.payment_splits.forEach((p,i)=>{
       if(p.method==='cash') return;
-      const amt = +(Number(p.amount)||0).toFixed(2);
-      let status = p.verified ? 'confirmed' : 'pending';
-      if(full || (b.refunded && !p.verified)) status = 'refunded';
-      out.push({b, part:i, amount:amt, counted: status==='refunded' ? 0 : amt, status, method:p.method, bank:p.bankName||null, confirmedAt:p.verified_at||null});
+      push(i, +(Number(p.amount)||0).toFixed(2), p.method, p.bankName||null, !!p.verified, p.verified_amount, p.verified_at||null);
     });
   }else if(b.payment_method!=='cash'){
     const sell = +(Number(b.sell)||0).toFixed(2);
-    let status = (b.payment_status==='paid' || b.transfer_verified) ? 'confirmed' : (b.payment_status==='pending' ? 'pending' : 'other');
-    if(full) status = 'refunded';
-    const counted = status==='confirmed' ? sell : status==='pending' ? bookingEffectiveSell(b) : 0;
-    out.push({b, part:null, amount:sell, counted, status, method:b.payment_method, bank:b.bank_name||null, confirmedAt:b.transfer_verified_at||null});
+    const confirmed = b.payment_status==='paid' || !!b.transfer_verified;
+    if(!confirmed && b.payment_status!=='pending'){ out.push({b, part:null, amount:sell, counted:0, status:'other', method:b.payment_method, bank:b.bank_name||null, confirmedAt:null}); return out; }
+    push(null, sell, b.payment_method, b.bank_name||null, confirmed, b.verified_amount, b.transfer_verified_at||null);
   }
   return out;
 }
+function bookingPendingAmount(b){ return +transferParts(b).filter(p=>p.status==='pending').reduce((s,p)=>s+p.counted,0).toFixed(2); }
 function employeeFinancialSummary(employeeId){
   const mine = bookings.filter(b=>b.created_by===employeeId);
   const totalSales = +mine.reduce((s,b)=>s+bookingEffectiveSell(b),0).toFixed(2);
@@ -1390,11 +1407,15 @@ function renderDashboard(){
   if(dashDateTo) list = list.filter(b=>b.date<=dashDateTo);
   const tt = computeTotals(list, expensesForFilter().filter(e=>(!dashDateFrom||e.date>=dashDateFrom)&&(!dashDateTo||e.date<=dashDateTo)));
   const u = currentUser();
-  let pendingAmt = pendingConfirmationAmount(list);
+  // outstanding is a balance as of today: it ignores the date range and follows the branch + employee filters
+  let pendingAmt = pendingConfirmationAmount(filteredBookings());
   if(u.role==='employee') pendingAmt = +(pendingAmt + employeeCashOnHand(u.id) + outstandingEmployeeCharges(u.id)).toFixed(2);
   else if(canSeeAllBranches()){
     const bf = effectiveBranchFilter();
-    const scopeEmployees = users.filter(e=>e.role==='employee' && (bf==='all'||e.branch_id===bf));
+    const sellerIds = new Set(filteredBookings().map(b=>b.created_by).filter(Boolean));
+    const scopeEmployees = employeeFilter!=='all'
+      ? users.filter(e=>e.id===employeeFilter)
+      : users.filter(e=>(e.role==='employee' && (bf==='all'||e.branch_id===bf)) || sellerIds.has(e.id));
     pendingAmt = +(pendingAmt + scopeEmployees.reduce((s,e)=>s+employeeCashOnHand(e.id)+outstandingEmployeeCharges(e.id),0)).toFixed(2);
   }
   const myPendingCharges = u.role==='employee' ? employeeCharges.filter(c=>c.employee_id===u.id && !c.settled) : [];
@@ -2478,6 +2499,7 @@ function renderLedger(){
       <div class="panel-head"><h3 class="panel-title">${t('journalTitle')}</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button class="btn btn-primary btn-sm" id="addManualJournalBtn">${t('addManualJournal')}</button>
+          ${isAdmin()||isAccountant()?`<button class="btn btn-ghost btn-sm" id="integrityBtn">${lang==='ar'?'🔍 فحص سلامة الحسابات':'🔍 Integrity check'}</button>`:''}
         </div></div>
       ${jrnl.length===0?`<div class="empty">${t('journalEmpty')}</div>`:`<div style="overflow-x:auto;"><table>
         <thead><tr><th>${t('jDate')}</th><th>${t('jBranch')}</th><th>${t('jDesc')}</th><th>${t('jDebit')}</th><th>${t('jCredit')}</th><th>${t('jAmount')}</th></tr></thead>
@@ -2488,7 +2510,49 @@ function renderLedger(){
     </div>`;
   document.getElementById('addExpenseBtn').onclick = openExpenseModal;
   document.getElementById('addManualJournalBtn').onclick = openManualJournalModal;
+  if(document.getElementById('integrityBtn')) document.getElementById('integrityBtn').onclick = openIntegrityModal;
   document.getElementById('supplierPayBtn').onclick = openSupplierPaymentModal;
+}
+function integrityIssues(){
+  const ar = lang==='ar';
+  const issues = [];
+  const byBooking = {};
+  journal.forEach(j=>{ if(j.booking_id){ (byBooking[j.booking_id] = byBooking[j.booking_id] || []).push(j); } });
+  const bal = (rows, key, side)=> +rows.reduce((a,j)=>a+(j.debit_key===key?Number(j.amount)||0:0)-(j.credit_key===key?Number(j.amount)||0:0),0).toFixed(2) * (side==='credit'?-1:1);
+  const ids = new Set(bookings.map(b=>b.id));
+  bookings.forEach(b=>{
+    const rows = byBooking[b.id] || [];
+    const add = (issue, expected, actual)=>issues.push({b, issue, expected, actual});
+    const receipts = rows.filter(j=>j.desc_key==='jBankReceipt').length;
+    if(b.payment_method!=='split' && receipts>1) add(ar?'قيد استلام بنكي مكرر':'Duplicate bank receipt', 1, receipts);
+    if(b.payment_method!=='cash' && b.payment_method!=='split'){
+      if(b.transfer_verified && receipts===0) add(ar?'مؤكَّد بدون قيد بنكي':'Confirmed without bank entry', '—', '—');
+      if(!b.transfer_verified && receipts>0) add(ar?'عليه قيد بنكي لكن حالته غير مؤكد':'Has bank entry but not marked confirmed', '—', '—');
+    }
+    if(!rows.some(j=>j.desc_key==='jSale')) add(ar?'لا يوجد قيد مبيعات':'No sale entry', '—', '—');
+    const cust = bal(rows,'accCustomers','debit'), pend = bookingPendingAmount(b);
+    if(Math.abs(cust-pend)>0.05) add(ar?'رصيد العملاء لا يطابق المعلّق':'Receivable ≠ pending', pend, cust);
+    const rev = bal(rows,'accSalesRev','credit'), expRev = bookingIsFullRefund(b) ? 0 : bookingEffectiveSell(b);
+    if(Math.abs(rev-expRev)>0.05) add(ar?'الإيراد في القيود لا يطابق التذكرة':'Revenue entries ≠ ticket', expRev, rev);
+    const cogs = bal(rows,'accCogs','debit'), expCogs = (bookingIsFullRefund(b) || !b.cost_reviewed) ? 0 : +(Number(b.cost)||0).toFixed(2);
+    if(Math.abs(cogs-expCogs)>0.05) add(ar?'التكلفة في القيود لا تطابق التذكرة':'Cost entries ≠ ticket', expCogs, cogs);
+  });
+  const orphans = journal.filter(j=>j.booking_id && !ids.has(j.booking_id));
+  if(orphans.length) issues.push({b:null, issue: ar?`قيود مرتبطة بتذاكر محذوفة (${orphans.length})`:`Entries linked to deleted tickets (${orphans.length})`, expected:0, actual:+orphans.reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2)});
+  return issues;
+}
+function openIntegrityModal(){
+  const ar = lang==='ar';
+  const list = integrityIssues();
+  showModal(`<div class="modal-head"><h3>${ar?'🔍 فحص سلامة الحسابات':'🔍 Accounts integrity check'}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <p class="note">${ar?'يطابق كل تذكرة مع قيودها المحاسبية: الإيراد، التكلفة، رصيد العملاء، قيود البنك.':'Matches every ticket against its journal entries: revenue, cost, receivable, bank entries.'}</p>
+    ${list.length===0?`<div style="padding:16px;color:#1f7a4d;font-weight:700;">✔ ${ar?`لا توجد أي أخطاء — تم فحص ${bookings.length} تذكرة و ${journal.length} قيد.`:`No issues — checked ${bookings.length} tickets and ${journal.length} entries.`}</div>`
+    :`<div class="login-error">${ar?`تم العثور على ${list.length} ملاحظة`:`${list.length} issue(s) found`}</div>
+    <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${ar?'الملاحظة':'Issue'}</th><th>${ar?'المفروض':'Expected'}</th><th>${ar?'الموجود':'Actual'}</th></tr></thead>
+    <tbody>${list.map(x=>`<tr><td class="num">${x.b?x.b.booking_no:'—'}</td><td>${x.b?esc(x.b.customer||''):'—'}</td><td>${x.b?userName(x.b.created_by):'—'}</td><td>${x.issue}</td>
+      <td class="num">${typeof x.expected==='number'?money(x.expected):x.expected}</td><td class="num">${typeof x.actual==='number'?money(x.actual):x.actual}</td></tr>`).join('')}</tbody></table></div>`}
+    <div style="margin-top:12px;"><button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('cancel')}</button></div>`);
+  const mEl = document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='1000px';
 }
 function openSupplierPaymentModal(){
   const unsettled = bookings.filter(b=>b.supplier && Number(b.cost)>0 && !b.supplier_settled && !bookingIsFullRefund(b));
@@ -2829,19 +2893,19 @@ function renderReports(){
 function renderTransfers(){
   document.getElementById('pageSub').textContent = t('subTransfers');
   const scopedBookings = filteredBookings();
-  const pendingTransfers = scopedBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && !b.transfer_verified && !bookingIsFullRefund(b));
+  const pendingTransfers = scopedBookings.filter(b=>b.payment_method!=='cash' && b.payment_method!=='split' && transferParts(b).some(p=>p.status==='pending'));
   const verifiedTransfers = scopedBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && b.transfer_verified);
   const pendingSplitRows = [];
-  scopedBookings.filter(b=>b.payment_method==='split' && !b.refunded && Array.isArray(b.payment_splits)).forEach(b=>{
-    b.payment_splits.forEach((s,i)=>{ if(s.method!=='cash' && !s.verified) pendingSplitRows.push({b, s, i}); });
+  scopedBookings.filter(b=>b.payment_method==='split' && Array.isArray(b.payment_splits)).forEach(b=>{
+    transferParts(b).forEach(p=>{ if(p.status==='pending') pendingSplitRows.push({b, s:b.payment_splits[p.part], i:p.part}); });
   });
   let html = `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingVerifyTitle')}</h3></div>
       ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${t('colFee')}</th><th></th></tr></thead>
       <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
         <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payTransfer')}</td>
         <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
-        <td class="num">${money(bookingEffectiveSell(b))}${b.refunded?`<div style="font-size:11px;color:#A8722C;">${lang==='ar'?'بعد استرجاع جزئي':'after partial refund'}</div>`:''}</td>
-        <td class="num">${b.payment_method==='span'?money(+(bookingEffectiveSell(b)*0.008).toFixed(2)):b.payment_method==='installment'?money(+(bookingEffectiveSell(b)*0.07).toFixed(2)):'—'}</td>
+        <td class="num">${money(bookingPendingAmount(b))}${b.refunded?`<div style="font-size:11px;color:#A8722C;">${lang==='ar'?'بعد استرجاع جزئي':'after partial refund'}</div>`:''}</td>
+        <td class="num">${b.payment_method==='span'?money(+(bookingPendingAmount(b)*0.008).toFixed(2)):b.payment_method==='installment'?money(+(bookingPendingAmount(b)*0.07).toFixed(2)):'—'}</td>
         <td style="display:flex;gap:6px;"><button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectTransfer('${b.id}')">${t('rejectTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingSplitTitle')}</h3></div>
@@ -2850,7 +2914,7 @@ function renderTransfers(){
       <tbody>${pendingSplitRows.map(({b,s,i})=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
         <td>${s.method==='span'?t('paySpan'):s.method==='installment'?t('payInstallment'):t('payTransfer')}</td>
         <td>${s.method==='span'?'—':bankLabel(s.bankName)}</td>
-        <td class="num" style="font-weight:600">${money(s.amount)}</td>
+        <td class="num" style="font-weight:600">${money((transferParts(b).find(p=>p.part===i)||{}).counted ?? s.amount)}${b.refunded?`<div style="font-size:11px;color:#A8722C;">${lang==='ar'?'بعد استرجاع جزئي':'after partial refund'}</div>`:''}</td>
         <td class="num">${money(b.sell)}</td>
         <td><button class="btn btn-primary btn-sm" onclick="uiVerifySplitPayment('${b.id}', ${i})">${t('verifyTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
     </div>
@@ -3216,7 +3280,7 @@ window.uiRejectDeposit = async function(id){
 window.uiVerifyTransfer = async function(id){
   const b = bookings.find(x=>x.id===id);
   if(!b) return;
-  const expected = bookingEffectiveSell(b);
+  const expected = b.refunded ? bookingPendingAmount(b) : (Number(b.sell)||0);
   const val = prompt(`${t('actualAmountPrompt')} (${t('fieldSellPrice')}: ${money(expected)})`, String(expected));
   if(val===null) return;
   const amt = Number(val);
