@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F2</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F3</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -885,11 +885,19 @@ async function reviewBookingCost(bookingId, netCost){
   }
 }
 /* ===================== PROFIT HANDOVER (employee <-> admin only) ===================== */
-function bookingProfitNow(b){ return +(b.refunded ? bookingEffectiveSell(b)-Number(b.cost||0) : Number(b.profit_amount||0)).toFixed(2); }
+/* Supplier refund = what the airline/supplier gives back on a refunded ticket (read from the posted entries) */
+function bookingSupplierRefund(b){
+  return +jrows(b.id).reduce((a,j)=>a+(j.credit_key==='accCogs'?Number(j.amount)||0:0)-(j.debit_key==='accCogs'&&j.desc_key!=='jCost'?Number(j.amount)||0:0),0).toFixed(2);
+}
+function bookingSupplierRefundKnown(b){ return b.supplier_refund_amount!=null || bookingSupplierRefund(b)>0.004; }
+function bookingEffectiveCost(b){ return +((Number(b.cost)||0) - bookingSupplierRefund(b)).toFixed(2); }
+function bookingNetSupplierCost(b){ return bookingEffectiveCost(b); }
+function bookingProfitNow(b){ return +(b.refunded ? bookingEffectiveSell(b)-bookingEffectiveCost(b) : Number(b.profit_amount||0)).toFixed(2); }
 function eligibleProfitBookings(employeeId, dateFrom, dateTo){
   const lockedIds = new Set();
   profitHandovers.filter(h=>h.status==='pending'||h.status==='approved').forEach(h=>(h.booking_ids||[]).forEach(id=>lockedIds.add(id)));
-  return bookings.filter(b=> b.created_by===employeeId && b.cost_reviewed && !bookingIsFullRefund(b) && !lockedIds.has(b.id)
+  return bookings.filter(b=> b.created_by===employeeId && b.cost_reviewed && !(b.refunded && !bookingSupplierRefundKnown(b))
+    && !(bookingIsFullRefund(b) && Math.abs(bookingProfitNow(b))<0.005) && !lockedIds.has(b.id)
     && (!dateFrom || b.date>=dateFrom) && (!dateTo || b.date<=dateTo));
 }
 async function submitProfitHandover(dateFrom, dateTo, list){
@@ -929,9 +937,9 @@ async function rejectProfitHandover(id, note){
   if(error) throw error;
   const h = profitHandovers.find(x=>x.id===id); if(h){ h.status='rejected'; h.notes=note||null; }
 }
-async function requestRefund(bookingId, file, note, refundMethod, refundAmount){
+async function requestRefund(bookingId, file, note, refundMethod, refundAmount, supplierRefund){
   const receiptUrl = await uploadReceiptFile(file);
-  const {data:updated, error} = await sb.from('bookings').update({ refund_status:'pending', refund_method:refundMethod||'cash', refund_amount:refundAmount!=null?Number(refundAmount):null, refund_receipt_url:receiptUrl, refund_note:note||null,
+  const {data:updated, error} = await sb.from('bookings').update({ refund_status:'pending', refund_method:refundMethod||'cash', refund_amount:refundAmount!=null?Number(refundAmount):null, supplier_refund_amount:(supplierRefund!==undefined && supplierRefund!==null && supplierRefund!=='')?+Number(supplierRefund).toFixed(2):null, refund_receipt_url:receiptUrl, refund_note:note||null,
     refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString() }).eq('id', bookingId).select().single();
   if(error) throw error;
   const idx = bookings.findIndex(b=>b.id===bookingId); if(idx>-1) bookings[idx]=updated;
@@ -958,14 +966,30 @@ async function postRefundReversal(bookingId){
   const rows = [];
   if(fromReceivable>0) rows.push({...base, debit_key:'accSalesRev', credit_key:'accCustomers', amount:fromReceivable});
   if(paidOut>0) rows.push({...base, debit_key:'accSalesRev', credit_key:(b.refund_method||'cash')==='cash' ? 'accCashOnHand' : 'accBank', amount:paidOut});
-  if(refundAmt >= (Number(b.sell)||0) - 0.01){
-    const costRow = journal.find(j=>j.booking_id===bookingId && j.desc_key==='jCost');
-    if(costRow) rows.push({...base, debit_key:'accSuppliers', credit_key:'accCogs', amount:costRow.amount});
-  }
+  const supAmt = Number(b.supplier_refund_amount)||0;
+  if(supAmt>0 && bookingSupplierRefund(b)<=0.004)
+    rows.push({...base, desc_key:'jSupplierRefund', debit_key:'accSuppliers', credit_key:'accCogs', amount:+supAmt.toFixed(2)});
   if(rows.length>0){
     const {data:jIns, error:jErr} = await sb.from('journal').insert(rows).select();
     if(jErr) throw jErr;
     journal.unshift(...jIns.reverse());
+  }
+}
+async function recordSupplierRefund(bookingId, amount){
+  const b = bookings.find(x=>x.id===bookingId);
+  if(!b) throw new Error('booking not found');
+  if(!b.refunded) throw new Error(lang==='ar'?'التذكرة غير مسترجعة.':'Ticket is not refunded.');
+  if(bookingSupplierRefundKnown(b)) throw new Error(lang==='ar'?'مسترد المورد مسجل مسبقًا لهذه التذكرة.':'Supplier refund already recorded.');
+  const amt = +Number(amount).toFixed(2);
+  if(!(amt>=0) || amt > (Number(b.cost)||0)+0.01) throw new Error(lang==='ar'?`مبلغ غير صحيح — لازم يكون بين 0 والتكلفة ${money(b.cost)}.`:'Invalid amount.');
+  const {error} = await sb.from('bookings').update({supplier_refund_amount:amt}).eq('id', bookingId);
+  if(error) throw error;
+  b.supplier_refund_amount = amt;
+  if(amt>0){
+    const {data, error:jErr} = await sb.from('journal').insert({date:todayStr(), branch_id:b.branch_id, booking_id:b.id, desc_key:'jSupplierRefund', desc_args:[b.booking_no],
+      debit_key:'accSuppliers', credit_key:'accCogs', amount:amt}).select().single();
+    if(jErr) throw jErr;
+    journal.unshift(data);
   }
 }
 async function approveRefund(bookingId, refundMethod, refundProofUrl){
@@ -978,28 +1002,34 @@ async function approveRefund(bookingId, refundMethod, refundProofUrl){
 }
 async function settleSupplierPayment(bookingId){
   const b = bookings.find(x=>x.id===bookingId);
-  if(!b || b.supplier_settled || !(Number(b.cost)>0)) return;
-  const {error} = await sb.from('bookings').update({supplier_settled:true, supplier_paid_via:'bank', supplier_settled_by:currentUser()?.id||null, supplier_settled_at:new Date().toISOString()}).eq('id', bookingId);
+  if(!b || b.supplier_settled || !(bookingNetSupplierCost(b)>0)) return;
+  const paidAmt = bookingNetSupplierCost(b);
+  const {error} = await sb.from('bookings').update({supplier_settled:true, supplier_paid_via:'bank', supplier_paid_amount:paidAmt, supplier_settled_by:currentUser()?.id||null, supplier_settled_at:new Date().toISOString()}).eq('id', bookingId);
   if(error) throw error;
-  b.supplier_settled = true; b.supplier_paid_via = 'bank';
+  b.supplier_settled = true; b.supplier_paid_via = 'bank'; b.supplier_paid_amount = paidAmt;
   const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
-    desc_key:'jSupplierPay', desc_args:[b.supplier||'-', b.booking_no], debit_key:'accSuppliers', credit_key:'accBank', amount:Number(b.cost)||0 }).select().single();
+    desc_key:'jSupplierPay', desc_args:[b.supplier||'-', b.booking_no], debit_key:'accSuppliers', credit_key:'accBank', amount:paidAmt }).select().single();
   if(jErr) throw jErr;
   journal.unshift(jIns);
 }
 function supplierDepositCredit(name){
   const paid = deposits.filter(d=>d.status==='approved' && d.destination===name).reduce((a,d)=>a+Number(d.amount||0),0);
-  const used = bookings.filter(b=>b.supplier===name && b.supplier_settled && b.supplier_paid_via==='deposit').reduce((a,b)=>a+Number(b.cost||0),0);
+  const used = bookings.filter(b=>b.supplier===name && b.supplier_settled && b.supplier_paid_via==='deposit').reduce((a,b)=>a+(b.supplier_paid_amount!=null?Number(b.supplier_paid_amount):Number(b.cost||0)),0);
   return {paid:+paid.toFixed(2), used:+used.toFixed(2), available:+(paid-used).toFixed(2)};
 }
 function supplierBalances(list){
   const map = {};
   list.forEach(b=>{
-    if(!b.supplier || !(Number(b.cost)>0) || bookingIsFullRefund(b)) return;
+    if(!b.supplier || !(Number(b.cost)>0)) return;
     if(!map[b.supplier]) map[b.supplier] = {owed:0, settled:0};
-    if(b.supplier_settled) map[b.supplier].settled += Number(b.cost)||0;
-    else map[b.supplier].owed += Number(b.cost)||0;
+    const cost = Number(b.cost)||0, supRef = bookingSupplierRefund(b);
+    if(b.supplier_settled){
+      const paid = b.supplier_paid_amount!=null ? Number(b.supplier_paid_amount) : cost;
+      map[b.supplier].settled += paid;
+      map[b.supplier].owed += cost - paid - supRef;   // negative = supplier owes us a refund
+    } else map[b.supplier].owed += cost - supRef;
   });
+  Object.values(map).forEach(m=>{ m.owed = +m.owed.toFixed(2); m.settled = +m.settled.toFixed(2); });
   SUPPLIER_DESTINATIONS.forEach(n=>{ const c = supplierDepositCredit(n); if(c.paid>0 && !map[n]) map[n] = {owed:0, settled:0}; });
   Object.keys(map).forEach(n=>{ const c = supplierDepositCredit(n); map[n].depositCredit = c.available; map[n].net = +(map[n].owed - c.available).toFixed(2); });
   return map;
@@ -1009,13 +1039,16 @@ async function settleSupplierBulk(bookingIds, via){
   bookingIds = bookingIds.filter(id=>{ const b = bookings.find(x=>x.id===id); return b && !b.supplier_settled; });
   const selected = bookings.filter(b=>bookingIds.includes(b.id));
   if(selected.length===0) return;
-  const total = +selected.reduce((s,b)=>s+Number(b.cost||0),0).toFixed(2);
+  const total = +selected.reduce((s,b)=>s+bookingNetSupplierCost(b),0).toFixed(2);
   const supplierName = selected[0].supplier||'-';
   const sameBranch = selected.every(b=>b.branch_id===selected[0].branch_id);
   const branchId = sameBranch ? selected[0].branch_id : null;
-  const {error} = await sb.from('bookings').update({supplier_settled:true, supplier_paid_via:via, supplier_settled_by:currentUser()?.id||null, supplier_settled_at:new Date().toISOString()}).in('id', bookingIds);
-  if(error) throw error;
-  bookingIds.forEach(id=>{ const b = bookings.find(x=>x.id===id); if(b){ b.supplier_settled=true; b.supplier_paid_via=via; } });
+  for(const b of selected){
+    const paid = bookingNetSupplierCost(b);
+    const {error} = await sb.from('bookings').update({supplier_settled:true, supplier_paid_via:via, supplier_paid_amount:paid, supplier_settled_by:currentUser()?.id||null, supplier_settled_at:new Date().toISOString()}).eq('id', b.id);
+    if(error) throw error;
+    b.supplier_settled=true; b.supplier_paid_via=via; b.supplier_paid_amount=paid;
+  }
   if(via==='deposit') return;
   const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:branchId,
     desc_key:'jSupplierBulkPay', desc_args:[supplierName, bookingIds.length], debit_key:'accSuppliers', credit_key:'accBank', amount:total }).select().single();
@@ -1237,6 +1270,7 @@ function journalDesc(j){
     jSupplierPay:{ar:(a)=>`دفعة لمورد ${a[0]} - حجز #${a[1]}`, en:(a)=>`Payment to supplier ${a[0]} - booking #${a[1]}`},
     jSupplierBulkPay:{ar:(a)=>`دفعة مجمّعة لمورد ${a[0]} (${a[1]} تذكرة)`, en:(a)=>`Bulk payment to supplier ${a[0]} (${a[1]} tickets)`},
     jProfitHandover:{ar:(a)=>`استلام أرباح الموظف ${a[0]} من الإدارة`, en:(a)=>`Profit handed over by ${a[0]} to management`},
+    jSupplierRefund:{ar:(a)=>`مسترد من المورد — حجز #${a[0]}`, en:(a)=>`Supplier refund — booking #${a[0]}`},
     jRefund:{ar:(a)=>`عكس قيود بسبب رفند حجز #${a[0]}`, en:(a)=>`Reversal due to refund of booking #${a[0]}`} };
   const tpl = templates[j.desc_key];
   return tpl ? tpl[lang](j.desc_args||[]) : '';
@@ -1338,21 +1372,21 @@ function pendingConfirmationAmount(list){
 function pendingProfitHandoverAmount(list){
   const lockedIds = new Set();
   profitHandovers.filter(h=>h.status==='pending'||h.status==='approved').forEach(h=>(h.booking_ids||[]).forEach(id=>lockedIds.add(id)));
-  return +list.filter(b=>b.cost_reviewed && !bookingIsFullRefund(b) && !lockedIds.has(b.id)).reduce((s,b)=>s+bookingProfitNow(b),0).toFixed(2);
+  return +list.filter(b=>b.cost_reviewed && !(b.refunded && !bookingSupplierRefundKnown(b)) && !lockedIds.has(b.id)).reduce((s,b)=>s+bookingProfitNow(b),0).toFixed(2);
 }
 function computeTotals(bookingsList, expensesList){
   const active = bookingsList.filter(b=>!bookingIsFullRefund(b));
-  const sales = active.reduce((s,b)=>s+bookingEffectiveSell(b),0);
-  const reviewed = active.filter(b=>b.cost_reviewed);
+  const sales = bookingsList.reduce((s,b)=>s+bookingEffectiveSell(b),0);
+  const reviewed = bookingsList.filter(b=>b.cost_reviewed);
   const pendingReview = active.filter(b=>!b.cost_reviewed);
-  const cost = reviewed.reduce((s,b)=>s+Number(b.cost),0);
+  const cost = reviewed.reduce((s,b)=>s+bookingEffectiveCost(b),0);
   const commission = active.reduce((s,b)=>s+Number(b.commission),0);
   const manualExp = expensesList.reduce((s,e)=>s+Number(e.amount),0);
   const ids = new Set(bookingsList.map(b=>b.id));
   const cardFees = +(typeof journal!=='undefined' ? journal : []).filter(j=>j.desc_key==='jCardFee' && ids.has(j.booking_id)).reduce((s,j)=>s+Number(j.amount||0),0).toFixed(2);
   const expenses = manualExp + cardFees;
   const revenue = sales+commission;
-  const reviewedProfit = reviewed.reduce((s,b)=>s+(b.refunded ? bookingEffectiveSell(b)-Number(b.cost||0) : Number(b.profit_amount||0)),0);
+  const reviewedProfit = reviewed.reduce((s,b)=>s+bookingProfitNow(b),0);
   const netProfit = reviewedProfit+commission-expenses;
   const pendingReviewSales = pendingReview.reduce((s,b)=>s+bookingEffectiveSell(b),0);
   const pendingCommission = active.filter(b=>b.commission_status==='pending').reduce((s,b)=>s+Number(b.commission),0);
@@ -2716,7 +2750,7 @@ function integrityIssues(){
     if(Math.abs(cust-pend)>0.05) add(ar?'رصيد العملاء لا يطابق المعلّق':'Receivable ≠ pending', pend, cust);
     const rev = bal(rows,'accSalesRev','credit'), expRev = bookingIsFullRefund(b) ? 0 : bookingEffectiveSell(b);
     if(Math.abs(rev-expRev)>0.05) add(ar?'الإيراد في القيود لا يطابق التذكرة':'Revenue entries ≠ ticket', expRev, rev);
-    const cogs = bal(rows,'accCogs','debit'), expCogs = (bookingIsFullRefund(b) || !b.cost_reviewed) ? 0 : +(Number(b.cost)||0).toFixed(2);
+    const cogs = bal(rows,'accCogs','debit'), expCogs = !b.cost_reviewed ? 0 : bookingEffectiveCost(b);
     if(Math.abs(cogs-expCogs)>0.05) add(ar?'التكلفة في القيود لا تطابق التذكرة':'Cost entries ≠ ticket', expCogs, cogs);
   });
   profitHandovers.filter(h=>h.status==='approved' && Math.abs(Number(h.total_profit))>0.004).forEach(h=>{
@@ -2838,7 +2872,7 @@ function openIntegrityModal(){
   const mEl = document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='1000px';
 }
 function openSupplierPaymentModal(){
-  const unsettled = bookings.filter(b=>b.supplier && Number(b.cost)>0 && !b.supplier_settled && !bookingIsFullRefund(b));
+  const unsettled = bookings.filter(b=>b.supplier && Number(b.cost)>0 && !b.supplier_settled && bookingNetSupplierCost(b)>0.004 && !(b.refunded && !bookingSupplierRefundKnown(b)));
   const suppliers = [...new Set(unsettled.map(b=>b.supplier))];
   showModal(`
     <div class="modal-head"><h3>${t('modalSupplierPay')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
@@ -2867,8 +2901,8 @@ function openSupplierPaymentModal(){
     const list = unsettled.filter(b=>b.supplier===supplierName && (!toD || (b.date||'')<=toD)).sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.created_at||'').localeCompare(a.created_at||''));
     const box = document.getElementById('supplierPayListBox');
     box.innerHTML = `<div style="overflow-x:auto;"><table><thead><tr><th><input type="checkbox" id="supPayAll" style="width:auto;" title="${lang==='ar'?'تحديد الكل':'Select all'}"></th><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colAmount')}</th></tr></thead>
-      <tbody>${list.map(b=>`<tr><td><input type="checkbox" class="supPayChk" data-id="${b.id}" data-amt="${b.cost}" style="width:auto;"></td>
-        <td class="num">${b.booking_no}</td><td>${b.date}</td><td>${esc(b.customer)}</td><td>${esc(b.ticket_no||'—')}</td><td class="num">${money(b.cost)}</td></tr>`).join('')}</tbody></table></div>
+      <tbody>${list.map(b=>`<tr><td><input type="checkbox" class="supPayChk" data-id="${b.id}" data-amt="${bookingNetSupplierCost(b)}" style="width:auto;"></td>
+        <td class="num">${b.booking_no}</td><td>${b.date}</td><td>${esc(b.customer)}</td><td>${esc(b.ticket_no||'—')}</td><td class="num">${money(bookingNetSupplierCost(b))}${b.refunded?`<div style="font-size:11px;color:#A8722C;">${lang==='ar'?'بعد مسترد المورد':'after supplier refund'}</div>`:''}</td></tr>`).join('')}</tbody></table></div>
       <div style="margin-top:10px;font-weight:700;">${t('selectedTotalLabel')}: <span id="supplierPayTotal">${money(0)}</span></div>
       <div id="supplierPayDiff" style="margin-top:4px;font-size:13px;"></div>`;
     const update = ()=>{
@@ -3390,6 +3424,7 @@ function openRefundRequestModal(bookingId){
       <p class="note">${t('originalAmountLabel')}: <strong>${money(b.sell)}</strong></p>
       <div class="field"><label>${t('fieldRefundAmount')}</label><input type="number" step="0.01" name="refundAmount" value="${b.sell}" max="${b.sell}" min="0.01" required></div>
       <p class="note">${t('refundAmountHint')}</p>
+      <div class="field"><label>${lang==='ar'?'المسترد من المورد (اختياري — لو معروف الحين)':'Supplier refund (optional, if known now)'}</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" placeholder="${lang==='ar'?'اتركه فاضي لو ما تعرفه':'Leave empty if unknown'}"></div>
       <div class="field"><label>${t('fieldRefundMethod')}</label><select name="refundMethod" id="refundReqMethodSel">
         <option value="cash">${t('payCash')}</option>
         <option value="transfer">${t('payTransfer')}</option>
@@ -3418,7 +3453,7 @@ function openRefundRequestModal(bookingId){
     }
     btn.disabled=true; btn.textContent=t('uploading');
     try{
-      await requestRefund(bookingId, file, f.get('note'), f.get('refundMethod'), refundAmt);
+      await requestRefund(bookingId, file, f.get('note'), f.get('refundMethod'), refundAmt, f.get('supplierRefund'));
       closeModal(); render();
     }catch(err){
       console.error(err);
@@ -3438,6 +3473,8 @@ window.uiApproveRefund = function(id){
     ${canSeeSalesTotals()?`<p class="note">${t('originalAmountLabel')}: ${money(b.sell)} — ${t('fieldRefundAmount')}: <strong>${money(b.refund_amount!=null?b.refund_amount:b.sell)}</strong></p>`:''}
     <p class="note">${t('fieldRefundMethod')}: <strong>${isTransfer?t('payTransfer'):t('payCash')}</strong></p>
     <form id="approveRefundForm">
+      <div class="field"><label>${lang==='ar'?'المسترد من المورد':'Supplier refund'} (${lang==='ar'?'التكلفة':'cost'}: ${money(b.cost)})</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" id="apSupRef" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'فاضي = ما نعرفه بعد (يُسجَّل لاحقًا)':'Empty = not known yet'}"></div>
+      <div class="note" id="apRefProfit"></div>
       ${isTransfer?`<div class="field"><label>${t('fieldRefundProof')}</label><input type="file" name="refundProof" accept="image/*" required></div>`:''}
       <div id="approveRefundErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
@@ -3445,6 +3482,14 @@ window.uiApproveRefund = function(id){
         <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
       </div>
     </form>`);
+  const _apCalc = ()=>{
+    const v = document.getElementById('apSupRef').value; const box = document.getElementById('apRefProfit');
+    const cust = Number(b.refund_amount!=null?b.refund_amount:b.sell)||0;
+    if(v===''){ box.innerHTML = lang==='ar'?'⏳ مسترد المورد غير معروف — التذكرة بتظهر في "بانتظار تسجيل مسترد المورد" لين تسجله.':'Supplier refund unknown — record it later.'; return; }
+    const p = +(((Number(b.sell)||0)-cust) - ((Number(b.cost)||0)-Number(v))).toFixed(2);
+    box.innerHTML = `${lang==='ar'?'ربح التذكرة بعد الاسترجاع':'Ticket profit after refund'}: <b style="color:${p<0?'var(--red)':'#1f7a4d'}">${money(p)}</b>`;
+  };
+  document.getElementById('apSupRef').oninput = _apCalc; _apCalc();
   document.getElementById('approveRefundForm').onsubmit = async (e)=>{
     e.preventDefault();
     const btn = document.getElementById('approveRefundBtn');
@@ -3457,6 +3502,10 @@ window.uiApproveRefund = function(id){
     btn.disabled=true; btn.textContent=t('saving');
     try{
       const proofUrl = isTransfer ? await uploadReceiptFile(file) : null;
+      const sv = document.getElementById('apSupRef').value;
+      const supVal = sv==='' ? null : +Number(sv).toFixed(2);
+      if(supVal!=null && (supVal<0 || supVal>(Number(b.cost)||0)+0.01)) throw new Error(lang==='ar'?'مسترد المورد لازم يكون بين 0 والتكلفة.':'Supplier refund must be between 0 and the cost.');
+      if(supVal!==(b.supplier_refund_amount??null)){ const {error:eS} = await sb.from('bookings').update({supplier_refund_amount:supVal}).eq('id', id); if(eS) throw eS; b.supplier_refund_amount = supVal; }
       await approveRefund(id, b.refund_method, proofUrl);
       closeModal(); render();
     }catch(err){
@@ -3571,6 +3620,16 @@ window.uiRepairBooking = async function(id){
     alert(msg);
     openIntegrityModal();
   }catch(e){ console.error(e); alert(errTextPlain()); }
+};
+window.uiRecordSupplierRefund = async function(id){
+  const b = bookings.find(x=>x.id===id); if(!b) return;
+  const ar = lang==='ar';
+  const v = prompt(ar?`كم رجّع المورد للتذكرة #${b.booking_no}؟ (التكلفة ${money(b.cost)} — اكتب 0 لو ما رجّع شي)`:`Supplier refund for #${b.booking_no}? (cost ${money(b.cost)})`, '');
+  if(v===null || v==='') return;
+  const amt = Number(v);
+  const profit = +(bookingEffectiveSell(b) - ((Number(b.cost)||0) - amt)).toFixed(2);
+  if(!confirm(ar?`المسترد من المورد: ${money(amt)}\nالمرجّع للعميل: ${money(bookingRefundAmount(b))}\nربح التذكرة بعد الاسترجاع: ${money(profit)}\n\nتأكيد؟`:`Confirm supplier refund ${money(amt)} (ticket profit ${money(profit)})?`)) return;
+  try{ await recordSupplierRefund(id, amt); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiCancelMiscReceipt = async function(id){
   const r = miscReceipts.find(x=>x.id===id); if(!r) return;
@@ -3983,12 +4042,21 @@ function renderRefunds(){
       <td class="num">${canSeeSalesTotals()?money(b.sell):moneyOrHidden(0)}</td>
       <td class="num" style="font-weight:600">${canSeeSalesTotals()?money(b.refund_amount!=null?b.refund_amount:b.sell):moneyOrHidden(0)}</td>
       <td>${b.refund_method==='transfer'?t('payTransfer'):t('payCash')}</td>
+      <td class="num">${showActions ? (b.supplier_refund_amount!=null?money(b.supplier_refund_amount):'—') : (bookingSupplierRefundKnown(b)?money(b.supplier_refund_amount!=null?b.supplier_refund_amount:bookingSupplierRefund(b)):'⏳')}</td>
+      <td class="num">${showActions ? '—' : (canSeeProfit()?refProfit(b):t('hiddenValue'))}</td>
       <td><a href="${b.refund_receipt_url}" target="_blank">${t('viewReceipt')}</a></td>
       ${showActions?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveRefund('${b.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectRefund('${b.id}')">${t('reject')}</button></td>`
         :`<td><span class="tag ${b.refund_status==='approved'?'collected':'rejected'}">${b.refund_status==='approved'?t('approve'):t('reject')}</span></td>`}</tr>`;
+  const awaitingSup = scoped.filter(b=>b.refunded && b.refund_status==='approved' && !bookingSupplierRefundKnown(b));
+  const refProfit = b=> bookingSupplierRefundKnown(b) ? money(bookingProfitNow(b)) : '⏳';
   document.getElementById('content').innerHTML = `
+    ${awaitingSup.length && (isAdmin()||isAccountant()) ? `<div class="panel"><div class="panel-head"><h3 class="panel-title">⏳ ${lang==='ar'?'بانتظار تسجيل مسترد المورد':'Awaiting supplier refund'} (${awaitingSup.length})</h3></div>
+      <p class="note">${lang==='ar'?'تذاكر استُرجعت للعميل وما انسجل كم رجّع المورد. ربحها ما يدخل في تسليم الأرباح لين يتسجل.':'Refunded to the customer; supplier amount not recorded yet.'}</p>
+      <div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colSupplier')}</th><th>${lang==='ar'?'التكلفة':'Cost'}</th><th>${lang==='ar'?'المرجّع للعميل':'Refunded to customer'}</th><th></th></tr></thead>
+      <tbody>${awaitingSup.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${esc(userName(b.created_by))}</td><td>${esc(b.supplier||'—')}</td><td class="num">${money(b.cost)}</td><td class="num">${money(bookingRefundAmount(b))}</td>
+        <td><button class="btn btn-gold btn-sm" onclick="uiRecordSupplierRefund('${b.id}')">${lang==='ar'?'تسجيل المسترد':'Record'}</button></td></tr>`).join('')}</tbody></table></div></div>` : ''}
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingRefundsTitle')}</h3></div>
-      ${pending.length===0?`<div class="empty">${t('noPendingRefunds')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('originalAmountLabel')}</th><th>${t('fieldRefundAmount')}</th><th>${t('fieldRefundMethod')}</th><th>${t('colReceipt')}</th><th></th></tr></thead>
+      ${pending.length===0?`<div class="empty">${t('noPendingRefunds')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('originalAmountLabel')}</th><th>${t('fieldRefundAmount')}</th><th>${t('fieldRefundMethod')}</th><th>${lang==='ar'?'المسترد من المورد':'Supplier refund'}</th><th>${lang==='ar'?'ربح التذكرة':'Ticket profit'}</th><th>${t('colReceipt')}</th><th></th></tr></thead>
       <tbody>${pending.map(b=>rowHTML(b,true)).join('')}</tbody></table></div>`}
     </div>
     <div class="panel">
@@ -4002,7 +4070,7 @@ function renderRefunds(){
         <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" id="refundsDateFromInput" value="${refundsDateFrom||''}"></div>
       </div>
       <div class="field"><label>${t('fieldDateTo')}</label><input type="date" id="refundsDateToInput" value="${refundsDateTo||''}"></div>
-      ${history.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;margin-top:10px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('originalAmountLabel')}</th><th>${t('fieldRefundAmount')}</th><th>${t('fieldRefundMethod')}</th><th>${t('colReceipt')}</th><th>${t('colRefundStatus')}</th></tr></thead>
+      ${history.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;margin-top:10px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('originalAmountLabel')}</th><th>${t('fieldRefundAmount')}</th><th>${t('fieldRefundMethod')}</th><th>${lang==='ar'?'المسترد من المورد':'Supplier refund'}</th><th>${lang==='ar'?'ربح التذكرة':'Ticket profit'}</th><th>${t('colReceipt')}</th><th>${t('colRefundStatus')}</th></tr></thead>
       <tbody>${history.slice(0,200).map(b=>rowHTML(b,false)).join('')}</tbody></table></div>`}
     </div>`;
   document.getElementById('refundsSearchInput').onchange = (e)=>{ refundsSearchTerm = e.target.value; renderRefunds(); };
@@ -4388,6 +4456,7 @@ verifySplitPayment = lockify(verifySplitPayment, 'verifySplitPayment');
 approveRefund = lockify(approveRefund, 'approveRefund');
 approveProfitHandover = lockify(approveProfitHandover, 'approveProfitHandover');
 repairBooking = lockify(repairBooking, 'repairBooking');
+recordSupplierRefund = lockify(recordSupplierRefund, 'recordSupplierRefund');
 </script>
 </body>
 </html>
