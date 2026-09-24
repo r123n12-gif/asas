@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 24.09-S</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 24.09-U</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1063,7 +1063,8 @@ async function updateBooking(id, data){
   // money already confirmed in the bank cannot silently change: block price / method changes on confirmed transfers
   const prevConfirmed = !!prevB && prevB.payment_method!=='cash' && (prevB.transfer_verified || journal.some(j=>j.booking_id===id && j.desc_key==='jBankReceipt')
     || (Array.isArray(prevB.payment_splits) && prevB.payment_splits.some(x=>x.method!=='cash' && x.verified)));
-  if(prevConfirmed && (Math.abs((Number(data.sell)||0)-(Number(prevB.sell)||0))>0.004 || prevB.payment_method!==method))
+  const matchesBank = !isSplit && prevB && prevB.payment_method===method && Math.abs((Number(data.sell)||0) - bookingConfirmedGross(id))<0.01;
+  if(prevConfirmed && !matchesBank && (Math.abs((Number(data.sell)||0)-(Number(prevB.sell)||0))>0.004 || prevB.payment_method!==method))
     throw new Error(lang==='ar'
       ? 'لا يمكن تعديل مبلغ البيع أو طريقة الدفع لتذكرة تحويلها مؤكَّد في البنك — المبلغ المستلم ثابت. يمكن تعديل باقي البيانات (الاسم، التكلفة، المورد...).'
       : 'Cannot change the sale amount or payment method of a ticket whose transfer is confirmed. Other fields can be edited.');
@@ -2599,6 +2600,9 @@ function integrityIssues(){
   if(orphans.length) issues.push({b:null, issue: ar?`قيود مرتبطة بتذاكر محذوفة (${orphans.length})`:`Entries linked to deleted tickets (${orphans.length})`, expected:0, actual:+orphans.reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2)});
   return issues;
 }
+function bookingConfirmedGross(id){
+  return +journal.filter(j=>j.booking_id===id && (j.desc_key==='jBankReceipt' || j.desc_key==='jCardFee')).reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2);
+}
 /* Rebuild a ticket's automatic journal entries from the ticket itself (the ticket is the source of truth). */
 async function repairBooking(bookingId){
   const ar = lang==='ar';
@@ -2651,7 +2655,10 @@ async function repairBooking(bookingId){
   let removed = false;
   if(b.payment_method==='split') removed = keepMatching(receipts, expReceipts) | keepMatching(fees, expFees);
   else if(b.payment_method==='cash') removed = keepMatching(receipts, [], 0) | keepMatching(fees, [], 0);
-  else removed = keepMatching(receipts, null, 1) | keepMatching(fees, null, 1);
+  else {
+    const dedupe = list=>{ const seen=new Set(); let r=false; list.forEach(j=>{ const k=(+Number(j.amount).toFixed(2)); if(seen.has(k)){ delIds.push(j.id); r=true; } else seen.add(k); }); return r; };
+    removed = dedupe(receipts) | dedupe(fees);
+  }
   if(removed) notes.push(ar?'حُذف قيد بنكي زائد':'Extra bank entry removed');
   // apply journal changes
   if(delIds.length){ const {error} = await sb.from('journal').delete().in('id', delIds); if(error) throw error; const d = new Set(delIds); journal = journal.filter(j=>!d.has(j.id)); }
@@ -2677,11 +2684,12 @@ function openIntegrityModal(){
     <p class="note">${ar?'يطابق كل تذكرة مع قيودها المحاسبية: الإيراد، التكلفة، رصيد العملاء، قيود البنك.':'Matches every ticket against its journal entries: revenue, cost, receivable, bank entries.'}</p>
     ${list.length===0?`<div style="padding:16px;color:#1f7a4d;font-weight:700;">✔ ${ar?`لا توجد أي أخطاء — تم فحص ${bookings.length} تذكرة و ${journal.length} قيد.`:`No issues — checked ${bookings.length} tickets and ${journal.length} entries.`}</div>`
     :`<div class="login-error">${ar?`تم العثور على ${list.length} ملاحظة`:`${list.length} issue(s) found`}</div>
+    ${(isAdmin()||isAccountant()) && list.some(x=>x.b)?`<button class="btn btn-gold" style="margin-top:8px;" onclick="uiRepairAll()">🔧 ${ar?'إصلاح كل التذاكر':'Fix all tickets'}</button>`:''}
     <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${ar?'الملاحظة':'Issue'}</th><th>${ar?'المفروض':'Expected'}</th><th>${ar?'الموجود':'Actual'}</th><th></th></tr></thead>
     <tbody>${list.map((x,i)=>{ const first = x.b && list.findIndex(y=>y.b && y.b.id===x.b.id)===i;
       return `<tr><td class="num">${x.b?x.b.booking_no:'—'}</td><td>${x.b?esc(x.b.customer||''):'—'}</td><td>${x.b?userName(x.b.created_by):'—'}</td><td>${x.issue}</td>
       <td class="num">${typeof x.expected==='number'?money(x.expected):x.expected}</td><td class="num">${typeof x.actual==='number'?money(x.actual):x.actual}</td>
-      <td>${first && isAdmin()?`<button class="btn btn-gold btn-sm" onclick="uiRepairBooking('${x.b.id}')">🔧 ${ar?'إصلاح':'Fix'}</button>`:''}</td></tr>`; }).join('')}</tbody></table></div>`}
+      <td>${first && (isAdmin()||isAccountant())?`<button class="btn btn-gold btn-sm" onclick="uiRepairBooking('${x.b.id}')">🔧 ${ar?'إصلاح':'Fix'}</button>`:''}</td></tr>`; }).join('')}</tbody></table></div>`}
     <div style="margin-top:12px;"><button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('cancel')}</button></div>`);
   const mEl = document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='1000px';
 }
@@ -3354,13 +3362,43 @@ window.uiApproveMiscReceipt = async function(id){
   if(dupWarn && !confirm(dupWarn)) return;
   try{ await approveMiscReceipt(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
+window.uiRepairAll = async function(){
+  const ar = lang==='ar';
+  const ids = [...new Set(integrityIssues().filter(x=>x.b).map(x=>x.b.id))];
+  if(!ids.length) return;
+  if(!confirm(ar?`إصلاح قيود ${ids.length} تذكرة من بيانات التذاكر نفسها؟`:`Rebuild entries of ${ids.length} ticket(s)?`)) return;
+  const msgs = [];
+  for(const id of ids){
+    const b = bookings.find(x=>x.id===id);
+    try{ const r = await repairBooking(id); msgs.push(`#${b.booking_no}: ${r.left.length? (ar?'⚠️ يحتاج قرار':'⚠️ needs decision') : '✔'}${r.notes.length?' — '+r.notes.join('، '):''}`); }
+    catch(e){ console.error(e); msgs.push(`#${b?b.booking_no:'?'}: ✖ ${e.message||e}`); }
+  }
+  alert(msgs.join('\n'));
+  openIntegrityModal();
+};
 window.uiRepairBooking = async function(id){
   const b = bookings.find(x=>x.id===id); if(!b) return;
   const ar = lang==='ar';
   if(!confirm(ar ? `إصلاح قيود التذكرة #${b.booking_no} (${b.customer||''})؟\n\nسيُعاد بناء قيود المبيعات والتكلفة من بيانات التذكرة نفسها، ويُحذف أي قيد بنكي مكرر، وتُضبط حالة التأكيد حسب قيد البنك.\nالتذكرة: ${money(b.sell)} — ${b.payment_method}`
                  : `Rebuild entries of ticket #${b.booking_no} from the ticket data?`)) return;
   try{
-    const r = await repairBooking(id);
+    let r = await repairBooking(id);
+    const bb = bookings.find(x=>x.id===id);
+    const gross = bookingConfirmedGross(id);
+    if(r.left.length && bb && bb.payment_method!=='cash' && bb.payment_method!=='split' && bb.transfer_verified && gross>0 && Math.abs(gross-(Number(bb.sell)||0))>0.01){
+      if(confirm(ar ? `المبلغ المستلم فعليًا في البنك للتذكرة #${bb.booking_no} هو ${money(gross)}، بينما سعر البيع المسجل ${money(bb.sell)}.\n\nهل سعر البيع الصحيح هو ${money(gross)}؟`
+                    : `Bank received ${money(gross)} but the ticket price is ${money(bb.sell)}. Is the correct price ${money(gross)}?`)){
+        const c = prompt(ar ? `التكلفة (السستم فير) الصحيحة للتذكرة #${bb.booking_no}:` : 'Correct cost (system fare):', String(bb.cost));
+        if(c===null) return;
+        const cost = +Number(c).toFixed(2); if(isNaN(cost)) return;
+        const profit = +(gross-cost).toFixed(2);
+        const {data:u, error} = await sb.from('bookings').update({sell:gross, cost, profit_amount:profit, margin:profit, net_profit:profit, cost_reviewed:true}).eq('id', id).select().single();
+        if(error) throw error;
+        bookings[bookings.findIndex(x=>x.id===id)] = u;
+        r = await repairBooking(id);
+        r.notes.unshift(ar ? `سعر البيع صار ${money(gross)} والتكلفة ${money(cost)} (الربح ${money(profit)})` : `Price ${money(gross)}, cost ${money(cost)}`);
+      }
+    }
     let msg = r.notes.length ? r.notes.join('\n') : (ar?'أُعيد بناء القيود.':'Entries rebuilt.');
     if(r.left.length) msg += '\n\n' + (ar?'⚠️ باقي يحتاج قرارك:\n':'⚠️ Still needs a decision:\n') + r.left.map(x=>`${x.issue}: ${ar?'المفروض':'expected'} ${money(x.expected)} / ${ar?'الموجود':'actual'} ${money(x.actual)}`).join('\n')
       + (ar?'\n\n(غالبًا المبلغ المستلم في البنك يختلف عن سعر التذكرة — تواصل معي بالصورة)':'');
