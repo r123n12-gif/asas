@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 24.09-Z3</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 24.09-Z4</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -726,6 +726,17 @@ function branchCashOnHand(branchId){
   const costOfCash = bookings.filter(b=>b.branch_id===branchId).reduce((s,b)=>s+bookingCashNet(b),0) + miscCashReceived(r=>r.branch_id===branchId);
   const approvedDeposits = deposits.filter(d=>d.branch_id===branchId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
   return +(costOfCash-approvedDeposits-approvedHandovers(h=>h.branch_id===branchId)).toFixed(2);
+}
+function employeeCashBreakdown(employeeId){
+  const mine = bookings.filter(b=>b.created_by===employeeId);
+  const cashIn = +mine.reduce((s,b)=>s+bookingCashNet(b),0).toFixed(2);
+  const misc = +miscCashReceived(r=>r.employee_id===employeeId).toFixed(2);
+  const deps = +deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0).toFixed(2);
+  const handed = +approvedHandovers(h=>h.employee_id===employeeId).toFixed(2);
+  const pendingDeps = +deposits.filter(d=>d.submitted_by===employeeId && d.status==='pending').reduce((s,d)=>s+Number(d.amount||0),0).toFixed(2);
+  const pendingHand = +profitHandovers.filter(h=>h.employee_id===employeeId && h.status==='pending').reduce((s,h)=>s+Number(h.total_profit||0),0).toFixed(2);
+  const notHandedProfit = pendingProfitHandoverAmount(mine);
+  return {cashIn, misc, deps, handed, pendingDeps, pendingHand, notHandedProfit, total:+(cashIn+misc-deps-handed).toFixed(2)};
 }
 function employeeCashOnHand(employeeId){
   const costOfCash = bookings.filter(b=>b.created_by===employeeId).reduce((s,b)=>s+bookingCashNet(b),0) + miscCashReceived(r=>r.employee_id===employeeId);
@@ -3040,7 +3051,14 @@ function renderReports(){
       </div>
       <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-top:10px;">
         <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsPendingBalance')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.pendingAmt):moneyOrHidden(0)}</div>${canSeeSalesTotals()?`<div style="font-size:12px;color:var(--muted,#666);margin-top:4px;line-height:1.6;">${lang==='ar'?'تحويلات بانتظار التأكيد':'Transfers awaiting confirmation'}: ${money(es.pendingTransfers)}<br>+ ${t('efsCashOnHand')}: ${money(es.cashOnHand)}<br>+ ${t('efsCharges')}: ${money(es.charges)}</div>`:''}</div>
-        <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsCashOnHand')}</div><div class="kpi-value">${money(es.cashOnHand)}</div>${es.cashOnHand<-0.01?`<div style="font-size:12px;color:var(--red);margin-top:4px;line-height:1.5;">⚠️ ${lang==='ar'?'بالسالب: أودع/سلّم أكثر من الكاش المسجل عليه — غالبًا فيه تذاكر كاش ما انسجلت بالنظام':'Negative: deposited more than recorded cash — likely unrecorded cash tickets'}</div>`:''}</div>
+        <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsCashOnHand')}</div><div class="kpi-value">${money(es.cashOnHand)}</div>${(()=>{ const cb = employeeCashBreakdown(reportEmployeeFilter); const ar = lang==='ar';
+        return `<div style="font-size:12px;color:var(--muted,#666);margin-top:4px;line-height:1.7;">
+          ${ar?'كاش مستلم من التذاكر':'Cash from tickets'}: ${money(cb.cashIn)}${cb.misc?`<br>+ ${ar?'مبالغ كاش بدون تذكرة':'Misc cash'}: ${money(cb.misc)}`:''}
+          <br>− ${ar?'إيداعات معتمدة':'Approved deposits'}: ${money(cb.deps)}<br>− ${ar?'أرباح معتمد تسليمها':'Approved profit handovers'}: ${money(cb.handed)}
+          ${cb.pendingDeps?`<br><span style="color:#A8722C">${ar?'إيداعات بانتظار الاعتماد (غير مخصومة)':'Deposits awaiting approval'}: ${money(cb.pendingDeps)}</span>`:''}
+          ${cb.pendingHand?`<br><span style="color:#A8722C">${ar?'تسليم أرباح بانتظار الاعتماد (غير مخصوم)':'Profit handover awaiting approval'}: ${money(cb.pendingHand)}</span>`:''}
+          ${cb.notHandedProfit?`<br><span style="color:#A8722C">${ar?'أرباح لم يُطلب تسليمها بعد (داخل الرقم)':'Profit not yet handed over (included)'}: ${money(cb.notHandedProfit)}</span>`:''}
+        </div>`; })()}${es.cashOnHand<-0.01?`<div style="font-size:12px;color:var(--red);margin-top:4px;line-height:1.5;">⚠️ ${lang==='ar'?'بالسالب: أودع/سلّم أكثر من الكاش المسجل عليه — غالبًا فيه تذاكر كاش ما انسجلت بالنظام':'Negative: deposited more than recorded cash — likely unrecorded cash tickets'}</div>`:''}</div>
         <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('efsCharges')}</div><div class="kpi-value">${money(es.charges)}</div></div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">${isAdmin()||isAccountant()?`<button class="btn btn-primary btn-sm" id="addChargeBtn">${t('addChargeBtn')}</button>`:''}<button class="btn btn-ghost btn-sm" id="cashStmtBtn">${lang==='ar'?'📄 كشف الكاش التفصيلي':'📄 Detailed cash statement'}</button><button class="btn btn-ghost btn-sm" id="trStmtBtn">${lang==='ar'?'🏦 كشف التحويلات التفصيلي':'🏦 Detailed transfers statement'}</button></div>
