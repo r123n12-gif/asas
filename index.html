@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 24.09-U</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 24.09-X</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -552,17 +552,39 @@ function errDetail(){
 }
 function errText(){ const d = errDetail(); return d ? `${t('connError')}<div dir="ltr" style="font-size:12px;margin-top:6px;opacity:.85;word-break:break-word;">${esc(d)}</div>` : t('connError'); }
 function errTextPlain(){ const d = errDetail(); return d ? `${t('connError')}\n\n${d}` : t('connError'); }
+let __jIdx = null, __jRef = null, __jLen = -1;
+function jrows(bookingId){
+  if(!__jIdx || __jRef!==journal || __jLen!==journal.length){
+    __jRef = journal; __jLen = journal.length;
+    __jIdx = new Map();
+    journal.forEach(j=>{ if(j.booking_id){ const a = __jIdx.get(j.booking_id); if(a) a.push(j); else __jIdx.set(j.booking_id, [j]); } });
+    queueMicrotask(()=>{ __jIdx = null; });
+  }
+  return __jIdx.get(bookingId) || [];
+}
+/* Supabase returns at most 1000 rows per request — read every page so nothing is silently cut off */
+async function fetchAllRows(table, cols, asc){
+  const PAGE = 1000; let from = 0; const out = [];
+  for(;;){
+    const {data, error} = await sb.from(table).select(cols).order('created_at', {ascending:!!asc}).order('id', {ascending:true}).range(from, from+PAGE-1);
+    if(error) return {data:null, error};
+    out.push(...(data||[]));
+    if(!data || data.length<PAGE) break;
+    from += PAGE;
+  }
+  return {data:out, error:null};
+}
 async function fetchAll(){
   const [b, u, bk, jr, ex, dp, ph, ec, mr] = await Promise.all([
-    sb.from('branches').select('*').order('created_at'),
-    sb.from('app_users').select('id,name,username,role,branch_id,active').order('created_at'),
-    sb.from('bookings').select('*').order('created_at', {ascending:false}),
-    sb.from('journal').select('*').order('created_at', {ascending:false}),
-    sb.from('manual_expenses').select('*').order('created_at', {ascending:false}),
-    sb.from('cash_deposits').select('*').order('created_at', {ascending:false}),
-    sb.from('profit_handovers').select('*').order('created_at', {ascending:false}),
-    sb.from('employee_charges').select('*').order('created_at', {ascending:false}),
-    sb.from('misc_receipts').select('*').order('created_at', {ascending:false})
+    fetchAllRows('branches','*',true),
+    fetchAllRows('app_users','id,name,username,role,branch_id,active',true),
+    fetchAllRows('bookings','*'),
+    fetchAllRows('journal','*'),
+    fetchAllRows('manual_expenses','*'),
+    fetchAllRows('cash_deposits','*'),
+    fetchAllRows('profit_handovers','*'),
+    fetchAllRows('employee_charges','*'),
+    fetchAllRows('misc_receipts','*')
   ]);
   if(b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error||mr.error) throw (b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error||mr.error);
   branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[]; deposits = dp.data||[]; profitHandovers = ph.data||[]; employeeCharges = ec.data||[]; miscReceipts = mr.data||[];
@@ -846,15 +868,16 @@ async function reviewBookingCost(bookingId, netCost){
   }
 }
 /* ===================== PROFIT HANDOVER (employee <-> admin only) ===================== */
+function bookingProfitNow(b){ return +(b.refunded ? bookingEffectiveSell(b)-Number(b.cost||0) : Number(b.profit_amount||0)).toFixed(2); }
 function eligibleProfitBookings(employeeId, dateFrom, dateTo){
   const lockedIds = new Set();
   profitHandovers.filter(h=>h.status==='pending'||h.status==='approved').forEach(h=>(h.booking_ids||[]).forEach(id=>lockedIds.add(id)));
-  return bookings.filter(b=> b.created_by===employeeId && b.cost_reviewed && !b.refunded && !lockedIds.has(b.id)
+  return bookings.filter(b=> b.created_by===employeeId && b.cost_reviewed && !bookingIsFullRefund(b) && !lockedIds.has(b.id)
     && (!dateFrom || b.date>=dateFrom) && (!dateTo || b.date<=dateTo));
 }
 async function submitProfitHandover(dateFrom, dateTo, list){
   const u = currentUser();
-  const totalProfit = +list.reduce((s,b)=>s+Number(b.profit_amount||0),0).toFixed(2);
+  const totalProfit = +list.reduce((s,b)=>s+bookingProfitNow(b),0).toFixed(2);
   const {data:ins, error} = await sb.from('profit_handovers').insert({
     branch_id:u.branch_id, employee_id:u.id, date_from:dateFrom||null, date_to:dateTo||null,
     total_profit:totalProfit, booking_ids:list.map(b=>b.id), status:'pending'
@@ -875,9 +898,11 @@ async function approveProfitHandover(id){
     h.booking_ids.forEach(bid=>{ const b = bookings.find(x=>x.id===bid); if(b) b.profit_handed_over=true; });
   }
   const amt = +Number(h.total_profit||0).toFixed(2);
-  if(amt>0 && !journal.some(j=>j.desc_key==='jProfitHandover' && (j.desc_args||[])[1]===h.id)){
+  if(Math.abs(amt)>0.004 && !journal.some(j=>j.desc_key==='jProfitHandover' && (j.desc_args||[])[1]===h.id)){
+    // a net-loss period (negative total) flows the other way: management covers the loss into the till
     const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:h.branch_id||null,
-      desc_key:'jProfitHandover', desc_args:[userName(h.employee_id), h.id], debit_key:'accProfitWithdrawn', credit_key:'accCashOnHand', amount:amt }).select().single();
+      desc_key:'jProfitHandover', desc_args:[userName(h.employee_id), h.id],
+      debit_key: amt>0 ? 'accProfitWithdrawn' : 'accCashOnHand', credit_key: amt>0 ? 'accCashOnHand' : 'accProfitWithdrawn', amount:Math.abs(amt) }).select().single();
     if(jErr) throw jErr;
     journal.unshift(jIns);
   }
@@ -1123,7 +1148,7 @@ function bookingIsLocked(b){
   if(!b) return false;
   return !!b.transfer_verified || !!b.refunded || !!b.profit_handed_over || !!b.supplier_settled
     || (Array.isArray(b.payment_splits) && b.payment_splits.some(s=>s.method!=='cash' && s.verified))
-    || journal.some(j=>j.booking_id===b.id && ['jBankReceipt','jRefund','jSupplierPay'].includes(j.desc_key));
+    || jrows(b.id).some(j=>['jBankReceipt','jRefund','jSupplierPay'].includes(j.desc_key));
 }
 async function deleteBooking(id){
   if(bookingIsLocked(bookings.find(b=>b.id===id))) throw new Error(lang==='ar'
@@ -1202,7 +1227,15 @@ function transferParts(b){
   const full = bookingIsFullRefund(b);
   // A refund paid by transfer first cancels customer money not yet confirmed (bank in = bank out).
   // A refund paid in CASH does not: the customer's transfer still has to be confirmed in the bank.
-  let refundLeft = (b.refunded && (b.refund_method||'cash')!=='cash') ? bookingRefundAmount(b) : 0;
+  // How much of the refund cancelled unconfirmed customer money is read from the refund entry actually posted
+  // (older refunds were posted with different rules — reading the entry keeps old and new data consistent).
+  let refundLeft = 0;
+  if(b.refunded){
+    const rr = jrows(b.id).filter(j=>j.desc_key==='jRefund');
+    refundLeft = rr.length
+      ? +Math.max(0, rr.reduce((a,j)=>a+(j.credit_key==='accCustomers'?Number(j.amount)||0:0)-(j.debit_key==='accCustomers'?Number(j.amount)||0:0),0)).toFixed(2)
+      : ((b.refund_method||'cash')!=='cash' ? bookingRefundAmount(b) : 0);
+  }
   const push = (part, amt, method, bank, verified, verifiedAmt, confirmedAt)=>{
     if(verified){
       out.push({b, part, amount:amt, counted: full ? 0 : (verifiedAmt!=null ? +Number(verifiedAmt).toFixed(2) : amt), status: full ? 'refunded' : 'confirmed', method, bank, confirmedAt});
@@ -1244,7 +1277,7 @@ function pendingConfirmationAmount(list){
 function pendingProfitHandoverAmount(list){
   const lockedIds = new Set();
   profitHandovers.filter(h=>h.status==='pending'||h.status==='approved').forEach(h=>(h.booking_ids||[]).forEach(id=>lockedIds.add(id)));
-  return +list.filter(b=>b.cost_reviewed && !b.refunded && !lockedIds.has(b.id)).reduce((s,b)=>s+Number(b.profit_amount||0),0).toFixed(2);
+  return +list.filter(b=>b.cost_reviewed && !bookingIsFullRefund(b) && !lockedIds.has(b.id)).reduce((s,b)=>s+bookingProfitNow(b),0).toFixed(2);
 }
 function computeTotals(bookingsList, expensesList){
   const active = bookingsList.filter(b=>!bookingIsFullRefund(b));
@@ -1253,13 +1286,16 @@ function computeTotals(bookingsList, expensesList){
   const pendingReview = active.filter(b=>!b.cost_reviewed);
   const cost = reviewed.reduce((s,b)=>s+Number(b.cost),0);
   const commission = active.reduce((s,b)=>s+Number(b.commission),0);
-  const expenses = expensesList.reduce((s,e)=>s+Number(e.amount),0);
+  const manualExp = expensesList.reduce((s,e)=>s+Number(e.amount),0);
+  const ids = new Set(bookingsList.map(b=>b.id));
+  const cardFees = +(typeof journal!=='undefined' ? journal : []).filter(j=>j.desc_key==='jCardFee' && ids.has(j.booking_id)).reduce((s,j)=>s+Number(j.amount||0),0).toFixed(2);
+  const expenses = manualExp + cardFees;
   const revenue = sales+commission;
   const reviewedProfit = reviewed.reduce((s,b)=>s+(b.refunded ? bookingEffectiveSell(b)-Number(b.cost||0) : Number(b.profit_amount||0)),0);
   const netProfit = reviewedProfit+commission-expenses;
   const pendingReviewSales = pendingReview.reduce((s,b)=>s+bookingEffectiveSell(b),0);
   const pendingCommission = active.filter(b=>b.commission_status==='pending').reduce((s,b)=>s+Number(b.commission),0);
-  return {sales,cost,commission,expenses,revenue,netProfit,pendingCommission,pendingReviewCount:pendingReview.length,pendingReviewSales,count:active.length};
+  return {sales,cost,commission,expenses,cardFees,manualExpenses:manualExp,revenue,netProfit,pendingCommission,pendingReviewCount:pendingReview.length,pendingReviewSales,count:active.length};
 }
 function expensesForFilter(){
   const u = currentUser();
@@ -1314,7 +1350,7 @@ let autoRefreshInterval = null;
 function startAutoRefresh(){
   if(autoRefreshInterval) return;
   autoRefreshInterval = setInterval(async ()=>{
-    if(!getSession()) return;
+    if(!getSession() || document.hidden) return;
     const overlay = document.getElementById('overlay');
     if(overlay && overlay.classList.contains('show')) return;
     try{ await fetchAll(); render(); }catch(e){ console.error('auto-refresh failed', e); }
@@ -1772,12 +1808,12 @@ function openProfitHandoverModal(){
     const dateFrom = document.getElementById('phDateFrom').value || null;
     const dateTo = document.getElementById('phDateTo').value || null;
     const list = eligibleProfitBookings(u.id, dateFrom, dateTo);
-    const total = +list.reduce((s,b)=>s+Number(b.profit_amount||0),0).toFixed(2);
+    const total = +list.reduce((s,b)=>s+bookingProfitNow(b),0).toFixed(2);
     const box = document.getElementById('phPreviewBox');
     if(list.length===0){ box.innerHTML = `<div class="empty">${t('noEligibleProfit')}</div>`; return; }
     box.innerHTML = `
       <div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colProfit')}</th></tr></thead>
-        <tbody>${list.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no||'—')}</td><td>${esc(b.customer)}</td><td class="num" style="font-weight:600">${money(b.profit_amount)}</td></tr>`).join('')}</tbody>
+        <tbody>${list.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no||'—')}</td><td>${esc(b.customer)}</td><td class="num" style="font-weight:600">${money(bookingProfitNow(b))}</td></tr>`).join('')}</tbody>
       </table></div>
       <div style="margin-top:10px;font-weight:700;font-size:15px;">${t('totalProfitLabel')}: ${money(total)}</div>
       <div style="margin-top:16px;display:flex;gap:10px;">
@@ -1805,7 +1841,7 @@ function printProfitHandoverReport(list, total, dateFrom, dateTo, u){
     <h1>${t('modalProfitHandover')} — ${esc(u.name)}</h1>
     <div>${t('reportPeriodLabel')}: ${periodLabel}</div>
     <table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colProfit')}</th></tr></thead>
-      <tbody>${list.map(b=>`<tr><td>${b.booking_no}</td><td>${esc(b.ticket_no||'—')}</td><td>${esc(b.customer)}</td><td style="text-align:end;font-weight:600">${money(b.profit_amount)}</td></tr>`).join('')}</tbody>
+      <tbody>${list.map(b=>`<tr><td>${b.booking_no}</td><td>${esc(b.ticket_no||'—')}</td><td>${esc(b.customer)}</td><td style="text-align:end;font-weight:600">${money(bookingProfitNow(b))}</td></tr>`).join('')}</tbody>
     </table>
     <div class="total">${t('totalProfitLabel')}: ${money(total)}</div>
     </body></html>`;
@@ -2527,7 +2563,8 @@ function renderLedger(){
           <tr><td>${t('incomeSales')}</td><td class="num">${canSeeSalesTotals()?money(tt.sales):moneyOrHidden(0)}</td></tr>
           <tr><td>${t('incomeComm')}</td><td class="num">${money(tt.commission)}</td></tr>
           <tr><td>${t('expenseCost')}</td><td class="num neg">${money(tt.cost)}</td></tr>
-          <tr><td>${t('expenseOp')}</td><td class="num neg">${money(tt.expenses)}</td></tr>
+          <tr><td>${t('expenseOp')}</td><td class="num neg">${money(tt.manualExpenses)}</td></tr>
+          <tr><td>${lang==='ar'?'رسوم البنك (شبكة / تقسيط)':'Bank card fees (span / installment)'}</td><td class="num neg">${money(tt.cardFees)}</td></tr>
           <tr style="border-top:2px solid var(--navy);font-weight:700;"><td>${t('netProfit')}</td><td class="num ${tt.netProfit>=0?'pos':'neg'}">${moneyOrHidden(tt.netProfit)}</td></tr>
         </tbody></table>
         ${(isAdmin() && tt.pendingReviewCount>0)?`<div class="note" style="color:#A8722C;">⚠️ ${tt.pendingReviewCount} ${t('pendingReviewTag')} (${money(tt.pendingReviewSales)}) — ${t('reviewCostBtn')}</div>`:''}
@@ -2589,7 +2626,7 @@ function integrityIssues(){
     const cogs = bal(rows,'accCogs','debit'), expCogs = (bookingIsFullRefund(b) || !b.cost_reviewed) ? 0 : +(Number(b.cost)||0).toFixed(2);
     if(Math.abs(cogs-expCogs)>0.05) add(ar?'التكلفة في القيود لا تطابق التذكرة':'Cost entries ≠ ticket', expCogs, cogs);
   });
-  profitHandovers.filter(h=>h.status==='approved' && Number(h.total_profit)>0).forEach(h=>{
+  profitHandovers.filter(h=>h.status==='approved' && Math.abs(Number(h.total_profit))>0.004).forEach(h=>{
     if(!journal.some(j=>j.desc_key==='jProfitHandover' && (j.desc_args||[])[1]===h.id))
       issues.push({b:null, issue: ar?`تسليم أرباح معتمد بدون قيد — ${userName(h.employee_id)} (${(h.created_at||'').slice(0,10)})`:`Approved profit handover without entry — ${userName(h.employee_id)}`, expected:+Number(h.total_profit).toFixed(2), actual:0});
   });
@@ -2601,7 +2638,7 @@ function integrityIssues(){
   return issues;
 }
 function bookingConfirmedGross(id){
-  return +journal.filter(j=>j.booking_id===id && (j.desc_key==='jBankReceipt' || j.desc_key==='jCardFee')).reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2);
+  return +jrows(id).filter(j=>j.desc_key==='jBankReceipt' || j.desc_key==='jCardFee').reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2);
 }
 /* Rebuild a ticket's automatic journal entries from the ticket itself (the ticket is the source of truth). */
 async function repairBooking(bookingId){
