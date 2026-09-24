@@ -1156,32 +1156,42 @@ async function addManualJournalEntry(data){
   if(error) throw error;
   journal.unshift(jIns);
 }
+/* One source of truth for every non-cash payment (transfer / span / installment / non-cash split part) */
+function transferParts(b){
+  const out = [];
+  if(!b) return out;
+  const full = bookingIsFullRefund(b);
+  if(b.payment_method==='split' && Array.isArray(b.payment_splits)){
+    b.payment_splits.forEach((p,i)=>{
+      if(p.method==='cash') return;
+      const amt = +(Number(p.amount)||0).toFixed(2);
+      let status = p.verified ? 'confirmed' : 'pending';
+      if(full || (b.refunded && !p.verified)) status = 'refunded';
+      out.push({b, part:i, amount:amt, counted: status==='refunded' ? 0 : amt, status, method:p.method, bank:p.bankName||null, confirmedAt:p.verified_at||null});
+    });
+  }else if(b.payment_method!=='cash'){
+    const sell = +(Number(b.sell)||0).toFixed(2);
+    let status = (b.payment_status==='paid' || b.transfer_verified) ? 'confirmed' : (b.payment_status==='pending' ? 'pending' : 'other');
+    if(full) status = 'refunded';
+    const counted = status==='confirmed' ? sell : status==='pending' ? bookingEffectiveSell(b) : 0;
+    out.push({b, part:null, amount:sell, counted, status, method:b.payment_method, bank:b.bank_name||null, confirmedAt:b.transfer_verified_at||null});
+  }
+  return out;
+}
 function employeeFinancialSummary(employeeId){
-  const myBookings = bookings.filter(b=>b.created_by===employeeId && !b.refunded);
-  const totalSales = +bookings.filter(b=>b.created_by===employeeId).reduce((s,b)=>s+bookingEffectiveSell(b),0).toFixed(2);
-  const totalDeposited = deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
-  const totalTransferred = +myBookings.reduce((s,b)=>{
-    if(b.payment_method==='split' && Array.isArray(b.payment_splits))
-      return s + b.payment_splits.filter(x=>x.method!=='cash' && x.verified).reduce((a,x)=>a+Number(x.amount||0),0);
-    if(b.payment_method!=='cash' && b.payment_status==='paid') return s + Number(b.sell||0);
-    return s;
-  },0).toFixed(2);
+  const mine = bookings.filter(b=>b.created_by===employeeId);
+  const totalSales = +mine.reduce((s,b)=>s+bookingEffectiveSell(b),0).toFixed(2);
+  const totalDeposited = +deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0).toFixed(2);
+  const parts = mine.flatMap(transferParts);
+  const totalTransferred = +parts.filter(p=>p.status==='confirmed').reduce((s,p)=>s+p.counted,0).toFixed(2);
+  const pendingTransfers = +parts.filter(p=>p.status==='pending').reduce((s,p)=>s+p.counted,0).toFixed(2);
   const cashOnHand = employeeCashOnHand(employeeId);
   const charges = outstandingEmployeeCharges(employeeId);
-  const pendingTransfers = pendingConfirmationAmount(myBookings);
   const pendingAmt = +(pendingTransfers + cashOnHand + charges).toFixed(2);
   return {totalSales, totalDeposited, totalTransferred, pendingAmt, pendingTransfers, cashOnHand, charges};
 }
 function pendingConfirmationAmount(list){
-  let total = 0;
-  list.filter(b=>!bookingIsFullRefund(b)).forEach(b=>{
-    if(b.payment_method==='split' && Array.isArray(b.payment_splits)){
-      if(!b.refunded) total += b.payment_splits.filter(s=>s.method!=='cash' && !s.verified).reduce((s,r)=>s+Number(r.amount||0),0);
-    }else if(b.payment_method!=='cash' && b.payment_status==='pending' && !b.transfer_verified){
-      total += bookingEffectiveSell(b);
-    }
-  });
-  return +total.toFixed(2);
+  return +list.flatMap(transferParts).filter(p=>p.status==='pending').reduce((s,p)=>s+p.counted,0).toFixed(2);
 }
 function pendingProfitHandoverAmount(list){
   const lockedIds = new Set();
@@ -1842,54 +1852,121 @@ function exportReportsToExcel(rows, groupBy, nameHeader){
   XLSX.utils.book_append_sheet(wb, ws, 'Report');
   XLSX.writeFile(wb, `branch-employee-report-${todayStr()}.xlsx`);
 }
-function employeeCashStatement(employeeId){
+function inStmtRange(d, from, to){ return (!from || d>=from) && (!to || d<=to); }
+function employeeCashStatement(employeeId, from, to){
   const ar = lang==='ar';
-  const rows = [];
+  const all = [];
   bookings.filter(b=>b.created_by===employeeId).forEach(b=>{
     const amt = bookingCashCostPortion(b);
     if(Math.abs(amt)<0.005) return;
     const sell = Number(b.sell)||0;
-    let cashIn = b.payment_method==='cash' ? sell : (Array.isArray(b.payment_splits) ? b.payment_splits.filter(x=>x.method==='cash').reduce((a,x)=>a+Number(x.amount||0),0) : 0);
+    const cashIn = b.payment_method==='cash' ? sell : (Array.isArray(b.payment_splits) ? b.payment_splits.filter(x=>x.method==='cash').reduce((a,x)=>a+Number(x.amount||0),0) : 0);
     let note = ar ? `كاش مستلم ${money(cashIn)} — تكلفة ${money(b.cost)}` : `Cash received ${money(cashIn)} — cost ${money(b.cost)}`;
     if(b.refunded) note += ar ? ` — استرجاع ${money(bookingRefundAmount(b))} (${(b.refund_method||'cash')==='cash'?'كاش':'تحويل'})` : ` — refund ${money(bookingRefundAmount(b))} (${b.refund_method||'cash'})`;
-    rows.push({date:b.date||'', stamp:b.created_at||'', type: ar?'تذكرة':'Ticket', desc:`#${b.booking_no} ${b.customer||''}`, note, amt});
+    all.push({date:b.date||'', stamp:b.created_at||'', type: ar?'تذكرة':'Ticket', desc:`#${b.booking_no} ${b.customer||''}`, note, amt});
   });
   miscReceipts.filter(r=>r.employee_id===employeeId && r.status==='confirmed' && r.method==='cash').forEach(r=>{
-    rows.push({date:(r.confirmed_at||r.created_at||'').slice(0,10), stamp:r.created_at||'', type: ar?'مبلغ بدون تذكرة':'Misc receipt', desc:r.note||'—',
-      note: ar?`سجّله: ${userName(r.created_by)}`:`Recorded by ${userName(r.created_by)}`, amt:Number(r.amount)||0});
+    all.push({date:(r.created_at||'').slice(0,10), stamp:r.created_at||'', type: ar?'مبلغ بدون تذكرة':'Misc receipt', desc:r.note||'—',
+      note: ar?`سجّله: ${userName(r.created_by)}`:`Recorded by ${userName(r.created_by)}`, amt:+(Number(r.amount)||0)});
   });
   deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').forEach(d=>{
-    rows.push({date:(d.reviewed_at||d.created_at||'').slice(0,10), stamp:d.created_at||'', type: ar?'إيداع معتمد':'Approved deposit', desc:destLabel(d.destination), note:d.note||'', amt:-(Number(d.amount)||0)});
+    all.push({date:(d.created_at||'').slice(0,10), stamp:d.created_at||'', type: ar?'إيداع معتمد':'Approved deposit', desc:destLabel(d.destination),
+      note:(ar?'اعتُمد ':'approved ')+(d.reviewed_at||'').slice(0,10)+(d.note?` — ${d.note}`:''), amt:-(Number(d.amount)||0)});
   });
-  rows.sort((a,b)=>(a.date).localeCompare(b.date) || a.stamp.localeCompare(b.stamp));
-  let bal = 0; rows.forEach(r=>{ bal = +(bal + r.amt).toFixed(2); r.bal = bal; });
-  const pendingDeps = deposits.filter(d=>d.submitted_by===employeeId && d.status==='pending');
-  return {rows: rows.reverse(), total: bal, pendingDeps};
+  all.sort((a,b)=>a.date.localeCompare(b.date) || a.stamp.localeCompare(b.stamp));
+  let bal = 0, opening = 0, periodIn = 0, periodOut = 0;
+  const rows = [];
+  all.forEach(r=>{
+    bal = +(bal + r.amt).toFixed(2);
+    if(from && r.date < from){ opening = bal; return; }
+    if(to && r.date > to) return;
+    r.bal = bal; rows.push(r);
+    if(r.amt>=0) periodIn += r.amt; else periodOut += -r.amt;
+  });
+  const closing = +(opening + periodIn - periodOut).toFixed(2);
+  const pendingDeps = deposits.filter(d=>d.submitted_by===employeeId && d.status==='pending' && inStmtRange((d.created_at||'').slice(0,10), from, to));
+  return {rows: rows.reverse(), opening:+opening.toFixed(2), periodIn:+periodIn.toFixed(2), periodOut:+periodOut.toFixed(2), closing, current: bal, pendingDeps};
 }
-function employeeCashStatementHTML(employeeId){
+function employeeCashStatementHTML(employeeId, from, to){
   const ar = lang==='ar';
-  const st = employeeCashStatement(employeeId);
+  const st = employeeCashStatement(employeeId, from, to);
   const pendSum = st.pendingDeps.reduce((a,d)=>a+Number(d.amount||0),0);
-  return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${ar?'النوع':'Type'}</th><th>${ar?'البيان':'Description'}</th><th>${ar?'تفاصيل':'Details'}</th><th>${ar?'له / عليه':'In / Out'}</th><th>${ar?'الرصيد':'Balance'}</th></tr></thead>
+  const kv = (k,v,c)=>`<div class="kpi" style="--accent:${c}"><div class="kpi-label">${k}</div><div class="kpi-value" style="font-size:18px;">${money(v)}</div></div>`;
+  return `<div class="kpi-row" style="grid-template-columns:repeat(4,1fr);margin-bottom:10px;">
+      ${kv(ar?'رصيد أول الفترة':'Opening balance', st.opening, 'var(--navy)')}
+      ${kv(ar?'عليه خلال الفترة (+)':'Added in period (+)', st.periodIn, '#A8722C')}
+      ${kv(ar?'أودع خلال الفترة (−)':'Deposited in period (−)', st.periodOut, 'var(--teal)')}
+      ${kv(ar?'رصيد آخر الفترة':'Closing balance', st.closing, 'var(--red)')}</div>
+    ${st.rows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${ar?'النوع':'Type'}</th><th>${ar?'البيان':'Description'}</th><th>${ar?'تفاصيل':'Details'}</th><th>${ar?'له / عليه':'In / Out'}</th><th>${ar?'الرصيد':'Balance'}</th></tr></thead>
     <tbody>${st.rows.map(r=>`<tr><td>${r.date}</td><td>${r.type}</td><td>${esc(r.desc)}</td><td style="font-size:12px;">${esc(r.note)}</td>
-      <td class="num" style="color:${r.amt<0?'#1f7a4d':'#A8722C'};font-weight:600;">${r.amt<0?'−':'+'} ${money(Math.abs(r.amt))}</td><td class="num">${money(r.bal)}</td></tr>`).join('')}</tbody></table></div>
-    <div style="margin-top:10px;font-weight:700;">${t('efsCashOnHand')}: ${money(st.total)}</div>
-    ${st.pendingDeps.length?`<div class="note" style="margin-top:6px;color:#A8722C;">${ar?`يوجد ${st.pendingDeps.length} إيداع بانتظار اعتماد المحاسب بمجموع ${money(pendSum)} — غير مخصوم بعد. بعد الاعتماد يصبح الرصيد ${money(st.total-pendSum)}.`:`${st.pendingDeps.length} deposit(s) awaiting approval totalling ${money(pendSum)} — not deducted yet. After approval: ${money(st.total-pendSum)}.`}</div>`:''}
-    <p class="note" style="margin-top:6px;">${ar?'كل تذكرة كاش تضيف على الموظف قيمة تكلفتها فقط (الربح يُسلَّم منفصلًا للإدارة)، وكل إيداع معتمد ينقص منه.':'Each cash ticket adds its cost only (profit is handed over separately); each approved deposit deducts.'}</p>`;
+      <td class="num" style="color:${r.amt<0?'#1f7a4d':'#A8722C'};font-weight:600;">${r.amt<0?'−':'+'} ${money(Math.abs(r.amt))}</td><td class="num">${money(r.bal)}</td></tr>`).join('')}</tbody></table></div>`}
+    ${to?`<div class="note" style="margin-top:6px;">${ar?'رصيده الحالي (اليوم)':'Current balance (today)'}: <b>${money(st.current)}</b></div>`:''}
+    ${st.pendingDeps.length?`<div class="note" style="margin-top:6px;color:#A8722C;">${ar?`يوجد ${st.pendingDeps.length} إيداع بانتظار اعتماد المحاسب بمجموع ${money(pendSum)} — غير مخصوم بعد.`:`${st.pendingDeps.length} deposit(s) awaiting approval totalling ${money(pendSum)} — not deducted yet.`}</div>`:''}
+    <p class="note" style="margin-top:6px;">${ar?'كل تذكرة كاش تضيف على الموظف قيمة تكلفتها فقط (الربح يُسلَّم منفصلًا للإدارة)، وكل إيداع معتمد ينقص منه بتاريخ الإيداع.':'Each cash ticket adds its cost only (profit is handed over separately); each approved deposit deducts on its deposit date.'}</p>`;
 }
-function openCashStatementModal(employeeId){
-  showModal(`<div class="modal-head"><h3>${lang==='ar'?'كشف الكاش التفصيلي':'Detailed cash statement'} — ${esc(userName(employeeId))}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
-    ${employeeCashStatementHTML(employeeId)}
-    <div style="display:flex;gap:8px;margin-top:12px;"><button class="btn btn-primary btn-sm" id="cashStmtPrintBtn">${t('printReport')}</button><button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('cancel')}</button></div>`);
-  const mEl = document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='960px';
-  document.getElementById('cashStmtPrintBtn').onclick = ()=>{
+function employeeTransferStatement(employeeId, from, to){
+  const rows = bookings.filter(b=>b.created_by===employeeId && inStmtRange(b.date||'', from, to)).flatMap(transferParts)
+    .sort((a,b)=>(b.b.date||'').localeCompare(a.b.date||'') || (b.b.created_at||'').localeCompare(a.b.created_at||''));
+  const sum = st=>+rows.filter(r=>r.status===st).reduce((s,r)=>s+r.counted,0).toFixed(2);
+  const refundedSum = +rows.filter(r=>r.status==='refunded').reduce((s,r)=>s+r.amount,0).toFixed(2);
+  return {rows, confirmed:sum('confirmed'), pending:sum('pending'), refunded:refundedSum};
+}
+function employeeTransferStatementHTML(employeeId, from, to){
+  const ar = lang==='ar';
+  const st = employeeTransferStatement(employeeId, from, to);
+  const methodLbl = m=> m==='span'?t('paySpan'):m==='installment'?t('payInstallment'):t('payTransfer');
+  const statusTag = r=>{
+    if(r.status==='confirmed') return `<span class="tag collected">${ar?'مؤكَّد':'Confirmed'}</span>`;
+    if(r.status==='refunded') return `<span class="tag rejected">${ar?'مسترجع — خارج الحساب':'Refunded — excluded'}</span>`;
+    if(r.status==='pending') return `<span class="tag pending">${r.b.edit_requested?(ar?'مرجَع للموظف':'Returned to employee'):(ar?'بانتظار التأكيد':'Awaiting confirmation')}</span>`;
+    return '—';
+  };
+  const kv = (k,v,c)=>`<div class="kpi" style="--accent:${c}"><div class="kpi-label">${k}</div><div class="kpi-value" style="font-size:18px;">${money(v)}</div></div>`;
+  return `<div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:10px;">
+      ${kv(ar?'تحويلات مؤكَّدة':'Confirmed', st.confirmed, 'var(--teal)')}
+      ${kv(ar?'بانتظار التأكيد':'Awaiting confirmation', st.pending, '#A8722C')}
+      ${kv(ar?'مسترجعة (خارج الحساب)':'Refunded (excluded)', st.refunded, 'var(--red)')}</div>
+    ${st.rows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${ar?'المحتسب':'Counted'}</th><th>${ar?'الحالة':'Status'}</th><th>${ar?'تاريخ التأكيد':'Confirmed on'}</th></tr></thead>
+    <tbody>${st.rows.map(r=>`<tr><td>${r.b.date||''}</td><td class="num">${r.b.booking_no}${r.part!==null?` <span style="font-size:11px;">(${ar?'دفع متعدد':'split'})</span>`:''}</td><td>${esc(r.b.customer||'')}</td>
+      <td>${methodLbl(r.method)}</td><td>${(r.method==='span'||!r.bank)?'—':bankLabel(r.bank)}</td><td class="num">${money(r.amount)}</td>
+      <td class="num" style="font-weight:600;">${money(r.counted)}${r.b.refunded && r.status!=='refunded'?`<div style="font-size:11px;color:#A8722C;">${ar?'استرجاع جزئي':'partial refund'} ${money(bookingRefundAmount(r.b))}</div>`:''}</td>
+      <td>${statusTag(r)}</td><td>${(r.confirmedAt||'').slice(0,10)||'—'}</td></tr>`).join('')}</tbody></table></div>`}
+    <p class="note" style="margin-top:6px;">${ar?'الفترة تُحسب بتاريخ التذكرة. "المحتسب" هو المبلغ الداخل في الإجماليات بعد أي استرجاع.':'Period uses the ticket date. "Counted" is the amount used in totals after any refund.'}</p>`;
+}
+function openStatementModal(kind, employeeId){
+  const ar = lang==='ar';
+  const title = kind==='cash' ? (ar?'كشف الكاش التفصيلي':'Detailed cash statement') : (ar?'كشف التحويلات التفصيلي':'Detailed transfers statement');
+  const build = (f,tt)=> kind==='cash' ? employeeCashStatementHTML(employeeId, f, tt) : employeeTransferStatementHTML(employeeId, f, tt);
+  const d = new Date(); const monthStart = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+  showModal(`<div class="modal-head"><h3>${title} — ${esc(userName(employeeId))}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px;">
+      <div class="field" style="margin:0;"><label>${ar?'من تاريخ':'From'}</label><input type="date" id="stmtFrom"></div>
+      <div class="field" style="margin:0;"><label>${ar?'إلى تاريخ':'To'}</label><input type="date" id="stmtTo"></div>
+      <button class="btn btn-ghost btn-sm" id="stmtMonth">${ar?'هذا الشهر':'This month'}</button>
+      <button class="btn btn-ghost btn-sm" id="stmtAll">${ar?'كل الفترات':'All time'}</button>
+    </div>
+    <div id="stmtBody"></div>
+    <div style="display:flex;gap:8px;margin-top:12px;"><button class="btn btn-primary btn-sm" id="stmtPrintBtn">${t('printReport')}</button><button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('cancel')}</button></div>`);
+  const mEl = document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='1000px';
+  const fromEl = document.getElementById('stmtFrom'), toEl = document.getElementById('stmtTo');
+  const draw = ()=>{
+    if(fromEl.value && toEl.value && fromEl.value>toEl.value){ document.getElementById('stmtBody').innerHTML = `<div class="login-error">${ar?'تاريخ البداية بعد تاريخ النهاية':'Start date is after end date'}</div>`; return; }
+    document.getElementById('stmtBody').innerHTML = build(fromEl.value||null, toEl.value||null);
+  };
+  fromEl.onchange = draw; toEl.onchange = draw;
+  document.getElementById('stmtMonth').onclick = ()=>{ fromEl.value = monthStart; toEl.value = todayStr(); draw(); };
+  document.getElementById('stmtAll').onclick = ()=>{ fromEl.value = ''; toEl.value = ''; draw(); };
+  draw();
+  document.getElementById('stmtPrintBtn').onclick = ()=>{
+    const f = fromEl.value||null, tt = toEl.value||null;
     const w = window.open('', '_blank'); if(!w) return;
-    w.document.write(`<!DOCTYPE html><html lang="${lang}" dir="${lang==='ar'?'rtl':'ltr'}"><head><meta charset="UTF-8"><title>${esc(userName(employeeId))}</title>
-      <style>body{font-family:Tahoma,Arial,sans-serif;padding:20px;font-size:13px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:6px;text-align:start}th{background:#f2f2f2}.num{direction:ltr;text-align:right}</style></head>
-      <body><h2>${lang==='ar'?'كشف الكاش التفصيلي':'Detailed cash statement'} — ${esc(userName(employeeId))}</h2><p>${todayStr()}</p>${employeeCashStatementHTML(employeeId)}</body></html>`);
+    w.document.write(`<!DOCTYPE html><html lang="${lang}" dir="${ar?'rtl':'ltr'}"><head><meta charset="UTF-8"><title>${esc(userName(employeeId))}</title>
+      <style>body{font-family:Tahoma,Arial,sans-serif;padding:20px;font-size:13px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:6px;text-align:start}th{background:#f2f2f2}.num{direction:ltr;text-align:right}.kpi-row{display:grid;gap:8px}.kpi{border:1px solid #ccc;padding:8px}.kpi-label{font-size:12px;color:#555}.kpi-value{font-weight:700}.tag{padding:2px 6px;border:1px solid #ccc;border-radius:8px;font-size:11px}</style></head>
+      <body><h2>${title} — ${esc(userName(employeeId))}</h2><p>${ar?'الفترة':'Period'}: ${f||'…'} → ${tt||'…'} &nbsp; | &nbsp; ${ar?'تاريخ الطباعة':'Printed'}: ${todayStr()}</p>${build(f,tt)}</body></html>`);
     w.document.close(); setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
   };
 }
+function openCashStatementModal(employeeId){ openStatementModal('cash', employeeId); }
 function openAddChargeModal(employeeId){
   showModal(`
     <div class="modal-head"><h3>${t('addChargeBtn')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
@@ -2666,7 +2743,7 @@ function renderReports(){
         <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsCashOnHand')}</div><div class="kpi-value">${money(es.cashOnHand)}</div></div>
         <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('efsCharges')}</div><div class="kpi-value">${money(es.charges)}</div></div>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">${isAdmin()||isAccountant()?`<button class="btn btn-primary btn-sm" id="addChargeBtn">${t('addChargeBtn')}</button>`:''}<button class="btn btn-ghost btn-sm" id="cashStmtBtn">${lang==='ar'?'📄 كشف الكاش التفصيلي':'📄 Detailed cash statement'}</button></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">${isAdmin()||isAccountant()?`<button class="btn btn-primary btn-sm" id="addChargeBtn">${t('addChargeBtn')}</button>`:''}<button class="btn btn-ghost btn-sm" id="cashStmtBtn">${lang==='ar'?'📄 كشف الكاش التفصيلي':'📄 Detailed cash statement'}</button><button class="btn btn-ghost btn-sm" id="trStmtBtn">${lang==='ar'?'🏦 كشف التحويلات التفصيلي':'🏦 Detailed transfers statement'}</button></div>
       ${myCharges.length>0?`<div style="overflow-x:auto;margin-top:10px;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colAmount')}</th><th>${t('fieldChargeReason')}</th><th>${t('colDepositStatus')}</th>${isAdmin()||isAccountant()?'<th></th>':''}</tr></thead>
       <tbody>${myCharges.map(ch=>`<tr ${ch.payment_claimed && !ch.settled?'style="background:#FFF7E0;"':''}><td>${(ch.created_at||'').slice(0,10)}</td><td class="num">${money(ch.amount)}</td><td>${esc(ch.reason||'—')}</td>
         <td><span class="tag ${ch.settled?'collected':ch.payment_claimed?'pending':'pending'}">${ch.settled?t('chargeSettledTag'):ch.payment_claimed?`🔔 ${t('claimPendingTag')} (${ch.claimed_method==='cash'?t('payCash'):t('payTransfer')})`:(ch.acknowledged?t('acknowledgedTag'):t('chargeUnseenTag'))}</span></td>
@@ -2725,6 +2802,7 @@ function renderReports(){
   if(document.getElementById('efsPrintBtn')) document.getElementById('efsPrintBtn').onclick = ()=>printEmployeeFinancialSummary(reportEmployeeFilter);
   if(document.getElementById('addChargeBtn')) document.getElementById('addChargeBtn').onclick = ()=>openAddChargeModal(reportEmployeeFilter);
   if(document.getElementById('cashStmtBtn')) document.getElementById('cashStmtBtn').onclick = ()=>openCashStatementModal(reportEmployeeFilter);
+  if(document.getElementById('trStmtBtn')) document.getElementById('trStmtBtn').onclick = ()=>openStatementModal('transfer', reportEmployeeFilter);
   document.getElementById('reportExcelBtnTop').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
   document.getElementById('reportGroupBySel').onchange = (e)=>{ reportGroupBy = e.target.value; renderReports(); };
   document.getElementById('reportSearchInput').oninput = (e)=>{ reportSearchTerm = e.target.value; renderReports(); };
