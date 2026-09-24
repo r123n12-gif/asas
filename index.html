@@ -583,7 +583,7 @@ async function approveMiscReceipt(id){
   if(error) throw error;
   r.status='confirmed';
   const {data:jIns, error:jErr} = await sb.from('journal').insert({
-    date: todayStr(), branch_id: r.branch_id||null, desc_key:'jMiscReceipt', desc_args:[userName(r.employee_id), r.note||'-'],
+    date: todayStr(), branch_id: r.branch_id||null, desc_key:'jMiscReceipt', desc_args:[userName(r.employee_id), r.note||'-', r.id],
     debit_key: r.method==='cash' ? 'accCashOnHand' : 'accBank', credit_key:'accMiscReceipts', amount: Number(r.amount)||0
   }).select().single();
   if(jErr) throw jErr;
@@ -593,6 +593,30 @@ async function rejectMiscReceipt(id, note){
   const {error} = await sb.from('misc_receipts').update({status:'rejected', reject_note:note||null, confirmed_by:currentUser()?.id||null, confirmed_at:new Date().toISOString()}).eq('id', id);
   if(error) throw error;
   const r = miscReceipts.find(x=>x.id===id); if(r){ r.status='rejected'; r.reject_note=note||null; }
+}
+function miscReceiptJournalRow(r){
+  const byId = journal.find(j=>j.desc_key==='jMiscReceipt' && (j.desc_args||[])[2]===r.id);
+  if(byId) return byId;
+  // older entries were not linked by id: match on employee, account, amount (identical rows have identical effect)
+  const debit = r.method==='cash' ? 'accCashOnHand' : 'accBank';
+  const day = (r.confirmed_at||'').slice(0,10);
+  const cands = journal.filter(j=>j.desc_key==='jMiscReceipt' && !(j.desc_args||[])[2] && j.debit_key===debit && j.credit_key==='accMiscReceipts'
+    && Math.abs(Number(j.amount)-Number(r.amount))<0.005 && (j.desc_args||[])[0]===userName(r.employee_id));
+  return cands.find(j=>j.date===day) || cands[0] || null;
+}
+async function cancelMiscReceipt(id){
+  const r = miscReceipts.find(x=>x.id===id);
+  if(!r) throw new Error('receipt not found');
+  if(r.status==='confirmed'){
+    const jr = miscReceiptJournalRow(r);
+    if(!jr) throw new Error(lang==='ar'?'لم يُعثر على القيد المحاسبي لهذا المبلغ — لم يتم أي تغيير.':'Journal entry for this amount not found — nothing changed.');
+    const {error:eJ} = await sb.from('journal').delete().eq('id', jr.id);
+    if(eJ) throw eJ;
+    journal = journal.filter(j=>j.id!==jr.id);
+  }
+  const {error} = await sb.from('misc_receipts').update({status:'cancelled', confirmed_by:currentUser()?.id||null, confirmed_at:new Date().toISOString()}).eq('id', id);
+  if(error) throw error;
+  r.status='cancelled';
 }
 /* ===================== EMPLOYEE CHARGES (manual debit) ===================== */
 async function addEmployeeCharge(employeeId, branchId, amount, reason, source){
@@ -2983,21 +3007,23 @@ function renderDeposits(){
     ${miscReceiptsTableHTML(pendingMisc, canManage)}
   </div>
   <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('miscReceiptsHistoryTitle')}</h3></div>
-    ${miscReceiptsTableHTML(historyMisc, false)}
+    ${miscReceiptsTableHTML(historyMisc, false, canManage)}
   </div>`;
   document.getElementById('content').innerHTML = html;
   document.getElementById('addDepositBtn').onclick = openDepositModal;
   document.getElementById('addMiscReceiptBtn').onclick = openMiscReceiptModal;
 }
-function miscReceiptsTableHTML(list, showApprove){
+function miscReceiptsTableHTML(list, showApprove, canCancel){
+  const withActions = showApprove || canCancel;
   if(list.length===0) return `<div class="empty">${t('emptyData')}</div>`;
-  return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('fieldPaymentMethod')}</th><th>${t('colAmount')}</th><th>${t('fieldChargeReason')}</th><th>${t('colDepositStatus')}</th>${showApprove?'<th></th>':''}</tr></thead>
-    <tbody>${list.map(r=>`<tr><td>${(r.created_at||'').slice(0,10)}</td><td>${esc(userName(r.employee_id))}</td><td>${branchName(r.branch_id)}</td>
+  return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('fieldPaymentMethod')}</th><th>${t('colAmount')}</th><th>${t('fieldChargeReason')}</th><th>${t('colDepositStatus')}</th>${withActions?'<th></th>':''}</tr></thead>
+    <tbody>${list.map(r=>`<tr style="${r.status==='cancelled'?'opacity:.55;':''}"><td>${(r.created_at||'').slice(0,10)}</td><td>${esc(userName(r.employee_id))}</td><td>${branchName(r.branch_id)}</td>
       <td>${r.method==='cash'?t('payCash'):r.method==='span'?t('paySpan'):t('payTransfer')}${r.bank_name?` (${bankLabel(r.bank_name)})`:''}</td>
       <td class="num" style="font-weight:600">${money(r.amount)}</td><td>${esc(r.note||'—')}</td>
-      <td><span class="tag ${r.status==='confirmed'?'collected':r.status==='rejected'?'rejected':'pending'}">${r.status==='confirmed'?t('depositApproved'):r.status==='rejected'?t('depositRejected'):t('depositPending')}</span>
+      <td><span class="tag ${r.status==='confirmed'?'collected':(r.status==='rejected'||r.status==='cancelled')?'rejected':'pending'}">${r.status==='confirmed'?t('depositApproved'):r.status==='rejected'?t('depositRejected'):r.status==='cancelled'?(lang==='ar'?'ملغي':'Cancelled'):t('depositPending')}</span>
         ${r.status==='rejected' && r.reject_note?`<div class="note" style="color:var(--red);">${esc(r.reject_note)}</div>`:''}</td>
-      ${showApprove?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveMiscReceipt('${r.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectMiscReceipt('${r.id}')">${t('reject')}</button></td>`:''}
+      ${showApprove?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveMiscReceipt('${r.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectMiscReceipt('${r.id}')">${t('reject')}</button></td>`
+        : canCancel ? `<td>${r.status==='confirmed'?`<button class="btn btn-danger btn-sm" onclick="uiCancelMiscReceipt('${r.id}')">${lang==='ar'?'إلغاء المبلغ والقيد':'Cancel amount & entry'}</button>`:''}</td>` : ''}
     </tr>`).join('')}</tbody></table></div>`;
 }
 function depositsTableHTML(list, showApprove){
@@ -3237,6 +3263,13 @@ window.uiApproveMiscReceipt = async function(id){
   const dupWarn = r ? miscDuplicateWarning(r.employee_id, r.amount, r.method) : '';
   if(dupWarn && !confirm(dupWarn)) return;
   try{ await approveMiscReceipt(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
+window.uiCancelMiscReceipt = async function(id){
+  const r = miscReceipts.find(x=>x.id===id); if(!r) return;
+  if(!confirm(lang==='ar'
+    ? `إلغاء مبلغ ${money(r.amount)} المسجل على ${userName(r.employee_id)}؟\n\nسيُحذف قيده المحاسبي (${r.method==='cash'?'من الصندوق':'من البنك'}) ويُعلَّم المبلغ "ملغي" ويختفي من حساب الموظف.`
+    : `Cancel ${money(r.amount)} recorded on ${userName(r.employee_id)}? Its journal entry will be removed.`)) return;
+  try{ await cancelMiscReceipt(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiRejectMiscReceipt = async function(id){
   const note = prompt(t('refundRejectReasonLabel'))||'';
