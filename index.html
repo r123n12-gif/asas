@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 24.09-X</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 24.09-Z3</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -593,6 +593,7 @@ async function fetchAll(){
 /* ===================== CASH DEPOSITS ===================== */
 /* ===================== MISC RECEIPTS (payment without a ticket) ===================== */
 async function submitMiscReceipt(employeeId, branchId, amount, method, bankName, note){
+  amount = requirePositive(amount);
   const row = { employee_id:employeeId, branch_id:branchId||null, amount:Number(amount)||0, method, bank_name:bankName||null, note:note||null,
     status:'pending', created_by: currentUser()?.id||null };
   const {data, error} = await sb.from('misc_receipts').insert(row).select().single();
@@ -602,6 +603,7 @@ async function submitMiscReceipt(employeeId, branchId, amount, method, bankName,
 async function approveMiscReceipt(id){
   const r = miscReceipts.find(x=>x.id===id);
   if(!r) throw new Error('receipt not found');
+  if(r.status!=='pending') return;
   const {error} = await sb.from('misc_receipts').update({status:'confirmed', confirmed_by:currentUser()?.id||null, confirmed_at:new Date().toISOString()}).eq('id', id);
   if(error) throw error;
   r.status='confirmed';
@@ -643,6 +645,7 @@ async function cancelMiscReceipt(id){
 }
 /* ===================== EMPLOYEE CHARGES (manual debit) ===================== */
 async function addEmployeeCharge(employeeId, branchId, amount, reason, source){
+  amount = requirePositive(amount);
   const row = { employee_id:employeeId, branch_id:branchId||null, amount:Number(amount)||0, reason:reason||null, source:source||'cash',
     created_by: currentUser()?.id||null, acknowledged:false, settled:false };
   const {data, error} = await sb.from('employee_charges').insert(row).select().single();
@@ -668,6 +671,7 @@ async function claimChargePaid(id, method){
 async function settleEmployeeCharge(id, method, bankName){
   const c = employeeCharges.find(x=>x.id===id);
   if(!c) throw new Error('charge not found');
+  if(c.settled) return;
   const {error} = await sb.from('employee_charges').update({settled:true, settled_by:currentUser()?.id||null, settled_at:new Date().toISOString(), settled_method:method}).eq('id', id);
   if(error) throw error;
   c.settled=true; c.settled_method=method;
@@ -745,6 +749,7 @@ async function uploadReceiptFile(file){
   return data.publicUrl;
 }
 async function submitDeposit(data){
+  data = {...data, amount: requirePositive(data.amount)};
   const receiptUrl = await uploadReceiptFile(data.file);
   const row = { branch_id:data.branchId, amount:Number(data.amount)||0, destination:data.destination,
     receipt_url:receiptUrl, status:'pending', submitted_by:data.onBehalfOf||currentUser()?.id||null, note:data.note||null };
@@ -754,11 +759,12 @@ async function submitDeposit(data){
 }
 async function approveDeposit(id){
   const d0 = deposits.find(x=>x.id===id);
+  if(!d0 || d0.status==='approved') return;
   const {error} = await sb.from('cash_deposits').update({status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
   if(error) throw error;
   const d = deposits.find(x=>x.id===id); if(d){ d.status='approved'; }
   const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:d0.branch_id, deposit_id:id,
-    desc_key:'jDeposit', desc_args:[destLabel(d0.destination)], debit_key:'accBank', credit_key:'accCashOnHand', amount:d0.amount }).select().single();
+    desc_key:'jDeposit', desc_args:[destLabel(d0.destination)], debit_key: isSupplierDest(d0.destination) ? 'accSuppliers' : 'accBank', credit_key:'accCashOnHand', amount:d0.amount }).select().single();
   if(jErr) throw jErr;
   journal.unshift(jIns);
 }
@@ -962,13 +968,18 @@ async function approveRefund(bookingId, refundMethod, refundProofUrl){
 async function settleSupplierPayment(bookingId){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b || b.supplier_settled || !(Number(b.cost)>0)) return;
-  const {error} = await sb.from('bookings').update({supplier_settled:true, supplier_settled_by:currentUser()?.id||null, supplier_settled_at:new Date().toISOString()}).eq('id', bookingId);
+  const {error} = await sb.from('bookings').update({supplier_settled:true, supplier_paid_via:'bank', supplier_settled_by:currentUser()?.id||null, supplier_settled_at:new Date().toISOString()}).eq('id', bookingId);
   if(error) throw error;
-  b.supplier_settled = true;
+  b.supplier_settled = true; b.supplier_paid_via = 'bank';
   const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
     desc_key:'jSupplierPay', desc_args:[b.supplier||'-', b.booking_no], debit_key:'accSuppliers', credit_key:'accBank', amount:Number(b.cost)||0 }).select().single();
   if(jErr) throw jErr;
   journal.unshift(jIns);
+}
+function supplierDepositCredit(name){
+  const paid = deposits.filter(d=>d.status==='approved' && d.destination===name).reduce((a,d)=>a+Number(d.amount||0),0);
+  const used = bookings.filter(b=>b.supplier===name && b.supplier_settled && b.supplier_paid_via==='deposit').reduce((a,b)=>a+Number(b.cost||0),0);
+  return {paid:+paid.toFixed(2), used:+used.toFixed(2), available:+(paid-used).toFixed(2)};
 }
 function supplierBalances(list){
   const map = {};
@@ -978,18 +989,23 @@ function supplierBalances(list){
     if(b.supplier_settled) map[b.supplier].settled += Number(b.cost)||0;
     else map[b.supplier].owed += Number(b.cost)||0;
   });
+  SUPPLIER_DESTINATIONS.forEach(n=>{ const c = supplierDepositCredit(n); if(c.paid>0 && !map[n]) map[n] = {owed:0, settled:0}; });
+  Object.keys(map).forEach(n=>{ const c = supplierDepositCredit(n); map[n].depositCredit = c.available; map[n].net = +(map[n].owed - c.available).toFixed(2); });
   return map;
 }
-async function settleSupplierBulk(bookingIds){
+async function settleSupplierBulk(bookingIds, via){
+  via = via==='deposit' ? 'deposit' : 'bank';
+  bookingIds = bookingIds.filter(id=>{ const b = bookings.find(x=>x.id===id); return b && !b.supplier_settled; });
   const selected = bookings.filter(b=>bookingIds.includes(b.id));
   if(selected.length===0) return;
   const total = +selected.reduce((s,b)=>s+Number(b.cost||0),0).toFixed(2);
   const supplierName = selected[0].supplier||'-';
   const sameBranch = selected.every(b=>b.branch_id===selected[0].branch_id);
   const branchId = sameBranch ? selected[0].branch_id : null;
-  const {error} = await sb.from('bookings').update({supplier_settled:true, supplier_settled_by:currentUser()?.id||null, supplier_settled_at:new Date().toISOString()}).in('id', bookingIds);
+  const {error} = await sb.from('bookings').update({supplier_settled:true, supplier_paid_via:via, supplier_settled_by:currentUser()?.id||null, supplier_settled_at:new Date().toISOString()}).in('id', bookingIds);
   if(error) throw error;
-  bookingIds.forEach(id=>{ const b = bookings.find(x=>x.id===id); if(b) b.supplier_settled=true; });
+  bookingIds.forEach(id=>{ const b = bookings.find(x=>x.id===id); if(b){ b.supplier_settled=true; b.supplier_paid_via=via; } });
+  if(via==='deposit') return;
   const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:branchId,
     desc_key:'jSupplierBulkPay', desc_args:[supplierName, bookingIds.length], debit_key:'accSuppliers', credit_key:'accBank', amount:total }).select().single();
   if(jErr) throw jErr;
@@ -999,7 +1015,21 @@ async function settleSupplierBulk(bookingIds){
 /* ===================== HELPERS ===================== */
 function esc(s){ if(s===undefined||s===null) return ''; return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function money(n){ const v=Number(n)||0; return v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) + ' SAR'; }
-function todayStr(){ return new Date().toISOString().slice(0,10); }
+function requirePositive(v){
+  const n = Number(v);
+  if(!(n>0) || !isFinite(n)) throw new Error(lang==='ar' ? 'المبلغ لازم يكون رقمًا أكبر من صفر.' : 'Amount must be a number greater than zero.');
+  return +n.toFixed(2);
+}
+const __busy = new Set();
+function lockify(fn, name){
+  return async function(...args){
+    const key = name + ':' + JSON.stringify(args[0]);
+    if(__busy.has(key)) return;
+    __busy.add(key);
+    try{ return await fn.apply(this, args); } finally { __busy.delete(key); }
+  };
+}
+function todayStr(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function branchName(id){ const b = branches.find(x=>x.id===id); return b ? b.name : '—'; }
 function currentUser(){ return getSession(); }
 function isAdmin(){ const u = currentUser(); return u && u.role==='admin'; }
@@ -1031,6 +1061,8 @@ function filteredBookings(){
 const SOURCE_PRESETS = ['AKBAR','NDC','PORTAL','GALILEO','G9','GULF','J9','AM','مباشر'];
 const AIRLINE_HINTS = ['SV','EY','EK','G9','FZ','GF','QR','6E','XY'];
 const DEPOSIT_DESTINATIONS = ['AKBAR','NDC','PORTAL','GALILEO','IATA'];
+const SUPPLIER_DESTINATIONS = ['AKBAR','NDC','PORTAL','GALILEO'];
+function isSupplierDest(d){ return SUPPLIER_DESTINATIONS.includes(d); }
 const BANK_OPTIONS = ['RAJHI','AHLI','OTHER'];
 const RECEIPTS_BUCKET = 'receipts';
 function destLabel(d){ return d==='IATA' ? t('destIATA') : d; }
@@ -1038,6 +1070,8 @@ function bankLabel(b){ return b==='RAJHI'?t('bankRajhi'):b==='AHLI'?t('bankAhli'
 
 /* ===================== ACCOUNTING ENGINE (Supabase-backed) ===================== */
 async function addBooking(data){
+  requirePositive(data.sell);
+  if(!(Number(data.cost)>=0)) throw new Error(lang==='ar'?'التكلفة لازم تكون صفر أو أكثر.':'Cost must be zero or more.');
   const sell = Number(data.sell)||0, net = Number(data.cost)||0;
   const profit = +(sell-net).toFixed(2);
   const method = data.paymentMethod||'cash';
@@ -1077,6 +1111,8 @@ async function addBooking(data){
   journal.unshift(...jIns.reverse());
 }
 async function updateBooking(id, data){
+  requirePositive(data.sell);
+  if(!(Number(data.cost)>=0)) throw new Error(lang==='ar'?'التكلفة لازم تكون صفر أو أكثر.':'Cost must be zero or more.');
   const sell = Number(data.sell)||0, net = Number(data.cost)||0;
   const profit = +(sell-net).toFixed(2);
   const method = data.paymentMethod;
@@ -1089,6 +1125,8 @@ async function updateBooking(id, data){
   const prevConfirmed = !!prevB && prevB.payment_method!=='cash' && (prevB.transfer_verified || journal.some(j=>j.booking_id===id && j.desc_key==='jBankReceipt')
     || (Array.isArray(prevB.payment_splits) && prevB.payment_splits.some(x=>x.method!=='cash' && x.verified)));
   const matchesBank = !isSplit && prevB && prevB.payment_method===method && Math.abs((Number(data.sell)||0) - bookingConfirmedGross(id))<0.01;
+  if(prevB && prevB.supplier_settled && Math.abs((Number(data.cost)||0)-(Number(prevB.cost)||0))>0.004)
+    throw new Error(lang==='ar' ? 'لا يمكن تعديل التكلفة: تم سداد المورد لهذه التذكرة بالمبلغ القديم.' : 'Cost cannot change: the supplier was already paid for this ticket.');
   if(prevConfirmed && !matchesBank && (Math.abs((Number(data.sell)||0)-(Number(prevB.sell)||0))>0.004 || prevB.payment_method!==method))
     throw new Error(lang==='ar'
       ? 'لا يمكن تعديل مبلغ البيع أو طريقة الدفع لتذكرة تحويلها مؤكَّد في البنك — المبلغ المستلم ثابت. يمكن تعديل باقي البيانات (الاسم، التكلفة، المورد...).'
@@ -1154,6 +1192,8 @@ async function deleteBooking(id){
   if(bookingIsLocked(bookings.find(b=>b.id===id))) throw new Error(lang==='ar'
     ? 'لا يمكن حذف هذه التذكرة: عليها حركة مالية مؤكدة (تحويل مؤكد، استرجاع، أرباح مسلّمة أو دفعة مورد). التذكرة تبقى كمرجع.'
     : 'This ticket cannot be deleted: it has confirmed money movement. It stays as a reference.');
+  const {error:eJ} = await sb.from('journal').delete().eq('booking_id', id);
+  if(eJ) throw eJ;
   const {error} = await sb.from('bookings').delete().eq('id', id);
   if(error) throw error;
   bookings = bookings.filter(b=>b.id!==id);
@@ -1198,7 +1238,7 @@ async function collectCommission(bookingId){
   journal.unshift(jIns);
 }
 async function addManualExpense(data){
-  const amount = Number(data.amount)||0;
+  const amount = requirePositive(data.amount);
   const {data:ins, error} = await sb.from('manual_expenses').insert({ date:data.date||todayStr(), branch_id:data.branchId, description:data.desc, amount }).select().single();
   if(error) throw error;
   manualExpenses.unshift(ins);
@@ -1208,12 +1248,18 @@ async function addManualExpense(data){
   journal.unshift(jIns);
 }
 async function deleteManualExpense(id){
+  const {error:eJ} = await sb.from('journal').delete().eq('expense_id', id);
+  if(eJ) throw eJ;
   const {error} = await sb.from('manual_expenses').delete().eq('id', id);
   if(error) throw error;
   manualExpenses = manualExpenses.filter(e=>e.id!==id);
   journal = journal.filter(j=>j.expense_id!==id);
 }
 async function addManualJournalEntry(data){
+  data = {...data, amount: requirePositive(data.amount)};
+  if(['accCustomers','accEmployeeReceivable'].includes(data.debitKey) || ['accCustomers','accEmployeeReceivable'].includes(data.creditKey))
+    throw new Error(lang==='ar'?'حسابات العملاء وذمم الموظفين لا تُسجَّل بقيد يدوي — استخدم شاشاتها (التذاكر / مبلغ مطلوب من الموظف).':'Customer and employee receivable accounts cannot be used in manual entries.');
+  if(data.debitKey===data.creditKey) throw new Error(lang==='ar'?'الحساب المدين والدائن لا يمكن أن يكونا نفس الحساب.':'Debit and credit accounts must differ.');
   const amount = Number(data.amount)||0;
   const {data:jIns, error} = await sb.from('journal').insert({ date:data.date||todayStr(), branch_id:data.branchId,
     desc_key:'jManual', desc_args:[data.desc], debit_key:data.debitKey, credit_key:data.creditKey, amount }).select().single();
@@ -2129,8 +2175,8 @@ window.uiClaimChargePaid = function(id){
           <div class="field"><label>${t('fieldTicketNo')}</label><input type="text" name="ticketNo"></div>
         </div>
         <div class="grid-2">
-          <div class="field"><label>${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell"></div>
-          <div class="field"><label>${t('fieldSystemFare')}</label><input type="number" step="0.01" name="cost" value="${c?Number(c.amount)||'':''}"></div>
+          <div class="field"><label>${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell" min="0.01" step="0.01"></div>
+          <div class="field"><label>${t('fieldSystemFare')}</label><input type="number" step="0.01" name="cost" min="0" step="0.01" value="${c?Number(c.amount)||'':''}"></div>
         </div>
         <div class="field"><label>${t('fieldAirline')}</label><input type="text" name="airline"></div>
       </div>
@@ -2392,8 +2438,8 @@ function openBookingModal(existing){
       </div>
       <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${v.date||todayStr()}"></div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell" id="sellPriceInput" required value="${v.sell??''}"></div>
-        <div class="field"><label>${t('fieldSystemFare')}</label><input type="number" step="0.01" name="cost" id="costPriceInput" required value="${v.cost??''}"></div>
+        <div class="field"><label>${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell" min="0.01" id="sellPriceInput" required value="${v.sell??''}"></div>
+        <div class="field"><label>${t('fieldSystemFare')}</label><input type="number" step="0.01" name="cost" min="0" id="costPriceInput" required value="${v.cost??''}"></div>
       </div>
       <div class="note" id="autoProfitNote">${t('profitEntryNote')}</div>
       <div class="field" style="display:flex;align-items:center;gap:8px;">
@@ -2575,8 +2621,8 @@ function renderLedger(){
     </div>
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('supplierBalancesTitle')}</h3><button class="btn btn-primary btn-sm" id="supplierPayBtn">${t('supplierPayBtn')}</button></div>
-      ${(()=>{ const map = supplierBalances(list); const names = Object.keys(map); return names.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colSupplier')}</th><th>${t('colOwed')}</th><th>${t('colSettled')}</th></tr></thead>
-      <tbody>${names.map(n=>`<tr><td>${n}</td><td class="num neg" style="font-weight:600">${money(map[n].owed)}</td><td class="num">${money(map[n].settled)}</td></tr>`).join('')}</tbody></table></div>`; })()}
+      ${(()=>{ const map = supplierBalances(list); const names = Object.keys(map); return names.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colSupplier')}</th><th>${t('colOwed')}</th><th>${lang==='ar'?'إيداعات مباشرة للمورد (غير مخصصة)':'Direct deposits (unallocated)'}</th><th>${lang==='ar'?'الصافي المستحق':'Net due'}</th><th>${t('colSettled')}</th></tr></thead>
+      <tbody>${names.map(n=>`<tr><td>${n}</td><td class="num">${money(map[n].owed)}</td><td class="num" style="color:#1f7a4d">${map[n].depositCredit?money(map[n].depositCredit):'—'}</td><td class="num neg" style="font-weight:700">${money(map[n].net)}</td><td class="num">${money(map[n].settled)}</td></tr>`).join('')}</tbody></table></div>`; })()}
     </div>
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('manualExpensesListTitle')}</h3><button class="btn btn-ghost btn-sm" id="addExpenseBtn">${t('addExpense')}</button></div>
@@ -2743,6 +2789,10 @@ function openSupplierPaymentModal(){
       <div class="field"><label>${lang==='ar'?'الفاتورة حتى تاريخ':'Invoice up to date'}</label><input type="date" id="supplierPayTo"></div>
       <div class="field"><label>${lang==='ar'?'مبلغ فاتورة المورد (اختياري)':'Supplier invoice amount (optional)'}</label><input type="number" step="0.01" id="supplierInvoiceAmt"></div>
     </div>
+    <div class="field"><label>${lang==='ar'?'مصدر السداد':'Paid from'}</label><select id="supplierPayVia">
+      <option value="bank">${lang==='ar'?'تحويل من حساب البنك':'Bank transfer'}</option>
+      <option value="deposit">${lang==='ar'?'من الإيداعات المباشرة للمورد (مدفوعة مسبقًا)':'From direct deposits to the supplier (already paid)'}</option>
+    </select><div class="note" id="supplierViaNote"></div></div>
     <div id="supplierPayListBox" style="margin-top:10px;"></div>
     <div id="supplierPayErrorBox"></div>
     <div style="margin-top:16px;display:flex;gap:10px;">
@@ -2779,19 +2829,29 @@ function openSupplierPaymentModal(){
     update();
   };
   renderList(suppliers[0]);
-  document.getElementById('supplierPaySel').onchange = (e)=>renderList(e.target.value);
+  const viaNote = ()=>{ const n = document.getElementById('supplierPaySel').value; const c = supplierDepositCredit(n);
+    document.getElementById('supplierViaNote').innerHTML = c.paid>0 ? (lang==='ar'?`إيداعات مباشرة لـ ${esc(n)}: ${money(c.paid)} — مستخدم ${money(c.used)} — متاح ${money(c.available)}`:`Direct deposits to ${esc(n)}: ${money(c.paid)} — used ${money(c.used)} — available ${money(c.available)}`) : ''; };
+  document.getElementById('supplierPaySel').onchange = (e)=>{ renderList(e.target.value); viaNote(); };
+  viaNote();
   document.getElementById('supplierPayTo').onchange = ()=>renderList(document.getElementById('supplierPaySel').value);
   document.getElementById('supplierPaySubmitBtn').onclick = async ()=>{
     const btn = document.getElementById('supplierPaySubmitBtn'); btn.disabled=true; btn.textContent=t('saving');
     const ids = [...document.querySelectorAll('.supPayChk:checked')].map(c=>c.dataset.id);
-    try{ await settleSupplierBulk(ids); closeModal(); render(); }
+    const via = document.getElementById('supplierPayVia').value;
+    if(via==='deposit'){
+      const sel = bookings.filter(b=>ids.includes(b.id)); const tot = sel.reduce((a,b)=>a+Number(b.cost||0),0);
+      const av = supplierDepositCredit(document.getElementById('supplierPaySel').value).available;
+      if(tot > av + 0.01 && !confirm(lang==='ar'?`المحدد ${money(tot)} أكبر من الإيداعات المتاحة للمورد ${money(av)}. متابعة؟`:`Selected ${money(tot)} exceeds available deposits ${money(av)}. Continue?`)){ btn.disabled=false; btn.textContent=t('registerPaymentBtn'); return; }
+    }
+    try{ await settleSupplierBulk(ids, via); closeModal(); render(); }
     catch(err){ console.error(err); document.getElementById('supplierPayErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`; btn.disabled=false; btn.textContent=t('registerPaymentBtn'); }
   };
 }
 function openManualJournalModal(){
   const u = currentUser();
   const branchOptions = (u.role==='employee') ? branches.filter(b=>b.id===u.branch_id) : branches;
-  const accountKeys = ['accCashOnHand','accBank','accCustomers','accCommRec','accEmployeeReceivable','accMiscReceipts','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses','accProfitWithdrawn'];
+  // customers and employee receivables are managed only by their own screens (tickets / amounts owed by employees)
+  const accountKeys = ['accCashOnHand','accBank','accCommRec','accMiscReceipts','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses','accProfitWithdrawn'];
   showModal(`
     <div class="modal-head"><h3>${t('modalManualJournal')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="manualJournalForm">
@@ -2802,7 +2862,7 @@ function openManualJournalModal(){
         <div class="field"><label>${t('jCredit')}</label><select name="creditKey">${accountKeys.map(k=>`<option value="${k}">${t(k)}</option>`).join('')}</select></div>
       </div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldAmount')}</label><input type="number" step="0.01" name="amount" required></div>
+        <div class="field"><label>${t('fieldAmount')}</label><input type="number" step="0.01" name="amount" min="0.01" required></div>
         <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${todayStr()}"></div>
       </div>
       <div class="note">${t('manualJournalNote')}</div>
@@ -2835,7 +2895,7 @@ function openExpenseModal(){
       <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
       <div class="field"><label>${t('fieldExpenseDesc')}</label><input name="desc" required></div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldAmount')}</label><input type="number" step="0.01" name="amount" required></div>
+        <div class="field"><label>${t('fieldAmount')}</label><input type="number" step="0.01" name="amount" min="0.01" required></div>
         <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${todayStr()}"></div>
       </div>
       <div id="expenseErrorBox"></div>
@@ -2980,7 +3040,7 @@ function renderReports(){
       </div>
       <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-top:10px;">
         <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsPendingBalance')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.pendingAmt):moneyOrHidden(0)}</div>${canSeeSalesTotals()?`<div style="font-size:12px;color:var(--muted,#666);margin-top:4px;line-height:1.6;">${lang==='ar'?'تحويلات بانتظار التأكيد':'Transfers awaiting confirmation'}: ${money(es.pendingTransfers)}<br>+ ${t('efsCashOnHand')}: ${money(es.cashOnHand)}<br>+ ${t('efsCharges')}: ${money(es.charges)}</div>`:''}</div>
-        <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsCashOnHand')}</div><div class="kpi-value">${money(es.cashOnHand)}</div></div>
+        <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsCashOnHand')}</div><div class="kpi-value">${money(es.cashOnHand)}</div>${es.cashOnHand<-0.01?`<div style="font-size:12px;color:var(--red);margin-top:4px;line-height:1.5;">⚠️ ${lang==='ar'?'بالسالب: أودع/سلّم أكثر من الكاش المسجل عليه — غالبًا فيه تذاكر كاش ما انسجلت بالنظام':'Negative: deposited more than recorded cash — likely unrecorded cash tickets'}</div>`:''}</div>
         <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('efsCharges')}</div><div class="kpi-value">${money(es.charges)}</div></div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">${isAdmin()||isAccountant()?`<button class="btn btn-primary btn-sm" id="addChargeBtn">${t('addChargeBtn')}</button>`:''}<button class="btn btn-ghost btn-sm" id="cashStmtBtn">${lang==='ar'?'📄 كشف الكاش التفصيلي':'📄 Detailed cash statement'}</button><button class="btn btn-ghost btn-sm" id="trStmtBtn">${lang==='ar'?'🏦 كشف التحويلات التفصيلي':'🏦 Detailed transfers statement'}</button></div>
@@ -3461,7 +3521,7 @@ function openDepositModal(){
   const branchOptions = canManage ? branches : branches.filter(b=>b.id===u.branch_id);
   const defaultBranch = u.branch_id || (branchOptions[0]?.id||'');
   const employeesInBranch = (branchId)=> users.filter(x=>x.role==='employee' && x.branch_id===branchId);
-  const suggestedAmount = canManage ? 0 : employeeCashOnHand(u.id);
+  const suggestedAmount = canManage ? '' : Math.max(0, employeeCashOnHand(u.id)) || '';
   showModal(`
     <div class="modal-head"><h3>${t('addDeposit')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="depositForm">
@@ -3469,7 +3529,7 @@ function openDepositModal(){
         <div class="field"><label>${t('fieldEmployeeFilter')}</label><select name="employeeId" id="depositEmployeeSel"></select></div>`
         : `<input type="hidden" name="branchId" value="${defaultBranch}"><input type="hidden" name="employeeId" value="${u.id}">`}
       <div class="field"><label>${t('fieldDepositDestination')}</label><select name="destination">${DEPOSIT_DESTINATIONS.map(d=>`<option value="${d}">${destLabel(d)}</option>`).join('')}</select></div>
-      <div class="field"><label>${t('fieldDepositAmount')}</label><input type="number" step="0.01" name="amount" id="depositAmountInput" value="${suggestedAmount}" required></div>
+      <div class="field"><label>${t('fieldDepositAmount')}</label><input type="number" step="0.01" name="amount" min="0.01" id="depositAmountInput" value="${suggestedAmount}" required></div>
       <div class="field"><label>${t('fieldDepositReceipt')}</label><input type="file" name="receipt" accept="image/*" required></div>
       <div class="field"><label>${t('fieldBookingNote')} (${t('reconcileOptionalNote')})</label><textarea name="note" rows="2" placeholder="${t('depositNotePlaceholder')}"></textarea></div>
       <div id="depositErrorBox"></div>
@@ -3484,11 +3544,11 @@ function openDepositModal(){
     const refreshEmployees = (branchId)=>{
       const opts = employeesInBranch(branchId);
       empSel.innerHTML = opts.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('');
-      document.getElementById('depositAmountInput').value = opts[0] ? employeeCashOnHand(opts[0].id) : 0;
+      document.getElementById('depositAmountInput').value = opts[0] ? (Math.max(0, employeeCashOnHand(opts[0].id)) || '') : '';
     };
     refreshEmployees(defaultBranch || branchOptions[0]?.id);
     branchSel.onchange = (e)=>refreshEmployees(e.target.value);
-    empSel.onchange = (e)=>{ document.getElementById('depositAmountInput').value = employeeCashOnHand(e.target.value); };
+    empSel.onchange = (e)=>{ document.getElementById('depositAmountInput').value = Math.max(0, employeeCashOnHand(e.target.value)) || ''; };
   }
   document.getElementById('depositForm').onsubmit = async (e)=>{
     e.preventDefault();
@@ -4243,6 +4303,20 @@ document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id
 
 /* ===================== INIT ===================== */
 boot();
+
+// double-click protection for every money action
+approveDeposit = lockify(approveDeposit, 'approveDeposit');
+approveMiscReceipt = lockify(approveMiscReceipt, 'approveMiscReceipt');
+cancelMiscReceipt = lockify(cancelMiscReceipt, 'cancelMiscReceipt');
+settleEmployeeCharge = lockify(settleEmployeeCharge, 'settleEmployeeCharge');
+cancelEmployeeCharge = lockify(cancelEmployeeCharge, 'cancelEmployeeCharge');
+settleSupplierPayment = lockify(settleSupplierPayment, 'settleSupplierPayment');
+settleSupplierBulk = lockify(settleSupplierBulk, 'settleSupplierBulk');
+verifyPaymentReceived = lockify(verifyPaymentReceived, 'verifyPaymentReceived');
+verifySplitPayment = lockify(verifySplitPayment, 'verifySplitPayment');
+approveRefund = lockify(approveRefund, 'approveRefund');
+approveProfitHandover = lockify(approveProfitHandover, 'approveProfitHandover');
+repairBooking = lockify(repairBooking, 'repairBooking');
 </script>
 </body>
 </html>
