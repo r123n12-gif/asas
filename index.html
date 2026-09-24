@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F1</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F2</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -171,7 +171,7 @@ const T = {
     chartOfAccounts:'دليل الحسابات', journalTitle:'القيود اليومية (تلقائية + يدوية)', addExpense:'+ إضافة مصروف يدوي',
     jDate:'التاريخ', jBranch:'الفرع', jDesc:'البيان', jDebit:'من حساب (مدين)', jCredit:'إلى حساب (دائن)', jAmount:'المبلغ',
     journalEmpty:'لا توجد قيود بعد.', journalShowing:'عرض آخر 40 قيدًا من',
-    accCashOnHand:'الخزينة النقدية (الصندوق)', accProfitWithdrawn:'أرباح مسلّمة للإدارة', accBank:'الخزينة البنكية (البنك)', accCustomers:'حسابات العملاء', accCommRec:'مستحقات عمولات من الموردين', accEmployeeReceivable:'مستحقات على الموظفين (قيود يدوية)', accMiscReceipts:'مقبوضات متنوعة (بدون تذكرة)',
+    accCashOnHand:'الخزينة النقدية (الصندوق)', accProfitWithdrawn:'أرباح مسلّمة للإدارة', accBank:'الخزينة البنكية (البنك)', accCustomers:'حسابات العملاء', accCommRec:'مستحقات عمولات من الموردين', accEmployeeReceivable:'مستحقات على الموظفين (قيود يدوية)', accMiscReceipts:'مبالغ مستلمة بدون تذكرة (تحت التسوية)', accOpeningEquity:'رأس المال / أرصدة افتتاحية',
     accSuppliers:'حسابات الموردين (شركات الطيران / GDS)', accSalesRev:'إيرادات المبيعات', accCommRev:'إيرادات العمولات',
     accCogs:'تكلفة الخدمات المباعة', accExpenses:'المصروفات التشغيلية',
     modalExpense:'إضافة مصروف تشغيلي', fieldExpenseDesc:'البيان (مثال: إيجار، رواتب، اتصالات)', fieldAmount:'المبلغ (ر.س)',
@@ -357,7 +357,7 @@ const T = {
     chartOfAccounts:'Chart of accounts', journalTitle:'Daily journal (auto + manual)', addExpense:'+ Add manual expense',
     jDate:'Date', jBranch:'Branch', jDesc:'Description', jDebit:'Debit account', jCredit:'Credit account', jAmount:'Amount',
     journalEmpty:'No entries yet.', journalShowing:'Showing last 40 entries of',
-    accCashOnHand:'Cash on hand (till)', accProfitWithdrawn:'Profits handed to management', accBank:'Bank (treasury)', accCustomers:'Accounts receivable (customers)', accCommRec:'Commissions receivable from suppliers', accEmployeeReceivable:'Receivable from employees (manual charges)', accMiscReceipts:'Miscellaneous receipts (no ticket)',
+    accCashOnHand:'Cash on hand (till)', accProfitWithdrawn:'Profits handed to management', accBank:'Bank (treasury)', accCustomers:'Accounts receivable (customers)', accCommRec:'Commissions receivable from suppliers', accEmployeeReceivable:'Receivable from employees (manual charges)', accMiscReceipts:'Amounts received without ticket (suspense)', accOpeningEquity:'Owner equity / opening balances',
     accSuppliers:'Accounts payable (airlines / GDS)', accSalesRev:'Sales revenue', accCommRev:'Commission revenue',
     accCogs:'Cost of services sold', accExpenses:'Operating expenses',
     modalExpense:'Add operating expense', fieldExpenseDesc:'Description (e.g. rent, salaries, phone)', fieldAmount:'Amount (SAR)',
@@ -2616,7 +2616,7 @@ window.uiRequestEdit = async function(id){
 
 /* ===================== LEDGER ===================== */
 const ACCOUNT_NORMAL_SIDE = { accCashOnHand:'debit', accBank:'debit', accCustomers:'debit', accCommRec:'debit', accEmployeeReceivable:'debit',
-  accSuppliers:'credit', accSalesRev:'credit', accCommRev:'credit', accCogs:'debit', accExpenses:'debit', accMiscReceipts:'credit', accProfitWithdrawn:'debit' };
+  accSuppliers:'credit', accSalesRev:'credit', accCommRev:'credit', accCogs:'debit', accExpenses:'debit', accMiscReceipts:'credit', accProfitWithdrawn:'debit', accOpeningEquity:'credit' };
 function accountBalance(key, jrnl){
   let debit=0, credit=0;
   jrnl.forEach(j=>{ if(j.debit_key===key) debit+=Number(j.amount)||0; if(j.credit_key===key) credit+=Number(j.amount)||0; });
@@ -2643,7 +2643,27 @@ function renderLedger(){
         ${(isAdmin() && tt.pendingReviewCount>0)?`<div class="note" style="color:#A8722C;">⚠️ ${tt.pendingReviewCount} ${t('pendingReviewTag')} (${money(tt.pendingReviewSales)}) — ${t('reviewCostBtn')}</div>`:''}
       </div>
       <div class="panel" style="flex:1"><div class="panel-head"><h3 class="panel-title">${t('chartOfAccounts')}</h3></div>
-        <table><thead><tr><th>${t('jDesc')}</th><th>${t('colAmount')}</th></tr></thead><tbody>${['accCashOnHand','accBank','accCustomers','accCommRec','accEmployeeReceivable','accMiscReceipts','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses','accProfitWithdrawn'].map(k=>`<tr><td>${t(k)}</td><td class="num" style="font-weight:600">${k==='accSalesRev'?(canSeeSalesTotals()?money(accountBalance(k, jrnl)):moneyOrHidden(0)):money(accountBalance(k, jrnl))}</td></tr>`).join('')}</tbody></table>
+        ${(()=>{ const ar = lang==='ar'; const B = k=>accountBalance(k, jrnl);
+          const groups = [
+            [ar?'الأصول':'Assets', ['accCashOnHand','accBank','accCustomers','accEmployeeReceivable','accCommRec'], 1],
+            [ar?'الالتزامات':'Liabilities', ['accSuppliers','accMiscReceipts'], 1],
+            [ar?'حقوق الملكية':'Equity', ['accOpeningEquity','accProfitWithdrawn'], 1],
+            [ar?'الإيرادات':'Revenue', ['accSalesRev','accCommRev'], 1],
+            [ar?'المصروفات':'Expenses', ['accCogs','accExpenses'], 1]];
+          const show = (k,v)=> k==='accSalesRev' && !canSeeSalesTotals() ? moneyOrHidden(0) : money(v);
+          const A = ['accCashOnHand','accBank','accCustomers','accEmployeeReceivable','accCommRec'].reduce((a,k)=>a+B(k),0);
+          const L = B('accSuppliers')+B('accMiscReceipts');
+          const EQ = B('accOpeningEquity')-B('accProfitWithdrawn');
+          const NP = B('accSalesRev')+B('accCommRev')-B('accCogs')-B('accExpenses');
+          const diff = +(A-L-EQ-NP).toFixed(2);
+          return `<table><thead><tr><th>${t('jDesc')}</th><th>${t('colAmount')}</th></tr></thead><tbody>
+            ${groups.map(([g,keys])=>`<tr><td colspan="2" style="background:var(--panel-soft,#f4f1ea);font-weight:700;">${g}</td></tr>`
+              + keys.map(k=>`<tr><td style="padding-inline-start:18px;">${t(k)}${k==='accProfitWithdrawn'?` <span style="font-size:11px;opacity:.7">(${ar?'تُطرح':'deducted'})</span>`:''}</td><td class="num" style="font-weight:600">${show(k,B(k))}</td></tr>`).join('')).join('')}
+            <tr style="border-top:2px solid var(--navy);"><td>${ar?'صافي الربح من القيود':'Net profit (ledger)'}</td><td class="num" style="font-weight:700">${moneyOrHidden(+NP.toFixed(2))}</td></tr>
+            <tr><td colspan="2" style="font-size:12px;${Math.abs(diff)<0.05?'color:#1f7a4d':'color:var(--red)'}">${Math.abs(diff)<0.05
+              ? (ar?'✔ ميزان المراجعة متوازن: الأصول = الالتزامات + حقوق الملكية + صافي الربح':'✔ Trial balance is balanced')
+              : (ar?`✖ ميزان المراجعة غير متوازن بفرق ${money(diff)}`:`✖ Trial balance off by ${money(diff)}`)}</td></tr>
+          </tbody></table>`; })()}
       </div>
     </div>
     <div class="panel">
@@ -2892,7 +2912,7 @@ function openManualJournalModal(){
   const u = currentUser();
   const branchOptions = (u.role==='employee') ? branches.filter(b=>b.id===u.branch_id) : branches;
   // customers and employee receivables are managed only by their own screens (tickets / amounts owed by employees)
-  const accountKeys = ['accCashOnHand','accBank','accCommRec','accMiscReceipts','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses','accProfitWithdrawn'];
+  const accountKeys = ['accCashOnHand','accBank','accCommRec','accMiscReceipts','accSuppliers','accSalesRev','accCommRev','accCogs','accExpenses','accProfitWithdrawn','accOpeningEquity'];
   showModal(`
     <div class="modal-head"><h3>${t('modalManualJournal')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="manualJournalForm">
