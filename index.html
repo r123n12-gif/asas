@@ -2,6 +2,9 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ASAS Travel &amp; Tourism — أساس للسفر والسياحة</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1204,7 +1207,7 @@ function startAutoRefresh(){
     const overlay = document.getElementById('overlay');
     if(overlay && overlay.classList.contains('show')) return;
     try{ await fetchAll(); render(); }catch(e){ console.error('auto-refresh failed', e); }
-  }, 30000);
+  }, 15000);
 }
 function stopAutoRefresh(){
   if(autoRefreshInterval){ clearInterval(autoRefreshInterval); autoRefreshInterval=null; }
@@ -2630,10 +2633,10 @@ function renderReports(){
 function renderTransfers(){
   document.getElementById('pageSub').textContent = t('subTransfers');
   const scopedBookings = filteredBookings();
-  const pendingTransfers = scopedBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && !b.transfer_verified);
+  const pendingTransfers = scopedBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && !b.transfer_verified && !b.refunded);
   const verifiedTransfers = scopedBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && b.transfer_verified);
   const pendingSplitRows = [];
-  scopedBookings.filter(b=>b.payment_method==='split' && Array.isArray(b.payment_splits)).forEach(b=>{
+  scopedBookings.filter(b=>b.payment_method==='split' && !b.refunded && Array.isArray(b.payment_splits)).forEach(b=>{
     b.payment_splits.forEach((s,i)=>{ if(s.method!=='cash' && !s.verified) pendingSplitRows.push({b, s, i}); });
   });
   let html = `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingVerifyTitle')}</h3></div>
