@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 24.09-Z4</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 24.09-Z6</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1026,6 +1026,10 @@ async function settleSupplierBulk(bookingIds, via){
 /* ===================== HELPERS ===================== */
 function esc(s){ if(s===undefined||s===null) return ''; return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function money(n){ const v=Number(n)||0; return v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) + ' SAR'; }
+function profitCell(v){
+  const n = Number(v)||0;
+  return n < -0.004 ? `<span style="color:var(--red);font-weight:700;">${money(n)}</span><div><span class="tag rejected" style="font-size:11px;">${lang==='ar'?'خسارة':'Loss'}</span></div>` : money(n);
+}
 function requirePositive(v){
   const n = Number(v);
   if(!(n>0) || !isFinite(n)) throw new Error(lang==='ar' ? 'المبلغ لازم يكون رقمًا أكبر من صفر.' : 'Amount must be a number greater than zero.');
@@ -1649,7 +1653,7 @@ function bookingsTable(list, mode){
         <tr><td class="num">${b.booking_no}</td><td><b>${esc(b.airline||'—')}</b></td><td>${esc(b.customer)}</td>
           <td>${b.is_open_ticket?`<span class="tag pending">${t('tagOpen')}</span>`:(b.ticket_no||'—')}${b.flight_route?`<br><span style="font-size:10.5px;color:var(--ink-soft)">${esc(b.flight_route)}</span>`:''}</td>
           <td>${branchName(b.branch_id)}</td>
-          <td class="num">${b.cost_reviewed?money(b.cost):`<span class="tag pending">${t('pendingReviewTag')}</span>`}</td><td class="num">${canSeeOwnProfit()?(b.cost_reviewed?money(b.profit_amount):`<span class="tag pending">${t('pendingReviewTag')}</span>`):moneyOrHidden(0)}</td>
+          <td class="num">${b.cost_reviewed?money(b.cost):`<span class="tag pending">${t('pendingReviewTag')}</span>`}</td><td class="num">${canSeeOwnProfit()?(b.cost_reviewed?profitCell(b.profit_amount):`<span class="tag pending">${t('pendingReviewTag')}</span>`):moneyOrHidden(0)}</td>
           <td class="num" style="font-weight:600">${canSeeSell()?money(b.sell):moneyOrHidden(0)}</td>
           <td>${b.supplier||'—'}${(Number(b.cost)>0)?`<br><span class="tag ${b.supplier_settled?'collected':'pending'}">${b.supplier_settled?t('supplierSettledTag'):t('supplierUnsettledTag')}</span>`:''}</td><td>${esc(b.invoice_no||'—')}</td>
           <td>${b.refunded?`<span class="tag rejected">${t('refundedTag')}</span>`:b.refund_status==='pending'?`<span class="tag pending">${t('refundPendingTag')}</span>`:b.refund_status==='rejected'?`<span class="tag rejected">${t('refundRejectedTag')}</span>`:`<span class="tag ${b.payment_status}">${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</span>`}</td>
@@ -1960,7 +1964,7 @@ function bookingRowHTML(b){
   return `<tr>
       <td>${b.booking_no}</td><td>${b.date}</td><td>${branchName(b.branch_id)}</td><td>${userName(b.created_by)}</td><td>${esc(b.airline||'—')}</td><td>${esc(b.customer)}</td>
       <td>${esc(b.ticket_no||'—')}</td><td>${b.supplier||'—'}</td>
-      <td style="text-align:end">${money(b.cost)}</td><td style="text-align:end">${canSeeOwnProfit()?money(b.profit_amount):t('hiddenValue')}</td><td style="text-align:end;font-weight:600">${canSeeSell()?money(b.sell):t('hiddenValue')}</td>
+      <td style="text-align:end">${money(b.cost)}</td><td style="text-align:end">${canSeeOwnProfit()?profitCell(b.profit_amount):t('hiddenValue')}</td><td style="text-align:end;font-weight:600">${canSeeSell()?money(b.sell):t('hiddenValue')}</td>
       <td>${b.payment_method==='split'?t('fieldSplitPayment'):b.payment_method==='transfer'?t('payTransfer'):b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payCash')}</td>
       <td>${b.payment_status==='paid'?t('statusPaid'):t('statusPending')}</td>
     </tr>`;
@@ -2572,6 +2576,18 @@ function openBookingModal(existing){
       return;
     }
     try{
+      const _sell = Number(payload.sell)||0, _cost = Number(payload.cost)||0;
+      if(_cost > _sell + 0.004 && !(isAdmin()||isAccountant())){
+        document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">⛔ ${lang==='ar'
+          ? `لا يمكن حفظ تذكرة بخسارة: التكلفة ${money(_cost)} أكبر من سعر البيع ${money(_sell)} (−${money(_cost-_sell)}).<br>تأكد إنك ما عكست سعر البيع والسستم فير. لو الخسارة حقيقية، اطلب من المحاسب يسجلها.`
+          : `A loss ticket cannot be saved: cost ${money(_cost)} is higher than the sale price ${money(_sell)}. Ask the accountant if the loss is real.`}</div>`;
+        btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking'); return;
+      }
+      if(_cost > _sell + 0.004 && !confirm(lang==='ar'
+          ? `⚠️ التكلفة (السستم فير) ${money(_cost)} أكبر من سعر البيع ${money(_sell)} — التذكرة بخسارة ${money(_cost-_sell)}.\n\nتأكد إنك ما عكست الرقمين. هل الأرقام صحيحة؟`
+          : `Cost ${money(_cost)} is higher than the sale price ${money(_sell)} (loss ${money(_cost-_sell)}). Are the numbers correct?`)){
+        btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking'); return;
+      }
       if(isEdit){ await updateBooking(existing.id, payload); } else { await addBooking(payload); }
       closeModal(); render();
     }catch(err){
@@ -2771,6 +2787,17 @@ async function repairBooking(bookingId){
   const left = integrityIssues().filter(x=>x.b && x.b.id===b.id);
   return {notes, left};
 }
+function integrityWarnings(){
+  const ar = lang==='ar';
+  const w = [];
+  bookings.forEach(b=>{
+    if(bookingIsFullRefund(b) || !b.cost_reviewed) return;
+    const p = bookingProfitNow(b);
+    if(p < -0.004) w.push({b, issue: ar?`تذكرة بخسارة ${money(-p)} (تأكد إن البيع والسستم فير مو معكوسين)`:`Loss ticket ${money(-p)} (check sell / fare not swapped)`, sell:b.sell, cost:b.cost});
+    else if(Number(b.cost)===0) w.push({b, issue: ar?'تكلفة صفر — الربح يساوي كامل سعر البيع':'Zero cost — profit equals full price', sell:b.sell, cost:b.cost});
+  });
+  return w;
+}
 function openIntegrityModal(){
   const ar = lang==='ar';
   const list = integrityIssues();
@@ -2784,6 +2811,9 @@ function openIntegrityModal(){
       return `<tr><td class="num">${x.b?x.b.booking_no:'—'}</td><td>${x.b?esc(x.b.customer||''):'—'}</td><td>${x.b?userName(x.b.created_by):'—'}</td><td>${x.issue}</td>
       <td class="num">${typeof x.expected==='number'?money(x.expected):x.expected}</td><td class="num">${typeof x.actual==='number'?money(x.actual):x.actual}</td>
       <td>${first && (isAdmin()||isAccountant())?`<button class="btn btn-gold btn-sm" onclick="uiRepairBooking('${x.b.id}')">🔧 ${ar?'إصلاح':'Fix'}</button>`:''}</td></tr>`; }).join('')}</tbody></table></div>`}
+    ${(()=>{ const w = integrityWarnings(); if(!w.length) return ''; return `<h4 style="margin:16px 0 6px;color:#A8722C;">⚠️ ${ar?`تنبيهات للمراجعة (${w.length}) — مو أخطاء محاسبية، لكن تستاهل نظرة`:`Review warnings (${w.length})`}</h4>
+      <div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${ar?'التنبيه':'Warning'}</th><th>${ar?'البيع':'Sell'}</th><th>${ar?'التكلفة':'Cost'}</th></tr></thead>
+      <tbody>${w.map(x=>`<tr><td class="num">${x.b.booking_no}</td><td>${esc(x.b.customer||'')}</td><td>${userName(x.b.created_by)}</td><td>${x.issue}</td><td class="num">${money(x.sell)}</td><td class="num">${money(x.cost)}</td></tr>`).join('')}</tbody></table></div>`; })()}
     <div style="margin-top:12px;"><button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('cancel')}</button></div>`);
   const mEl = document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='1000px';
 }
@@ -3089,7 +3119,7 @@ function renderReports(){
       <p class="note">${t('refundsReportNote')}</p>
       ${refundsList.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colAmount')}</th><th>${t('colProfit')}</th><th>${t('colRefundStatus')}</th><th>${t('fieldRefundMethod')}</th></tr></thead>
       <tbody>${refundsList.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(b.created_by))}</td>
-        <td class="num">${canSeeSalesTotals()?money(b.sell):moneyOrHidden(0)}</td><td class="num">${canSeeProfit()?money(b.profit_amount):t('hiddenValue')}</td>
+        <td class="num">${canSeeSalesTotals()?money(b.sell):moneyOrHidden(0)}</td><td class="num">${canSeeProfit()?profitCell(b.profit_amount):t('hiddenValue')}</td>
         <td><span class="tag ${b.refund_status==='approved'?'collected':b.refund_status==='rejected'?'rejected':'pending'}">${b.refund_status==='approved'?t('approve'):b.refund_status==='rejected'?t('reject'):t('refundPendingTag')}</span></td>
         <td>${b.refund_method==='transfer'?t('payTransfer'):b.refund_method==='cash'?t('payCash'):'—'}</td></tr>`).join('')}</tbody></table></div>`}
     </div>
@@ -3618,6 +3648,9 @@ window.uiReviewCost = function(id){
   if(val===null) return;
   const net = Number(val);
   if(isNaN(net) || net<0){ alert(t('invalidNumber')); return; }
+  { const _b = bookings.find(x=>x.id===id); if(_b && net > (Number(_b.sell)||0) + 0.004 && !confirm(lang==='ar'
+      ? `⚠️ التكلفة ${money(net)} أكبر من سعر البيع ${money(_b.sell)} — التذكرة ستصبح بخسارة ${money(net-(Number(_b.sell)||0))}. متأكد؟`
+      : `Cost exceeds the sale price — this ticket becomes a loss. Sure?`)) return; }
   reviewBookingCost(id, net).then(render).catch(e=>{ console.error(e); alert(errTextPlain()); });
 };
 
@@ -3791,7 +3824,7 @@ function renderProfits(){
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitTicketDetailsTitle')}</h3></div>
       <p class="note">${t('profitTicketDetailsNote')}</p>
       ${ticketRows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('jDate')}</th><th>${t('colProfit')}</th></tr></thead>
-      <tbody>${ticketRows.map(({b,h})=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(h.employee_id))}</td><td>${b.date}</td><td class="num" style="font-weight:600">${money(b.profit_amount)}</td></tr>`).join('')}</tbody></table></div>`}
+      <tbody>${ticketRows.map(({b,h})=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(h.employee_id))}</td><td>${b.date}</td><td class="num" style="font-weight:600">${profitCell(b.profit_amount)}</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
   document.getElementById('profitsSearchInput').onchange = (e)=>{ profitsSearchTerm = e.target.value; renderProfits(); };
   document.getElementById('profitsDateFromInput').onchange = (e)=>{ profitsDateFrom = e.target.value||null; renderProfits(); };
