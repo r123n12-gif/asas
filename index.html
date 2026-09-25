@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F8</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A1</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -4239,20 +4239,30 @@ function renderReconcile(){
     reader.onload = (ev)=>{
       try{
         const wb = XLSX.read(new Uint8Array(ev.target.result), {type:'array'});
-        const sheet = wb.Sheets[wb.SheetNames[0]];
-        const grid = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
-        let headerRowIdx = grid.findIndex(r=> r.filter(c=>String(c).trim()!=='').length>=3);
-        if(headerRowIdx===-1) headerRowIdx = 0;
-        const headerRow = grid[headerRowIdx].map((h,i)=> String(h).trim()!=='' ? String(h).trim() : `EMPTY_${i}__`);
-        const dataRows = grid.slice(headerRowIdx+1).filter(r=> r.some(c=>String(c).trim()!==''));
-        const rows = dataRows.map(r=>{
-          const obj = {};
-          headerRow.forEach((h,i)=>{ obj[h] = r[i]!==undefined ? r[i] : ''; });
-          return obj;
+        // read EVERY sheet; in each, the header is the row (within the first 20) with the most text cells
+        let rows = [], headerSet = [], sheetsUsed = 0;
+        wb.SheetNames.forEach(name=>{
+          const grid = XLSX.utils.sheet_to_json(wb.Sheets[name], {header:1, defval:''});
+          if(!grid.length) return;
+          let headerRowIdx = 0, best = -1;
+          grid.slice(0,20).forEach((r,i)=>{
+            const textCells = r.filter(c=> typeof c==='string' && c.trim()!=='' && isNaN(parseAmount(c))).length;
+            const filled = r.filter(c=> String(c).trim()!=='').length;
+            const score = textCells*2 + filled;
+            if(filled>=2 && score>best){ best = score; headerRowIdx = i; }
+          });
+          const headerRow = (grid[headerRowIdx]||[]).map((h,i)=> String(h).trim()!=='' ? String(h).trim() : `COL_${i+1}`);
+          const width = Math.max(headerRow.length, ...grid.map(r=>r.length));
+          for(let i=headerRow.length;i<width;i++) headerRow.push(`COL_${i+1}`);
+          const dataRows = grid.slice(headerRowIdx+1).filter(r=> r.some(c=>String(c).trim()!==''));
+          if(!dataRows.length) return;
+          sheetsUsed++;
+          dataRows.forEach(r=>{ const obj = {}; headerRow.forEach((h,i)=>{ obj[h] = r[i]!==undefined ? r[i] : ''; }); rows.push(obj); });
+          headerRow.forEach(h=>{ if(!headerSet.includes(h)) headerSet.push(h); });
         });
         if(rows.length===0){ alert(t('reconcileEmptyFile')); return; }
         reconcileRows = rows;
-        reconcileHeaders = headerRow;
+        reconcileHeaders = headerSet;
         const opts = reconcileHeaders.map(h=>`<option value="${esc(h)}">${esc(h)}</option>`).join('');
         const optsWithNone = `<option value="">${t('reconcileNoneOpt')}</option>`+opts;
         document.getElementById('reconcileAirlineColSel').innerHTML = optsWithNone;
@@ -4262,7 +4272,11 @@ function renderReconcile(){
         document.getElementById('reconcileNameColSel').innerHTML = opts;
         document.getElementById('reconcileBankAmountColSel').innerHTML = opts;
         document.getElementById('reconcileColumnBox').style.display = '';
-        document.getElementById('reconcileResultBox').innerHTML = '';
+        // show what was read, so a wrong sheet / header is visible immediately
+        const prevCols = reconcileHeaders.slice(0,8);
+        document.getElementById('reconcileResultBox').innerHTML = `<div class="note" style="background:#EEF5F4;padding:10px;border-radius:8px;">📄 ${lang==='ar'?`تمت قراءة <b>${reconcileRows.length}</b> سطر من <b>${sheetsUsed}</b> ورقة. أول 3 سطور:`:`Read <b>${reconcileRows.length}</b> rows from <b>${sheetsUsed}</b> sheet(s). First 3 rows:`}</div>
+          <div style="overflow-x:auto;margin-top:6px;"><table><thead><tr>${prevCols.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead>
+          <tbody>${reconcileRows.slice(0,3).map(r=>`<tr>${prevCols.map(h=>`<td>${esc(String(r[h]??''))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
       }catch(err){ console.error(err); alert(t('reconcileParseError')); }
     };
     reader.readAsArrayBuffer(file);
@@ -4323,7 +4337,20 @@ function renderReconcile(){
         }
         return null;
       };
+      // rows that are not tickets (receipts, balances, totals, report footers) are ignored
+      const SKIP = ['receipt','balance b/f','opening balance','closing balance','grand total','net amount','total','sub total','subtotal'];
+      const isSkipRow = row => Object.values(row).some(v=>{ const x = String(v??'').trim().toLowerCase(); return SKIP.includes(x) || x.startsWith('*** end'); });
+      // statements that show charges as negative numbers (e.g. -857.94) are flipped so charges are positive
+      let flip = 1;
+      if(amtCol){
+        let neg=0, pos=0;
+        reconcileRows.forEach(r=>{ const n = parseAmount(r[amtCol]); if(!isNaN(n) && n!==0){ if(n<0) neg++; else pos++; } });
+        if(neg>pos) flip = -1;
+      }
+      const agg = new Map();   // booking id -> {b, sale, refund, tickets:[]}
+      let skipped = 0;
       reconcileRows.forEach(row=>{
+        if(isSkipRow(row)){ skipped++; return; }
         const airlineVal = airlineCol ? row[airlineCol] : '';
         const routeVal = routeCol ? row[routeCol] : '';
         let result = null, matchedCol = null, anyValPresent = false;
@@ -4335,24 +4362,35 @@ function renderReconcile(){
         }
         if(!anyValPresent){ emptyValCount++; return; }
         if(!result){ missing.push(row); return; }
-        const hit = result.hit;
-        const raw = row[matchedCol];
         if(result.fuzzy) fuzzyMatches++;
-        if(seen.has(hit.id)){ duplicates.push({row, ticket:raw, b:hit}); return; }
-        seen.set(hit.id, true);
+        const hit = result.hit;
+        const e = agg.get(hit.id) || {b:hit, sale:0, refund:0, hasAmt:false, tickets:[]};
+        e.tickets.push(row[matchedCol]);
         if(amtCol){
-          const fileAmtRaw = parseAmount(row[amtCol]);
-          if(!isNaN(fileAmtRaw)){
-            const fileAmt = +fileAmtRaw.toFixed(2);
-            let sysAmt;
-            if(fileAmt < 0) sysAmt = -(compareTo==='cost' ? bookingSupplierRefund(hit) : bookingRefundAmount(hit));   // refund line
-            else sysAmt = compareTo==='cost' ? +(Number(hit.cost)||0).toFixed(2) : +(Number(hit.sell)||0).toFixed(2);
-            if(Math.abs(fileAmt-sysAmt)>=0.01){ amountMismatches.push({row, sysAmt, fileAmt, ticket:raw, b:hit}); return; }
+          const n = parseAmount(row[amtCol]);
+          if(!isNaN(n)){ const v = n*flip; e.hasAmt = true; if(v>=0) e.sale += v; else e.refund += -v; }
+        }
+        agg.set(hit.id, e);
+      });
+      agg.forEach(e=>{
+        const hit = e.b;
+        if(amtCol && e.hasAmt){
+          const base = compareTo==='cost' ? (Number(hit.cost)||0) : (Number(hit.sell)||0);
+          const refBase = compareTo==='cost' ? bookingSupplierRefund(hit) : bookingRefundAmount(hit);
+          const saleOk = e.sale<0.005 || Math.abs(e.sale-base)<0.05;
+          const refOk = e.refund<0.005 || Math.abs(e.refund-refBase)<0.05;
+          if(!saleOk || !refOk){
+            const fileAmt = +(e.sale - e.refund).toFixed(2), sysAmt = +((e.sale>0.005?base:0) - (e.refund>0.005?refBase:0)).toFixed(2);
+            amountMismatches.push({row:null, sysAmt, fileAmt, ticket:e.tickets.join(' + '), b:hit});
+            return;
           }
         }
         matched++;
         matchedList.push(hit);
+        seen.set(hit.id, true);
       });
+      amountMismatches.forEach(m=>seen.set(m.b.id, true));
+      missing._skipped = skipped;
       missing._duplicates = duplicates;
       missing._notInFile = scoped.filter(b=>b.ticket_no && !seen.has(b.id) && !bookingIsFullRefund(b));
       missing._compareTo = compareTo;
@@ -4360,7 +4398,7 @@ function renderReconcile(){
       otherCols = reconcileHeaders.filter(h=>h!==col && h!==airlineCol && h!==routeCol && h!==amtCol).slice(0,4);
       if(emptyValCount===reconcileRows.length && reconcileRows.length>0){
         missing._emptyColWarning = `${t('reconcileEmptyColWarning')} ("${scanCols.map(esc).join('", "')}")`;
-      }else if(matched===0 && missing.length>0 && fuzzyMatches===0){
+      }else if(matched===0 && missing.length>0){
         const sampleSys = scoped.find(b=>b.ticket_no)?.ticket_no;
         let sampleFile;
         for(const c of scanCols){
@@ -4453,6 +4491,8 @@ function renderReconcile(){
       return;
     }
     box.innerHTML = `
+      ${missing._emptyColWarning?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">⚠️ ${missing._emptyColWarning}</div>`:''}
+      ${missing._diagnostic?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;margin-bottom:10px;">🔎 ${missing._diagnostic}</div>`:''}
       <div class="kpi-row" style="grid-template-columns:repeat(${amountMismatches.length>0?4:3},1fr);margin-bottom:14px;">
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('reconcileTotalRows')}</div><div class="kpi-value">${reconcileRows.length}</div></div>
         <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('reconcileMatched')}</div><div class="kpi-value">${matched}</div></div>
@@ -4471,8 +4511,7 @@ function renderReconcile(){
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;"><button class="btn btn-ghost btn-sm" id="reconcileExcelNotInFileBtn">${t('reconcileExcelMatched').replace(/.*/, lang==='ar'?'Excel — غير الموجودة في الملف':'Excel — not in file')}</button></div>
       <div style="overflow-x:auto;margin-bottom:16px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colSupplier')}</th><th>${lang==='ar'?'التاريخ':'Date'}</th><th>${lang==='ar'?'التكلفة':'Cost'}</th><th>${lang==='ar'?'البيع':'Sell'}</th></tr></thead>
         <tbody>${missing._notInFile.map(b=>`<tr><td class="num">${b.booking_no}</td><td style="font-weight:700;color:var(--red)">${esc(b.ticket_no)}</td><td>${esc(b.customer||'')}</td><td>${esc(userName(b.created_by))}</td><td>${esc(b.supplier||'—')}</td><td>${b.date}</td><td class="num">${money(b.cost)}</td><td class="num">${money(b.sell)}</td></tr>`).join('')}</tbody></table></div>`:''}
-      ${missing._emptyColWarning?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">⚠️ ${missing._emptyColWarning}</div>`:''}
-      ${missing._diagnostic?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">🔎 ${missing._diagnostic}</div>`:''}
+
       ${matched>0?`<div style="margin-top:10px;">
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
           <button class="btn btn-ghost btn-sm" id="reconcilePrintMatchedBtn">${t('reconcilePrintMatched')}</button>
