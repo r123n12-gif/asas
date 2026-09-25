@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A3</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A4</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -577,7 +577,7 @@ async function fetchAllRows(table, cols, asc){
 async function fetchAll(){
   const [b, u, bk, jr, ex, dp, ph, ec, mr] = await Promise.all([
     fetchAllRows('branches','*',true),
-    fetchAllRows('app_users','id,name,username,role,branch_id,active',true),
+    fetchAllRows('app_users','id,name,username,role,branch_id,active,supplier_aliases',true).then(r=> r.error ? fetchAllRows('app_users','id,name,username,role,branch_id,active',true) : r),
     fetchAllRows('bookings','*'),
     fetchAllRows('journal','*'),
     fetchAllRows('manual_expenses','*'),
@@ -3821,6 +3821,9 @@ window.uiEditUser = function(id){
         </select></div>
         <div class="field"><label>${t('fieldUserBranch')}</label><select name="branchId"><option value="" ${!u.branch_id?'selected':''}>${t('noBranch')}</option>${branches.map(b=>`<option value="${b.id}" ${u.branch_id===b.id?'selected':''}>${esc(b.name)}</option>`).join('')}</select></div>
       </div>
+      <div class="field"><label>${lang==='ar'?'أسماء المستخدم عند الموردين (أكبر، جاليليو، العربية…)':'Usernames at suppliers (Akbar, Galileo, Air Arabia…)'}</label>
+        <input name="supplierAliases" value="${esc(u.supplier_aliases||'')}" placeholder="${lang==='ar'?'مثال: AHMED MAHER, 8K4KMM, Malik Abdullah — افصل بفاصلة':'e.g. AHMED MAHER, 8K4KMM — comma separated'}">
+        <div class="note">${lang==='ar'?'يُستخدم في المطابقة: التذاكر اللي في كشف المورد وما انسجلت، يطلع جنبها اسم الموظف.':'Used in reconciliation to show which employee issued unrecorded tickets.'}</div></div>
       <div id="editUserErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
         <button type="submit" class="btn btn-primary" id="editUserSaveBtn">${t('save')}</button>
@@ -3837,9 +3840,10 @@ window.uiEditUser = function(id){
       btn.disabled=false; btn.textContent=t('save'); return;
     }
     try{
-      const {error} = await sb.from('app_users').update({name:f.get('name'), username:f.get('username'), role, branch_id:branchId}).eq('id', id);
+      const aliases = String(f.get('supplierAliases')||'').split(',').map(x=>x.trim()).filter(Boolean).join(', ');
+      const {error} = await sb.from('app_users').update({name:f.get('name'), username:f.get('username'), role, branch_id:branchId, supplier_aliases:aliases||null}).eq('id', id);
       if(error) throw error;
-      Object.assign(u, {name:f.get('name'), username:f.get('username'), role, branch_id:branchId});
+      Object.assign(u, {name:f.get('name'), username:f.get('username'), role, branch_id:branchId, supplier_aliases:aliases||null});
       closeModal(); render();
     }catch(err){
       console.error(err);
@@ -4049,6 +4053,17 @@ function parseAmount(v){
   else if(t0.includes(',')) t0 = /,\d{1,2}$/.test(t0) ? t0.replace(',', '.') : t0.replace(/,/g,'');
   const n = Number(t0);
   return isNaN(n) ? NaN : (neg ? -n : n);
+}
+function supplierUserToEmployee(val){
+  const x = String(val??'').toUpperCase().replace(/\s+/g,' ').trim();
+  if(!x) return null;
+  let best = null, bestLen = 0;
+  users.forEach(u=>{
+    String(u.supplier_aliases||'').split(',').map(a=>a.trim().toUpperCase().replace(/\s+/g,' ')).filter(a=>a.length>=3).forEach(a=>{
+      if((x===a || x.includes(a) || (a.length>=6 && a.includes(x) && x.length>=4)) && a.length>bestLen){ best = u; bestLen = a.length; }
+    });
+  });
+  return best;
 }
 function normTicket(v){ return String(v??'').toUpperCase().replace(/[\s\-\/\.]/g,''); }
 /* every key a ticket value can be recognised by: full text, each part of a multi-ticket cell, digits, last 10 digits */
@@ -4410,6 +4425,17 @@ function renderReconcile(){
       });
       amountMismatches.forEach(m=>seen.set(m.b.id, true));
       missing._skipped = skipped;
+      const userCol = reconcileHeaders.find(h=>/^(user|user name|agent|issued by|created by|ticketing agent)$|ticketing \/ void|\bson\b|sine/i.test(String(h).trim()));
+      missing._userCol = userCol;
+      missing._hasAmt = !!amtCol;
+      missing._byEmp = {};
+      if(userCol) missing.forEach(r=>{
+        const emp = supplierUserToEmployee(r[userCol]);
+        r.__emp = emp ? emp.name : (String(r[userCol]??'').trim() ? `❓ ${String(r[userCol]).trim()}` : '—');
+        const n = amtCol ? parseAmount(r[amtCol]) : NaN;
+        const e = missing._byEmp[r.__emp] || (missing._byEmp[r.__emp] = {count:0, amount:0});
+        e.count++; if(!isNaN(n)) e.amount += Math.abs(n);
+      });
       missing._duplicates = duplicates;
       missing._notInFile = scoped.filter(b=>b.ticket_no && !seen.has(b.id) && !bookingIsFullRefund(b));
       missing._compareTo = compareTo;
@@ -4546,8 +4572,12 @@ function renderReconcile(){
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;">
         <button class="btn btn-ghost btn-sm" id="reconcilePrintMissingBtn">${t('reconcilePrintNotFound')}</button>
       </div>
-      <div style="overflow-x:auto;"><table><thead><tr><th>${esc(col)}</th>${otherCols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead>
-        <tbody>${missing.map(row=>`<tr><td style="font-weight:700;color:var(--red);">${esc(row[col])}</td>${otherCols.map(c=>`<td>${esc(row[c]??'')}</td>`).join('')}</tr>`).join('')}</tbody>
+      ${missing._userCol && Object.keys(missing._byEmp||{}).length ? `<div class="note" style="font-weight:700;margin:6px 0;">👤 ${lang==='ar'?'التذاكر غير المسجلة حسب الموظف (من عمود':'Unrecorded tickets by employee (column'} "${esc(missing._userCol)}")</div>
+      <div style="overflow-x:auto;margin-bottom:10px;"><table><thead><tr><th>${t('colEmployee')}</th><th>${lang==='ar'?'عدد السطور':'Rows'}</th>${missing._hasAmt?`<th>${lang==='ar'?'المبلغ':'Amount'}</th>`:''}</tr></thead>
+        <tbody>${Object.entries(missing._byEmp).sort((a,b)=>b[1].count-a[1].count).map(([n,e])=>`<tr><td style="font-weight:700;${n.startsWith('❓')?'color:#A8722C':''}">${esc(n)}</td><td class="num">${e.count}</td>${missing._hasAmt?`<td class="num">${money(+e.amount.toFixed(2))}</td>`:''}</tr>`).join('')}</tbody></table></div>
+      ${Object.keys(missing._byEmp).some(n=>n.startsWith('❓'))?`<div class="note" style="color:#A8722C;">❓ ${lang==='ar'?'= اسم مستخدم عند المورد غير مربوط بموظف. أضفه في: المستخدمين ← تعديل الموظف ← "أسماء المستخدم عند الموردين".':'= supplier username not linked to an employee. Add it under Users → edit → supplier usernames.'}</div>`:''}`:''}
+      <div style="overflow-x:auto;"><table><thead><tr>${missing._userCol?`<th>${t('colEmployee')}</th>`:''}<th>${esc(col)}</th>${otherCols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead>
+        <tbody>${missing.map(row=>`<tr>${missing._userCol?`<td style="font-weight:700">${esc(row.__emp||'—')}</td>`:''}<td style="font-weight:700;color:var(--red);">${esc(row[col])}</td>${otherCols.map(c=>`<td>${esc(row[c]??'')}</td>`).join('')}</tr>`).join('')}</tbody>
       </table></div>`)}`;
     if(document.getElementById('reconcileExcelNotInFileBtn')) document.getElementById('reconcileExcelNotInFileBtn').onclick = ()=>exportBookingsToExcel(missing._notInFile||[], 'manage');
     if(document.getElementById('reconcilePrintMatchedBtn')) document.getElementById('reconcilePrintMatchedBtn').onclick = ()=>printTicketDetails(missing._matchedList||[]);
