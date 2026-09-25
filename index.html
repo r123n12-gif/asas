@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A4</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A5</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -4055,12 +4055,21 @@ function parseAmount(v){
   return isNaN(n) ? NaN : (neg ? -n : n);
 }
 function supplierUserToEmployee(val){
-  const x = String(val??'').toUpperCase().replace(/\s+/g,' ').trim();
+  const norm = v=> String(v??'').toUpperCase().replace(/\s+/g,' ').trim();
+  const x = norm(val);
   if(!x) return null;
+  const words = x.split(/[^A-Z0-9\u0600-\u06FF.]+/).filter(Boolean);
   let best = null, bestLen = 0;
   users.forEach(u=>{
-    String(u.supplier_aliases||'').split(',').map(a=>a.trim().toUpperCase().replace(/\s+/g,' ')).filter(a=>a.length>=3).forEach(a=>{
-      if((x===a || x.includes(a) || (a.length>=6 && a.includes(x) && x.length>=4)) && a.length>bestLen){ best = u; bestLen = a.length; }
+    String(u.supplier_aliases||'').split(',').map(norm).filter(a=>a.length>=3).forEach(a=>{
+      let ok = x===a;
+      if(!ok){
+        // the agency's own name (e.g. "tamyz hajzty") is shared by everyone — only an exact match counts
+        const generic = /TAMYZ|HAJZ/.test(a) && !/(TOURISM|TOURSIM|TRAVELS?)\s+\S/.test(a);
+        if(a.length<6) ok = words.includes(a);                       // short aliases: whole word only
+        else if(!generic) ok = x.includes(a);                         // long, specific aliases: may sit inside a longer name
+      }
+      if(ok && a.length>bestLen){ best = u; bestLen = a.length; }
     });
   });
   return best;
