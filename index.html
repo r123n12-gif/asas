@@ -4311,7 +4311,7 @@ function renderReconcile(){
       const routeCol = document.getElementById('reconcileRouteColSel').value;
       const amtCol = document.getElementById('reconcileTicketAmountColSel').value;
       const likely = h=>/ticket|tkt|pnr|doc|ref|locator|booking|رقم|تذكر|حجز|مرجع/i.test(String(h));
-      const scanCols = reconcileHeaders.filter(h=> h!==airlineCol && h!==routeCol && h!==amtCol)
+      const scanCols = reconcileHeaders.filter(h=> h!==amtCol)
         .sort((a,b)=> (likely(b)?1:0) - (likely(a)?1:0));
       const likelyCols = scanCols.filter(likely);
       col = scanCols[0];
