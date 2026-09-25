@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F6</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F7</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -4035,6 +4035,48 @@ async function exportFullBackup(){
 }
 
 /* ===================== RECONCILIATION ===================== */
+/* ---- robust parsing for statements coming from GDS / suppliers / banks ---- */
+function parseAmount(v){
+  if(v===null || v===undefined) return NaN;
+  if(typeof v==='number') return v;
+  let t0 = String(v).trim();
+  if(!t0) return NaN;
+  t0 = t0.replace(/[٠-٩]/g, d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[۰-۹]/g, d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/٫/g,'.').replace(/٬/g,',');
+  let neg = /^\(.*\)$/.test(t0) || /-\s*$/.test(t0) || /^-/.test(t0.replace(/[^0-9\-.,]/g,''));
+  t0 = t0.replace(/[^0-9.,]/g,'');
+  if(!/[0-9]/.test(t0)) return NaN;
+  if(t0.includes(',') && t0.includes('.')) t0 = t0.lastIndexOf(',') > t0.lastIndexOf('.') ? t0.replace(/\./g,'').replace(',', '.') : t0.replace(/,/g,'');
+  else if(t0.includes(',')) t0 = /,\d{1,2}$/.test(t0) ? t0.replace(',', '.') : t0.replace(/,/g,'');
+  const n = Number(t0);
+  return isNaN(n) ? NaN : (neg ? -n : n);
+}
+function normTicket(v){ return String(v??'').toUpperCase().replace(/[\s\-\/\.]/g,''); }
+/* every key a ticket value can be recognised by: full text, each part of a multi-ticket cell, digits, last 10 digits */
+function ticketKeys(v){
+  const out = new Set();
+  let raw = v;
+  if(typeof raw==='number' && Number.isFinite(raw)) raw = BigInt(Math.round(raw)).toString();
+  const str = String(raw??'').trim();
+  if(!str) return out;
+  const parts = [str, ...str.split(/[\s,;|\/]+/)];
+  parts.forEach(p=>{
+    const n = normTicket(p); if(n.length>=5) out.add('T:'+n);
+    const d = String(p).replace(/[^0-9]/g,'');
+    if(d.length>=6) out.add('D:'+d.replace(/^0+/,''));
+    if(d.length>=10) out.add('L:'+d.slice(-10));
+  });
+  return out;
+}
+function normName(v){ return String(v??'').toUpperCase().replace(/\b(MR|MRS|MS|MISS|MSTR|CHD|INF)\b/g,' ').replace(/[^A-Z\u0600-\u06FF ]/g,' ').split(/\s+/).filter(w=>w.length>1); }
+function namesMatch(a, b){
+  const A = normName(a), B = normName(b);
+  if(!A.length || !B.length) return false;
+  const ca = A.join(''), cb = B.join('');
+  if(ca.length>=6 && cb.length>=6 && (ca.includes(cb) || cb.includes(ca))) return true;
+  const [small, big] = A.length<=B.length ? [A,B] : [B,A];
+  const hits = small.filter(w=>big.includes(w)).length;
+  return hits===small.length || (hits>=2 && hits>=small.length-1);
+}
 let reconcileRows = [];
 let reconcileHeaders = [];
 function reconcileFilterOptions(){
@@ -4163,6 +4205,10 @@ function renderReconcile(){
           <div class="field"><label>${t('reconcileAirlineColLabel')}</label><select id="reconcileAirlineColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
           <div class="field"><label>${t('reconcileRouteColLabel')}</label><select id="reconcileRouteColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
           <div class="field"><label>${t('reconcileAmountColLabel')} (${t('reconcileOptionalNote')})</label><select id="reconcileTicketAmountColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
+          <div class="field"><label>${lang==='ar'?'المبلغ في الملف يقابل':'File amount corresponds to'}</label><select id="reconcileCompareSel">
+            <option value="cost">${lang==='ar'?'التكلفة / السستم فير (كشف المورد)':'Cost / system fare (supplier statement)'}</option>
+            <option value="sell">${lang==='ar'?'سعر البيع للعميل':'Sale price'}</option>
+          </select></div>
         </div>
         <div id="reconcileModeAmountNameBox" class="grid-2" style="display:none;">
           <div class="field"><label>${t('reconcileAmountColLabel')}</label><select id="reconcileAmountColSel"></select></div>
@@ -4192,7 +4238,7 @@ function renderReconcile(){
     const reader = new FileReader();
     reader.onload = (ev)=>{
       try{
-        const wb = XLSX.read(ev.target.result, {type:'binary'});
+        const wb = XLSX.read(new Uint8Array(ev.target.result), {type:'array'});
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const grid = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
         let headerRowIdx = grid.findIndex(r=> r.filter(c=>String(c).trim()!=='').length>=3);
@@ -4219,7 +4265,7 @@ function renderReconcile(){
         document.getElementById('reconcileResultBox').innerHTML = '';
       }catch(err){ console.error(err); alert(t('reconcileParseError')); }
     };
-    reader.readAsBinaryString(file);
+    reader.readAsArrayBuffer(file);
   };
   document.getElementById('reconcileModeSel').onchange = (e)=>{
     const mode = e.target.value;
@@ -4250,35 +4296,30 @@ function renderReconcile(){
         return !excludeWords.some(w=>low.includes(w));
       });
       col = scanCols[0];
-      const keyOf = (ticket, airline, route)=> String(ticket).trim().toUpperCase()
-        + (airlineCol ? '|'+String(airline||'').trim().toUpperCase() : '')
-        + (routeCol ? '|'+String(route||'').trim().toUpperCase() : '');
-      const digitsOnly = (s)=> String(s).replace(/[^0-9]/g,'');
-      const systemMap = new Map();
-      const digitsMap = new Map();
-      scoped.filter(b=>b.ticket_no).forEach(b=>{
-        systemMap.set(keyOf(b.ticket_no, b.airline, b.flight_route), b);
-        const d = digitsOnly(b.ticket_no);
-        if(d) digitsMap.set(d, b);
-      });
+      const compareTo = document.getElementById('reconcileCompareSel')?.value || 'cost';
+      const index = new Map();
+      scoped.filter(b=>b.ticket_no).forEach(b=>{ ticketKeys(b.ticket_no).forEach(k=>{ if(!index.has(k)) index.set(k, b); }); });
+      const sameText = (a,b)=> !a || !b || String(a).trim().toUpperCase()===String(b).trim().toUpperCase();
       let fuzzyMatches = 0;
       let emptyValCount = 0;
       const matchedList = [];
+      const seen = new Map();
+      const duplicates = [];
       const tryMatch = (raw, airlineVal, routeVal)=>{
         if(raw===undefined || raw===null || String(raw).trim()==='') return null;
-        const key = keyOf(raw, airlineVal, routeVal);
-        let hit = systemMap.get(key);
-        if(hit) return {hit, fuzzy:false};
-        const d = digitsOnly(raw);
-        if(d && d.length>=4 && digitsMap.has(d)) return {hit: digitsMap.get(d), fuzzy:true};
+        const keys = [...ticketKeys(raw)];
+        for(const pref of ['T:','D:','L:']){
+          for(const k of keys.filter(k=>k.startsWith(pref))){
+            const b = index.get(k);
+            if(b && (!airlineCol || sameText(b.airline, airlineVal)) && (!routeCol || sameText(b.flight_route, routeVal))) return {hit:b, fuzzy: pref!=='T:'};
+          }
+        }
         return null;
       };
       reconcileRows.forEach(row=>{
         const airlineVal = airlineCol ? row[airlineCol] : '';
         const routeVal = routeCol ? row[routeCol] : '';
-        let result = null;
-        let matchedCol = null;
-        let anyValPresent = false;
+        let result = null, matchedCol = null, anyValPresent = false;
         for(const c of scanCols){
           const val = row[c];
           if(val!==undefined && val!==null && String(val).trim()!=='') anyValPresent = true;
@@ -4290,14 +4331,24 @@ function renderReconcile(){
         const hit = result.hit;
         const raw = row[matchedCol];
         if(result.fuzzy) fuzzyMatches++;
+        if(seen.has(hit.id)){ duplicates.push({row, ticket:raw, b:hit}); return; }
+        seen.set(hit.id, true);
         if(amtCol){
-          const fileAmt = +Number(row[amtCol]||0).toFixed(2);
-          const sysAmt = +Number(hit.sell||0).toFixed(2);
-          if(Math.abs(fileAmt-sysAmt)>=0.01){ amountMismatches.push({row, sysAmt, fileAmt, ticket:raw}); return; }
+          const fileAmtRaw = parseAmount(row[amtCol]);
+          if(!isNaN(fileAmtRaw)){
+            const fileAmt = +fileAmtRaw.toFixed(2);
+            let sysAmt;
+            if(fileAmt < 0) sysAmt = -(compareTo==='cost' ? bookingSupplierRefund(hit) : bookingRefundAmount(hit));   // refund line
+            else sysAmt = compareTo==='cost' ? +(Number(hit.cost)||0).toFixed(2) : +(Number(hit.sell)||0).toFixed(2);
+            if(Math.abs(fileAmt-sysAmt)>=0.01){ amountMismatches.push({row, sysAmt, fileAmt, ticket:raw, b:hit}); return; }
+          }
         }
         matched++;
         matchedList.push(hit);
       });
+      missing._duplicates = duplicates;
+      missing._notInFile = scoped.filter(b=>b.ticket_no && !seen.has(b.id) && !bookingIsFullRefund(b));
+      missing._compareTo = compareTo;
       missing._matchedList = matchedList;
       otherCols = reconcileHeaders.filter(h=>h!==col && h!==airlineCol && h!==routeCol && h!==amtCol).slice(0,4);
       if(emptyValCount===reconcileRows.length && reconcileRows.length>0){
@@ -4316,19 +4367,23 @@ function renderReconcile(){
     }else if(mode==='bankStatement'){
       const amtCol = document.getElementById('reconcileBankAmountColSel').value;
       const methodFilter = document.getElementById('reconcileBankMethodSel').value;
-      const verifiedList = scoped.filter(b=> b.payment_status==='paid' &&
-        (methodFilter==='both' ? (b.payment_method==='transfer'||b.payment_method==='span') : b.payment_method===methodFilter));
+      const verifiedList = [];
+      scoped.forEach(b=>{
+        const methodOk = methodFilter==='both' ? b.payment_method!=='cash' : (b.payment_method===methodFilter || b.payment_method==='split');
+        if(!methodOk) return;
+        jrows(b.id).filter(j=>j.desc_key==='jBankReceipt').forEach(j=>verifiedList.push({...b, _bankAmt:+Number(j.amount).toFixed(2)}));
+      });
       const bankAmounts = [];
       reconcileRows.forEach(row=>{
-        const raw = row[amtCol];
-        if(raw===undefined || raw===null || String(raw).trim()==='') return;
-        bankAmounts.push(+Number(raw).toFixed(2));
+        const n = parseAmount(row[amtCol]);
+        if(isNaN(n) || n<=0) return;   // only credits
+        bankAmounts.push(+n.toFixed(2));
       });
       const bankColEmpty = bankAmounts.length===0 && reconcileRows.length>0;
       const matchedList = [];
       if(!bankColEmpty){
         verifiedList.forEach(b=>{
-          const amt = +Number(b.sell||0).toFixed(2);
+          const amt = b._bankAmt;
           const idx = bankAmounts.findIndex(a=>Math.abs(a-amt)<0.01);
           if(idx>-1){ bankAmounts.splice(idx,1); matched++; matchedList.push(b); }
           else{ missing.push(b); }
@@ -4341,15 +4396,14 @@ function renderReconcile(){
       const amtCol = document.getElementById('reconcileAmountColSel').value;
       const nameCol = document.getElementById('reconcileNameColSel').value;
       col = nameCol;
-      const systemPairs = scoped.map(b=>({name:String(b.customer||'').trim().toUpperCase(), amt:+Number(b.sell||0).toFixed(2), emp:userName(b.created_by)}));
+      const systemPairs = scoped.map(b=>({name:b.customer||'', amt:+Number(b.sell||0).toFixed(2), emp:userName(b.created_by), used:false}));
       let emptyValCount2 = 0;
       reconcileRows.forEach(row=>{
         const rawName = row[nameCol], rawAmt = row[amtCol];
         if((rawName===undefined||String(rawName).trim()==='') && (rawAmt===undefined||String(rawAmt).trim()==='')){ emptyValCount2++; return; }
-        const name = String(rawName||'').trim().toUpperCase();
-        const amt = +Number(rawAmt||0).toFixed(2);
-        const hit = systemPairs.find(p=>p.name===name && Math.abs(p.amt-amt)<0.01);
-        if(hit) matched++; else missing.push(row);
+        const amt = +(parseAmount(rawAmt)||0).toFixed(2);
+        const hit = systemPairs.find(p=>!p.used && Math.abs(p.amt-Math.abs(amt))<0.01 && namesMatch(p.name, rawName));
+        if(hit){ hit.used = true; matched++; } else missing.push(row);
       });
       otherCols = reconcileHeaders.filter(h=>h!==nameCol && h!==amtCol).slice(0,4);
       if(emptyValCount2===reconcileRows.length && reconcileRows.length>0){
@@ -4382,7 +4436,7 @@ function renderReconcile(){
         <div class="note" style="color:var(--red);font-weight:600;">🚩 ${t('reconcileBankNotFoundNote')}</div>
         <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colPaymentMethod')}</th><th>${t('colAmount')}</th><th>${t('colBranch')}</th></tr></thead>
           <tbody>${missing.map(b=>`<tr><td style="font-weight:700;color:var(--red);">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${esc(b.ticket_no||'—')}</td>
-            <td>${b.payment_method==='span'?t('paySpan'):t('payTransfer')}</td><td class="num">${money(b.sell)}</td><td>${branchName(b.branch_id)}</td></tr>`).join('')}</tbody>
+            <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):b.payment_method==='split'?(lang==='ar'?'دفع متعدد':'Split'):t('payTransfer')}</td><td class="num">${money(b._bankAmt!=null?b._bankAmt:b.sell)}</td><td>${branchName(b.branch_id)}</td></tr>`).join('')}</tbody>
         </table></div>`}`;
       const matchedList = missing._matchedList||[];
       document.getElementById('bankPrintMatchedBtn').onclick = ()=>printTicketDetails(matchedList);
@@ -4399,10 +4453,17 @@ function renderReconcile(){
         <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('reconcileMissing')}</div><div class="kpi-value neg">${missing.length}</div></div>
       </div>
       ${amountMismatches.length>0?`
-      <div class="note" style="color:#A8722C;font-weight:600;">⚠️ ${t('reconcileAmountMismatchNote')}</div>
-      <div style="overflow-x:auto;margin-top:8px;margin-bottom:16px;"><table><thead><tr><th>${t('colTicketNo')}</th><th>${t('reconcileSystemAmount')}</th><th>${t('reconcileFileAmount')}</th></tr></thead>
-        <tbody>${amountMismatches.map(m=>`<tr><td style="font-weight:700;color:#A8722C;">${esc(m.ticket)}</td><td>${money(m.sysAmt)}</td><td>${money(m.fileAmt)}</td></tr>`).join('')}</tbody>
+      <div class="note" style="color:#A8722C;font-weight:600;">⚠️ ${t('reconcileAmountMismatchNote')} — ${lang==='ar'?(missing._compareTo==='cost'?'المقارنة مع التكلفة (السستم فير)':'المقارنة مع سعر البيع'):(missing._compareTo==='cost'?'compared with cost':'compared with sale price')}</div>
+      <div style="overflow-x:auto;margin-top:8px;margin-bottom:16px;"><table><thead><tr><th>${t('colTicketNo')}</th><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('reconcileSystemAmount')}</th><th>${t('reconcileFileAmount')}</th><th>${lang==='ar'?'الفرق':'Diff'}</th></tr></thead>
+        <tbody>${amountMismatches.map(m=>`<tr><td style="font-weight:700;color:#A8722C;">${esc(m.ticket)}</td><td class="num">${m.b?m.b.booking_no:''}</td><td>${m.b?esc(m.b.customer||''):''}</td><td>${m.b?esc(userName(m.b.created_by)):''}</td><td class="num">${money(m.sysAmt)}</td><td class="num">${money(m.fileAmt)}</td><td class="num" style="font-weight:700">${money(+(m.fileAmt-m.sysAmt).toFixed(2))}</td></tr>`).join('')}</tbody>
       </table></div>`:''}
+      ${(missing._duplicates||[]).length?`<div class="note" style="color:#A8722C;font-weight:600;">⚠️ ${lang==='ar'?`تذاكر متكررة في الملف (${missing._duplicates.length}) — نفس التذكرة ظهرت أكثر من مرة`:`Tickets repeated in the file (${missing._duplicates.length})`}</div>
+      <div style="overflow-x:auto;margin:8px 0 16px;"><table><thead><tr><th>${t('colTicketNo')}</th><th>${t('colNo')}</th><th>${t('colCustomer')}</th></tr></thead>
+        <tbody>${missing._duplicates.map(d=>`<tr><td>${esc(d.ticket)}</td><td class="num">${d.b.booking_no}</td><td>${esc(d.b.customer||'')}</td></tr>`).join('')}</tbody></table></div>`:''}
+      ${(missing._notInFile||[]).length?`<div class="note" style="color:var(--red);font-weight:600;margin-top:10px;">⚠️ ${lang==='ar'?`تذاكر في النظام وما لقيناها في الملف (${missing._notInFile.length}) — حسب الفلاتر فوق (المورد/الفرع/الموظف/التاريخ)`:`Tickets in the system but not in the file (${missing._notInFile.length})`}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;"><button class="btn btn-ghost btn-sm" id="reconcileExcelNotInFileBtn">${t('reconcileExcelMatched').replace(/.*/, lang==='ar'?'Excel — غير الموجودة في الملف':'Excel — not in file')}</button></div>
+      <div style="overflow-x:auto;margin-bottom:16px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colSupplier')}</th><th>${lang==='ar'?'التاريخ':'Date'}</th><th>${lang==='ar'?'التكلفة':'Cost'}</th><th>${lang==='ar'?'البيع':'Sell'}</th></tr></thead>
+        <tbody>${missing._notInFile.map(b=>`<tr><td class="num">${b.booking_no}</td><td style="font-weight:700;color:var(--red)">${esc(b.ticket_no)}</td><td>${esc(b.customer||'')}</td><td>${esc(userName(b.created_by))}</td><td>${esc(b.supplier||'—')}</td><td>${b.date}</td><td class="num">${money(b.cost)}</td><td class="num">${money(b.sell)}</td></tr>`).join('')}</tbody></table></div>`:''}
       ${missing._emptyColWarning?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">⚠️ ${missing._emptyColWarning}</div>`:''}
       ${missing._diagnostic?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">🔎 ${missing._diagnostic}</div>`:''}
       ${matched>0?`<div style="margin-top:10px;">
@@ -4422,6 +4483,7 @@ function renderReconcile(){
       <div style="overflow-x:auto;"><table><thead><tr><th>${esc(col)}</th>${otherCols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead>
         <tbody>${missing.map(row=>`<tr><td style="font-weight:700;color:var(--red);">${esc(row[col])}</td>${otherCols.map(c=>`<td>${esc(row[c]??'')}</td>`).join('')}</tr>`).join('')}</tbody>
       </table></div>`)}`;
+    if(document.getElementById('reconcileExcelNotInFileBtn')) document.getElementById('reconcileExcelNotInFileBtn').onclick = ()=>exportBookingsToExcel(missing._notInFile||[], 'manage');
     if(document.getElementById('reconcilePrintMatchedBtn')) document.getElementById('reconcilePrintMatchedBtn').onclick = ()=>printTicketDetails(missing._matchedList||[]);
     if(document.getElementById('reconcileExcelMatchedBtn')) document.getElementById('reconcileExcelMatchedBtn').onclick = ()=>exportBookingsToExcel(missing._matchedList||[], 'manage');
     if(document.getElementById('reconcilePrintMissingBtn')) document.getElementById('reconcilePrintMissingBtn').onclick = ()=>printGenericTable(t('reconcileMissingNote'), [col,...otherCols], missing.map(row=>[row[col], ...otherCols.map(c=>row[c])]));
