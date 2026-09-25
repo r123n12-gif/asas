@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A5</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A6</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -4434,7 +4434,15 @@ function renderReconcile(){
       });
       amountMismatches.forEach(m=>seen.set(m.b.id, true));
       missing._skipped = skipped;
-      const userCol = reconcileHeaders.find(h=>/^(user|user name|agent|issued by|created by|ticketing agent)$|ticketing \/ void|\bson\b|sine/i.test(String(h).trim()));
+      // the "who issued it" column: the one whose values match employees' supplier usernames most often
+      let userCol = null, bestHits = 0;
+      const sample = reconcileRows.slice(0, 400);
+      reconcileHeaders.forEach(h=>{
+        if(h===amtCol) return;
+        const hits = sample.reduce((a,r)=> a + (supplierUserToEmployee(r[h]) ? 1 : 0), 0);
+        if(hits > bestHits){ bestHits = hits; userCol = h; }
+      });
+      if(!userCol) userCol = reconcileHeaders.find(h=>/user|agent|staff|issued|booked|created|operator|cashier|\bson\b|sine|sign|employee|موظف|مستخدم/i.test(String(h).trim())) || null;
       missing._userCol = userCol;
       missing._hasAmt = !!amtCol;
       missing._byEmp = {};
