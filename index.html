@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A2</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A3</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -4242,7 +4242,13 @@ function renderReconcile(){
         // read EVERY sheet; in each, the header is the row (within the first 20) with the most text cells
         let rows = [], headerSet = [], sheetsUsed = 0;
         wb.SheetNames.forEach(name=>{
-          const grid = XLSX.utils.sheet_to_json(wb.Sheets[name], {header:1, defval:''});
+          const ws = wb.Sheets[name];
+          try{
+            let maxR = 0, maxC = 0, any = false;
+            Object.keys(ws).forEach(k=>{ if(k[0]==='!') return; const c = XLSX.utils.decode_cell(k); any = true; if(c.r>maxR) maxR=c.r; if(c.c>maxC) maxC=c.c; });
+            if(any) ws['!ref'] = XLSX.utils.encode_range({s:{r:0,c:0}, e:{r:maxR, c:maxC}});
+          }catch(e){}
+          const grid = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
           if(!grid.length) return;
           let headerRowIdx = 0, best = -1;
           grid.slice(0,20).forEach((r,i)=>{
@@ -4322,7 +4328,8 @@ function renderReconcile(){
       index.forEach((b,k)=>{ if(k.startsWith('D:') && k.length-2>=7) sysDigits.push([k.slice(2), b]); });
       const tryMatch = (raw, airlineVal, routeVal, pass)=>{
         if(raw===undefined || raw===null || String(raw).trim()==='') return null;
-        const okExtra = b=> (!airlineCol || sameText(b.airline, airlineVal)) && (!routeCol || sameText(b.flight_route, routeVal));
+        const av = String(airlineVal??'').trim(), rv = String(routeVal??'').trim();
+        const okExtra = b=> (!airlineCol || av.length>3 || !av || sameText(b.airline, av)) && (!routeCol || !/[\/\-]/.test(rv) || sameText(b.flight_route, rv));
         const keys = [...ticketKeys(raw)];
         if(pass===1){
           for(const pref of ['T:','D:','L:']){
