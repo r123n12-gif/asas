@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A6</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A7</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -4567,6 +4567,10 @@ function renderReconcile(){
       <div style="overflow-x:auto;margin-top:8px;margin-bottom:16px;"><table><thead><tr><th>${t('colTicketNo')}</th><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('reconcileSystemAmount')}</th><th>${t('reconcileFileAmount')}</th><th>${lang==='ar'?'الفرق':'Diff'}</th></tr></thead>
         <tbody>${amountMismatches.map(m=>`<tr><td style="font-weight:700;color:#A8722C;">${esc(m.ticket)}</td><td class="num">${m.b?m.b.booking_no:''}</td><td>${m.b?esc(m.b.customer||''):''}</td><td>${m.b?esc(userName(m.b.created_by)):''}</td><td class="num">${money(m.sysAmt)}</td><td class="num">${money(m.fileAmt)}</td><td class="num" style="font-weight:700">${money(+(m.fileAmt-m.sysAmt).toFixed(2))}</td></tr>`).join('')}</tbody>
       </table></div>`:''}
+      ${missing._userCol && Object.keys(missing._byEmp||{}).length ? `<div class="note" style="font-weight:700;margin:6px 0;font-size:15px;color:var(--red);">👤 ${lang==='ar'?'تذاكر في كشف المورد وغير مسجلة بالنظام — حسب الموظف (من عمود':'Unrecorded tickets by employee (column'} "${esc(missing._userCol)}")</div>
+      <div style="overflow-x:auto;margin-bottom:10px;"><table><thead><tr><th>${t('colEmployee')}</th><th>${lang==='ar'?'عدد السطور':'Rows'}</th>${missing._hasAmt?`<th>${lang==='ar'?'المبلغ':'Amount'}</th>`:''}</tr></thead>
+        <tbody>${Object.entries(missing._byEmp).sort((a,b)=>b[1].count-a[1].count).map(([n,e])=>`<tr><td style="font-weight:700;${n.startsWith('❓')?'color:#A8722C':''}">${esc(n)}</td><td class="num">${e.count}</td>${missing._hasAmt?`<td class="num">${money(+e.amount.toFixed(2))}</td>`:''}</tr>`).join('')}</tbody></table></div>
+      ${Object.keys(missing._byEmp).some(n=>n.startsWith('❓'))?`<div class="note" style="color:#A8722C;">❓ ${lang==='ar'?'= اسم مستخدم عند المورد غير مربوط بموظف. أضفه في: المستخدمين ← تعديل الموظف ← "أسماء المستخدم عند الموردين".':'= supplier username not linked to an employee. Add it under Users → edit → supplier usernames.'}</div>`:''}`:''}
       ${(missing._duplicates||[]).length?`<div class="note" style="color:#A8722C;font-weight:600;">⚠️ ${lang==='ar'?`تذاكر متكررة في الملف (${missing._duplicates.length}) — نفس التذكرة ظهرت أكثر من مرة`:`Tickets repeated in the file (${missing._duplicates.length})`}</div>
       <div style="overflow-x:auto;margin:8px 0 16px;"><table><thead><tr><th>${t('colTicketNo')}</th><th>${t('colNo')}</th><th>${t('colCustomer')}</th></tr></thead>
         <tbody>${missing._duplicates.map(d=>`<tr><td>${esc(d.ticket)}</td><td class="num">${d.b.booking_no}</td><td>${esc(d.b.customer||'')}</td></tr>`).join('')}</tbody></table></div>`:''}
@@ -4589,10 +4593,6 @@ function renderReconcile(){
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;">
         <button class="btn btn-ghost btn-sm" id="reconcilePrintMissingBtn">${t('reconcilePrintNotFound')}</button>
       </div>
-      ${missing._userCol && Object.keys(missing._byEmp||{}).length ? `<div class="note" style="font-weight:700;margin:6px 0;">👤 ${lang==='ar'?'التذاكر غير المسجلة حسب الموظف (من عمود':'Unrecorded tickets by employee (column'} "${esc(missing._userCol)}")</div>
-      <div style="overflow-x:auto;margin-bottom:10px;"><table><thead><tr><th>${t('colEmployee')}</th><th>${lang==='ar'?'عدد السطور':'Rows'}</th>${missing._hasAmt?`<th>${lang==='ar'?'المبلغ':'Amount'}</th>`:''}</tr></thead>
-        <tbody>${Object.entries(missing._byEmp).sort((a,b)=>b[1].count-a[1].count).map(([n,e])=>`<tr><td style="font-weight:700;${n.startsWith('❓')?'color:#A8722C':''}">${esc(n)}</td><td class="num">${e.count}</td>${missing._hasAmt?`<td class="num">${money(+e.amount.toFixed(2))}</td>`:''}</tr>`).join('')}</tbody></table></div>
-      ${Object.keys(missing._byEmp).some(n=>n.startsWith('❓'))?`<div class="note" style="color:#A8722C;">❓ ${lang==='ar'?'= اسم مستخدم عند المورد غير مربوط بموظف. أضفه في: المستخدمين ← تعديل الموظف ← "أسماء المستخدم عند الموردين".':'= supplier username not linked to an employee. Add it under Users → edit → supplier usernames.'}</div>`:''}`:''}
       <div style="overflow-x:auto;"><table><thead><tr>${missing._userCol?`<th>${t('colEmployee')}</th>`:''}<th>${esc(col)}</th>${otherCols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead>
         <tbody>${missing.map(row=>`<tr>${missing._userCol?`<td style="font-weight:700">${esc(row.__emp||'—')}</td>`:''}<td style="font-weight:700;color:var(--red);">${esc(row[col])}</td>${otherCols.map(c=>`<td>${esc(row[c]??'')}</td>`).join('')}</tr>`).join('')}</tbody>
       </table></div>`)}`;
