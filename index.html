@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A1</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A2</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -4251,7 +4251,8 @@ function renderReconcile(){
             const score = textCells*2 + filled;
             if(filled>=2 && score>best){ best = score; headerRowIdx = i; }
           });
-          const headerRow = (grid[headerRowIdx]||[]).map((h,i)=> String(h).trim()!=='' ? String(h).trim() : `COL_${i+1}`);
+          const used = {};
+          const headerRow = (grid[headerRowIdx]||[]).map((h,i)=>{ let n = String(h).trim()!=='' ? String(h).trim().replace(/\s+/g,' ') : `COL_${i+1}`; if(used[n]){ used[n]++; n = `${n} (${used[n]})`; } else used[n]=1; return n; });
           const width = Math.max(headerRow.length, ...grid.map(r=>r.length));
           for(let i=headerRow.length;i<width;i++) headerRow.push(`COL_${i+1}`);
           const dataRows = grid.slice(headerRowIdx+1).filter(r=> r.some(c=>String(c).trim()!==''));
@@ -4306,6 +4307,7 @@ function renderReconcile(){
       const likely = h=>/ticket|tkt|pnr|doc|ref|locator|booking|رقم|تذكر|حجز|مرجع/i.test(String(h));
       const scanCols = reconcileHeaders.filter(h=> h!==airlineCol && h!==routeCol && h!==amtCol)
         .sort((a,b)=> (likely(b)?1:0) - (likely(a)?1:0));
+      const likelyCols = scanCols.filter(likely);
       col = scanCols[0];
       const compareTo = document.getElementById('reconcileCompareSel')?.value || 'cost';
       const index = new Map();
@@ -4318,15 +4320,18 @@ function renderReconcile(){
       const duplicates = [];
       const sysDigits = [];
       index.forEach((b,k)=>{ if(k.startsWith('D:') && k.length-2>=7) sysDigits.push([k.slice(2), b]); });
-      const tryMatch = (raw, airlineVal, routeVal)=>{
+      const tryMatch = (raw, airlineVal, routeVal, pass)=>{
         if(raw===undefined || raw===null || String(raw).trim()==='') return null;
         const okExtra = b=> (!airlineCol || sameText(b.airline, airlineVal)) && (!routeCol || sameText(b.flight_route, routeVal));
         const keys = [...ticketKeys(raw)];
-        for(const pref of ['T:','D:','L:']){
-          for(const k of keys.filter(k=>k.startsWith(pref))){
-            const b = index.get(k);
-            if(b && okExtra(b)) return {hit:b, fuzzy: pref!=='T:'};
+        if(pass===1){
+          for(const pref of ['T:','D:','L:']){
+            for(const k of keys.filter(k=>k.startsWith(pref))){
+              const b = index.get(k);
+              if(b && okExtra(b)) return {hit:b, fuzzy: pref!=='T:'};
+            }
           }
+          return null;
         }
         // containment: one number written inside the other (airline prefix / check digit added or dropped)
         for(const k of keys.filter(k=>k.startsWith('D:'))){
@@ -4354,14 +4359,21 @@ function renderReconcile(){
         const airlineVal = airlineCol ? row[airlineCol] : '';
         const routeVal = routeCol ? row[routeCol] : '';
         let result = null, matchedCol = null, anyValPresent = false;
-        for(const c of scanCols){
-          const val = row[c];
-          if(val!==undefined && val!==null && String(val).trim()!=='') anyValPresent = true;
-          const r = tryMatch(val, airlineVal, routeVal);
-          if(r){ result = r; matchedCol = c; break; }
+        for(const pass of [1,2]){
+          for(const c of scanCols){
+            const val = row[c];
+            if(val!==undefined && val!==null && String(val).trim()!=='') anyValPresent = true;
+            const r = tryMatch(val, airlineVal, routeVal, pass);
+            if(r){ result = r; matchedCol = c; break; }
+          }
+          if(result) break;
         }
         if(!anyValPresent){ emptyValCount++; return; }
-        if(!result){ missing.push(row); return; }
+        if(!result){
+          // a row with nothing in the ticket / PNR / reference columns is a balance or narration line, not a ticket
+          if(likelyCols.length && likelyCols.every(c=>String(row[c]??'').trim()==='')){ skipped++; return; }
+          missing.push(row); return;
+        }
         if(result.fuzzy) fuzzyMatches++;
         const hit = result.hit;
         const e = agg.get(hit.id) || {b:hit, sale:0, refund:0, hasAmt:false, tickets:[]};
@@ -4493,6 +4505,7 @@ function renderReconcile(){
     box.innerHTML = `
       ${missing._emptyColWarning?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">⚠️ ${missing._emptyColWarning}</div>`:''}
       ${missing._diagnostic?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;margin-bottom:10px;">🔎 ${missing._diagnostic}</div>`:''}
+      ${missing._skipped?`<div class="note" style="margin-bottom:8px;">ℹ️ ${lang==='ar'?`تم تجاهل ${missing._skipped} سطر ليست تذاكر (دفعات، أرصدة، مجاميع، نهاية التقرير)`:`${missing._skipped} non-ticket rows ignored (receipts, balances, totals)`}</div>`:''}
       <div class="kpi-row" style="grid-template-columns:repeat(${amountMismatches.length>0?4:3},1fr);margin-bottom:14px;">
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('reconcileTotalRows')}</div><div class="kpi-value">${reconcileRows.length}</div></div>
         <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('reconcileMatched')}</div><div class="kpi-value">${matched}</div></div>
