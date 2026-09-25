@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-A7</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-B1</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -2622,6 +2622,12 @@ function openBookingModal(existing){
           : `A loss ticket cannot be saved: cost ${money(_cost)} is higher than the sale price ${money(_sell)}. Ask the accountant if the loss is real.`}</div>`;
         btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking'); return;
       }
+      // only an extreme ratio (price 3× the fare or more) is treated as a likely typo (extra zero) — just a confirmation, nobody is blocked
+      if(_cost > 0 && _sell >= _cost*3 && !confirm(lang==='ar'
+          ? `⚠️ سعر البيع ${money(_sell)} ثلاثة أضعاف السستم فير ${money(_cost)} أو أكثر — ممكن صفر زايد؟\n\nهل الأرقام صحيحة؟`
+          : `Sale price is 3× the fare or more — extra zero? Are the numbers correct?`)){
+        btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking'); return;
+      }
       if(_cost > _sell + 0.004 && !confirm(lang==='ar'
           ? `⚠️ التكلفة (السستم فير) ${money(_cost)} أكبر من سعر البيع ${money(_sell)} — التذكرة بخسارة ${money(_cost-_sell)}.\n\nتأكد إنك ما عكست الرقمين. هل الأرقام صحيحة؟`
           : `Cost ${money(_cost)} is higher than the sale price ${money(_sell)} (loss ${money(_cost-_sell)}). Are the numbers correct?`)){
@@ -4229,6 +4235,7 @@ function renderReconcile(){
           <div class="field"><label>${t('reconcileAirlineColLabel')}</label><select id="reconcileAirlineColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
           <div class="field"><label>${t('reconcileRouteColLabel')}</label><select id="reconcileRouteColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
           <div class="field"><label>${t('reconcileAmountColLabel')} (${t('reconcileOptionalNote')})</label><select id="reconcileTicketAmountColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
+          <div class="field"><label>${lang==='ar'?'عمود اسم المستخدم / الموظف في الملف':'User / employee column in the file'}</label><select id="reconcileUserColSel"><option value="">${lang==='ar'?'تلقائي':'Automatic'}</option></select></div>
           <div class="field"><label>${lang==='ar'?'المبلغ في الملف يقابل':'File amount corresponds to'}</label><select id="reconcileCompareSel">
             <option value="cost">${lang==='ar'?'التكلفة / السستم فير (كشف المورد)':'Cost / system fare (supplier statement)'}</option>
             <option value="sell">${lang==='ar'?'سعر البيع للعميل':'Sale price'}</option>
@@ -4299,6 +4306,7 @@ function renderReconcile(){
         document.getElementById('reconcileAirlineColSel').innerHTML = optsWithNone;
         document.getElementById('reconcileRouteColSel').innerHTML = optsWithNone;
         document.getElementById('reconcileTicketAmountColSel').innerHTML = optsWithNone;
+        if(document.getElementById('reconcileUserColSel')) document.getElementById('reconcileUserColSel').innerHTML = `<option value="">${lang==='ar'?'تلقائي':'Automatic'}</option>`+opts;
         document.getElementById('reconcileAmountColSel').innerHTML = opts;
         document.getElementById('reconcileNameColSel').innerHTML = opts;
         document.getElementById('reconcileBankAmountColSel').innerHTML = opts;
@@ -4435,15 +4443,16 @@ function renderReconcile(){
       amountMismatches.forEach(m=>seen.set(m.b.id, true));
       missing._skipped = skipped;
       // the "who issued it" column: the one whose values match employees' supplier usernames most often
-      let userCol = null, bestHits = 0;
+      let userCol = document.getElementById('reconcileUserColSel')?.value || null, bestHits = userCol ? 1e9 : 0;
       const sample = reconcileRows.slice(0, 400);
-      reconcileHeaders.forEach(h=>{
+      if(!userCol) reconcileHeaders.forEach(h=>{
         if(h===amtCol) return;
         const hits = sample.reduce((a,r)=> a + (supplierUserToEmployee(r[h]) ? 1 : 0), 0);
         if(hits > bestHits){ bestHits = hits; userCol = h; }
       });
       if(!userCol) userCol = reconcileHeaders.find(h=>/user|agent|staff|issued|booked|created|operator|cashier|\bson\b|sine|sign|employee|موظف|مستخدم/i.test(String(h).trim())) || null;
       missing._userCol = userCol;
+      missing._noAliases = !users.some(u=>String(u.supplier_aliases||'').trim());
       missing._hasAmt = !!amtCol;
       missing._byEmp = {};
       if(userCol) missing.forEach(r=>{
@@ -4571,6 +4580,9 @@ function renderReconcile(){
       <div style="overflow-x:auto;margin-bottom:10px;"><table><thead><tr><th>${t('colEmployee')}</th><th>${lang==='ar'?'عدد السطور':'Rows'}</th>${missing._hasAmt?`<th>${lang==='ar'?'المبلغ':'Amount'}</th>`:''}</tr></thead>
         <tbody>${Object.entries(missing._byEmp).sort((a,b)=>b[1].count-a[1].count).map(([n,e])=>`<tr><td style="font-weight:700;${n.startsWith('❓')?'color:#A8722C':''}">${esc(n)}</td><td class="num">${e.count}</td>${missing._hasAmt?`<td class="num">${money(+e.amount.toFixed(2))}</td>`:''}</tr>`).join('')}</tbody></table></div>
       ${Object.keys(missing._byEmp).some(n=>n.startsWith('❓'))?`<div class="note" style="color:#A8722C;">❓ ${lang==='ar'?'= اسم مستخدم عند المورد غير مربوط بموظف. أضفه في: المستخدمين ← تعديل الموظف ← "أسماء المستخدم عند الموردين".':'= supplier username not linked to an employee. Add it under Users → edit → supplier usernames.'}</div>`:''}`:''}
+      ${missing.length && !missing._userCol ? `<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;margin:8px 0;">👤 ${lang==='ar'
+          ? (missing._noAliases ? 'ما في يوزرات موردين محفوظة للموظفين (المستخدمين ← تعديل ← أسماء المستخدم عند الموردين)، أو ما انقرت من قاعدة البيانات.' : `ما لقيت في الملف عمود فيه يوزرات الموظفين. اختر العمود يدويًا من "عمود اسم المستخدم / الموظف" فوق. أعمدة الملف: ${reconcileHeaders.slice(0,15).map(esc).join('، ')}`)
+          : 'No user column found — pick it manually above.'}</div>` : ''}
       ${(missing._duplicates||[]).length?`<div class="note" style="color:#A8722C;font-weight:600;">⚠️ ${lang==='ar'?`تذاكر متكررة في الملف (${missing._duplicates.length}) — نفس التذكرة ظهرت أكثر من مرة`:`Tickets repeated in the file (${missing._duplicates.length})`}</div>
       <div style="overflow-x:auto;margin:8px 0 16px;"><table><thead><tr><th>${t('colTicketNo')}</th><th>${t('colNo')}</th><th>${t('colCustomer')}</th></tr></thead>
         <tbody>${missing._duplicates.map(d=>`<tr><td>${esc(d.ticket)}</td><td class="num">${d.b.booking_no}</td><td>${esc(d.b.customer||'')}</td></tr>`).join('')}</tbody></table></div>`:''}
