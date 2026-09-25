@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F5</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F6</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1448,7 +1448,12 @@ function startAutoRefresh(){
     if(!getSession() || document.hidden) return;
     const overlay = document.getElementById('overlay');
     if(overlay && overlay.classList.contains('show')) return;
-    try{ await fetchAll(); render(); }catch(e){ console.error('auto-refresh failed', e); }
+    // never wipe work in progress: the reconciliation page (uploaded file, chosen columns, results)
+    // and any form field the user is typing in keep their state — data refreshes, the screen does not
+    const ae = document.activeElement;
+    const typing = ae && ['INPUT','SELECT','TEXTAREA'].includes(ae.tagName);
+    if(route==='reconcile') return;
+    try{ await fetchAll(); if(!typing) render(); }catch(e){ console.error('auto-refresh failed', e); }
   }, 15000);
 }
 function stopAutoRefresh(){
