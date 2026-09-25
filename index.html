@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F7</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.09-F8</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -4058,7 +4058,7 @@ function ticketKeys(v){
   if(typeof raw==='number' && Number.isFinite(raw)) raw = BigInt(Math.round(raw)).toString();
   const str = String(raw??'').trim();
   if(!str) return out;
-  const parts = [str, ...str.split(/[\s,;|\/]+/)];
+  const parts = [str, ...str.split(/[\s,;|\/:]+/)];
   parts.forEach(p=>{
     const n = normTicket(p); if(n.length>=5) out.add('T:'+n);
     const d = String(p).replace(/[^0-9]/g,'');
@@ -4289,12 +4289,9 @@ function renderReconcile(){
       const airlineCol = document.getElementById('reconcileAirlineColSel').value;
       const routeCol = document.getElementById('reconcileRouteColSel').value;
       const amtCol = document.getElementById('reconcileTicketAmountColSel').value;
-      const excludeWords = ['name','date','amount','fare','tax','commission','category','sector','type','currency','status','remark','note','airline','flight','route','journey'];
-      const scanCols = reconcileHeaders.filter(h=>{
-        const low = String(h).toLowerCase();
-        if(h===airlineCol || h===routeCol || h===amtCol) return false;
-        return !excludeWords.some(w=>low.includes(w));
-      });
+      const likely = h=>/ticket|tkt|pnr|doc|ref|locator|booking|رقم|تذكر|حجز|مرجع/i.test(String(h));
+      const scanCols = reconcileHeaders.filter(h=> h!==airlineCol && h!==routeCol && h!==amtCol)
+        .sort((a,b)=> (likely(b)?1:0) - (likely(a)?1:0));
       col = scanCols[0];
       const compareTo = document.getElementById('reconcileCompareSel')?.value || 'cost';
       const index = new Map();
@@ -4305,14 +4302,24 @@ function renderReconcile(){
       const matchedList = [];
       const seen = new Map();
       const duplicates = [];
+      const sysDigits = [];
+      index.forEach((b,k)=>{ if(k.startsWith('D:') && k.length-2>=7) sysDigits.push([k.slice(2), b]); });
       const tryMatch = (raw, airlineVal, routeVal)=>{
         if(raw===undefined || raw===null || String(raw).trim()==='') return null;
+        const okExtra = b=> (!airlineCol || sameText(b.airline, airlineVal)) && (!routeCol || sameText(b.flight_route, routeVal));
         const keys = [...ticketKeys(raw)];
         for(const pref of ['T:','D:','L:']){
           for(const k of keys.filter(k=>k.startsWith(pref))){
             const b = index.get(k);
-            if(b && (!airlineCol || sameText(b.airline, airlineVal)) && (!routeCol || sameText(b.flight_route, routeVal))) return {hit:b, fuzzy: pref!=='T:'};
+            if(b && okExtra(b)) return {hit:b, fuzzy: pref!=='T:'};
           }
+        }
+        // containment: one number written inside the other (airline prefix / check digit added or dropped)
+        for(const k of keys.filter(k=>k.startsWith('D:'))){
+          const fd = k.slice(2);
+          if(fd.length<7) continue;
+          const cand = [...new Map(sysDigits.filter(([sd])=> fd.includes(sd) || sd.includes(fd)).map(([sd,b])=>[b.id,b])).values()];
+          if(cand.length===1 && okExtra(cand[0])) return {hit:cand[0], fuzzy:true};
         }
         return null;
       };
@@ -4360,9 +4367,9 @@ function renderReconcile(){
           const r = reconcileRows.find(r=>r[c]!==undefined && String(r[c]).trim()!=='');
           if(r){ sampleFile = r[c]; break; }
         }
-        if(sampleSys && sampleFile!==undefined){
-          missing._diagnostic = `${t('reconcileDiagnosticNote')} ${t('reconcileDiagnosticSystem')}: "${esc(sampleSys)}"  |  ${t('reconcileDiagnosticFile')}: "${esc(sampleFile)}"`;
-        }
+        const firstRow = reconcileRows.find(r=>Object.values(r).some(v=>String(v).trim()!==''))||{};
+        const colsInfo = reconcileHeaders.slice(0,8).map(h=>`${esc(h)} = "${esc(String(firstRow[h]??'').slice(0,30))}"`).join(' ، ');
+        missing._diagnostic = `${t('reconcileDiagnosticNote')} ${t('reconcileDiagnosticSystem')}: "${esc(sampleSys||'—')}"  |  ${lang==='ar'?'أعمدة الملف وأول سطر':'File columns / first row'}: ${colsInfo}`;
       }
     }else if(mode==='bankStatement'){
       const amtCol = document.getElementById('reconcileBankAmountColSel').value;
