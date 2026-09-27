@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-B3</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-B4</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -893,15 +893,28 @@ function bookingSupplierRefundKnown(b){ return b.supplier_refund_amount!=null ||
 function bookingEffectiveCost(b){ return +((Number(b.cost)||0) - bookingSupplierRefund(b)).toFixed(2); }
 function bookingNetSupplierCost(b){ return bookingEffectiveCost(b); }
 function bookingProfitNow(b){ return +(b.refunded ? bookingEffectiveSell(b)-bookingEffectiveCost(b) : Number(b.profit_amount||0)).toFixed(2); }
+function handoverBookingIds(h){
+  let ids = h.booking_ids;
+  if(typeof ids==='string'){ try{ ids = JSON.parse(ids); }catch(e){ ids = ids.replace(/[{}\[\]"]/g,'').split(',').map(x=>x.trim()).filter(Boolean); } }
+  return Array.isArray(ids) ? ids : [];
+}
+function lockedHandoverIds(){
+  const locked = new Set();
+  profitHandovers.filter(h=>h.status==='pending'||h.status==='approved').forEach(h=>handoverBookingIds(h).forEach(id=>locked.add(id)));
+  return locked;
+}
 function eligibleProfitBookings(employeeId, dateFrom, dateTo){
-  const lockedIds = new Set();
-  profitHandovers.filter(h=>h.status==='pending'||h.status==='approved').forEach(h=>(h.booking_ids||[]).forEach(id=>lockedIds.add(id)));
+  const lockedIds = lockedHandoverIds();
   return bookings.filter(b=> b.created_by===employeeId && b.cost_reviewed && !(b.refunded && !bookingSupplierRefundKnown(b))
     && !(bookingIsFullRefund(b) && Math.abs(bookingProfitNow(b))<0.005) && !lockedIds.has(b.id)
     && (!dateFrom || b.date>=dateFrom) && (!dateTo || b.date<=dateTo));
 }
 async function submitProfitHandover(dateFrom, dateTo, list){
   const u = currentUser();
+  // a ticket can only be in one handover (pending or approved) — re-checked at the moment of sending
+  const locked = lockedHandoverIds();
+  list = (list||[]).filter(b=>!locked.has(b.id) && !b.profit_handed_over);
+  if(!list.length) throw new Error(lang==='ar'?'كل تذاكر هذي الفترة تم تسليم ربحها أو بانتظار اعتماد الإدارة — ما في شي جديد تسلّمه.':'All tickets in this period are already handed over or awaiting approval.');
   const totalProfit = +list.reduce((s,b)=>s+bookingProfitNow(b),0).toFixed(2);
   const {data:ins, error} = await sb.from('profit_handovers').insert({
     branch_id:u.branch_id, employee_id:u.id, date_from:dateFrom||null, date_to:dateTo||null,
@@ -917,10 +930,10 @@ async function approveProfitHandover(id){
   const {error} = await sb.from('profit_handovers').update({status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
   if(error) throw error;
   h.status='approved';
-  if((h.booking_ids||[]).length>0){
-    const {error:e2} = await sb.from('bookings').update({profit_handed_over:true}).in('id', h.booking_ids);
+  if(handoverBookingIds(h).length>0){
+    const {error:e2} = await sb.from('bookings').update({profit_handed_over:true}).in('id', handoverBookingIds(h));
     if(e2) throw e2;
-    h.booking_ids.forEach(bid=>{ const b = bookings.find(x=>x.id===bid); if(b) b.profit_handed_over=true; });
+    handoverBookingIds(h).forEach(bid=>{ const b = bookings.find(x=>x.id===bid); if(b) b.profit_handed_over=true; });
   }
   const amt = +Number(h.total_profit||0).toFixed(2);
   if(Math.abs(amt)>0.004 && !journal.some(j=>j.desc_key==='jProfitHandover' && (j.desc_args||[])[1]===h.id)){
@@ -1371,7 +1384,7 @@ function pendingConfirmationAmount(list){
 }
 function pendingProfitHandoverAmount(list){
   const lockedIds = new Set();
-  profitHandovers.filter(h=>h.status==='pending'||h.status==='approved').forEach(h=>(h.booking_ids||[]).forEach(id=>lockedIds.add(id)));
+  lockedHandoverIds().forEach(id=>lockedIds.add(id));
   return +list.filter(b=>b.cost_reviewed && !(b.refunded && !bookingSupplierRefundKnown(b)) && !lockedIds.has(b.id)).reduce((s,b)=>s+bookingProfitNow(b),0).toFixed(2);
 }
 function computeTotals(bookingsList, expensesList){
@@ -2063,7 +2076,7 @@ function employeeCashStatement(employeeId, from, to){
   });
   profitHandovers.filter(h=>h.employee_id===employeeId && h.status==='approved').forEach(h=>{
     all.push({date:(h.created_at||'').slice(0,10), stamp:h.created_at||'', type: ar?'أرباح سُلّمت للإدارة':'Profit handed to management', desc:(h.date_from||h.date_to)?`${h.date_from||'…'} → ${h.date_to||'…'}`:'—',
-      note:(ar?`${(h.booking_ids||[]).length} تذكرة — اعتُمد `:`${(h.booking_ids||[]).length} tickets — approved `)+(h.reviewed_at||'').slice(0,10), amt:-(Number(h.total_profit)||0)});
+      note:(ar?`${handoverBookingIds(h).length} تذكرة — اعتُمد `:`${handoverBookingIds(h).length} tickets — approved `)+(h.reviewed_at||'').slice(0,10), amt:-(Number(h.total_profit)||0)});
   });
   all.sort((a,b)=>a.date.localeCompare(b.date) || a.stamp.localeCompare(b.stamp));
   let bal = 0, opening = 0, periodIn = 0, periodOut = 0;
@@ -3952,7 +3965,7 @@ function renderProfits(){
   const approvedHistory = history.filter(h=>h.status==='approved');
   const ticketRows = [];
   approvedHistory.forEach(h=>{
-    (h.booking_ids||[]).forEach(id=>{
+    handoverBookingIds(h).forEach(id=>{
       const b = bookings.find(x=>x.id===id);
       if(b) ticketRows.push({b, h});
     });
@@ -4717,6 +4730,7 @@ approveRefund = lockify(approveRefund, 'approveRefund');
 approveProfitHandover = lockify(approveProfitHandover, 'approveProfitHandover');
 repairBooking = lockify(repairBooking, 'repairBooking');
 repairOther = lockify(repairOther, 'repairOther');
+submitProfitHandover = lockify(submitProfitHandover, 'submitProfitHandover');
 recordSupplierRefund = lockify(recordSupplierRefund, 'recordSupplierRefund');
 fixTicketPrice = lockify(fixTicketPrice, 'fixTicketPrice');
 </script>
