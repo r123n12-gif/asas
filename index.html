@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-B4</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C1</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -3623,6 +3623,11 @@ window.uiApproveMiscReceipt = async function(id){
   if(dupWarn && !confirm(dupWarn)) return;
   try{ await approveMiscReceipt(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
+window.uiApplyPosFees = async function(){
+  const ar = lang==='ar'; const n = (__posLast && __posLast.fixable || []).length;
+  if(!n || !confirm(ar?`تحديث رسوم ${n} تذكرة حسب رسوم البنك الفعلية؟\nالمبلغ الكلي للتذكرة ما يتغير — يتوزع بس بين "البنك" و"رسوم البنك".`:`Update fees of ${n} tickets?`)) return;
+  try{ const k = await applyPosFees(); alert(ar?`✔ تم تحديث ${k} تذكرة`:`Updated ${k}`); document.getElementById('reconcileRunBtn').onclick(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
 window.uiRepairOther = async function(fixJson){
   const fix = JSON.parse(fixJson); const ar = lang==='ar';
   const msg = fix.kind==='orphans' ? (ar?'حذف القيود المرتبطة بتذاكر محذوفة؟':'Delete entries linked to deleted tickets?') : (ar?'تسجيل القيد الناقص؟':'Post the missing entry?');
@@ -4148,6 +4153,117 @@ function namesMatch(a, b){
   const hits = small.filter(w=>big.includes(w)).length;
   return hits===small.length || (hits>=2 && hits>=small.length-1);
 }
+/* ======= card terminal (POS) reconciliation ======= */
+function isPosReport(headers){ const h = headers.map(x=>String(x).toLowerCase()); return h.some(x=>x.includes('transaction amount')) && h.some(x=>x.includes('auth')); }
+function posCol(headers, ...names){ const low = headers.map(h=>String(h).toLowerCase().trim()); for(const n of names){ const i = low.findIndex(h=>h===n); if(i>=0) return headers[i]; } for(const n of names){ const i = low.findIndex(h=>h.includes(n)); if(i>=0) return headers[i]; } return null; }
+function posDate(v){
+  if(v===null || v===undefined || v==='') return '';
+  if(typeof v==='number'){ const d = new Date(Math.round((v-25569)*86400000)); return d.toISOString().slice(0,10); }
+  const str = String(v).trim();
+  if(/^\d{4}-\d{2}-\d{2}/.test(str)) return str.slice(0,10);
+  const m = str.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/); if(m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  const d = new Date(str); if(!isNaN(d)) return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  return '';
+}
+function dayDiff(a, b){ return Math.round((new Date(b+'T00:00:00') - new Date(a+'T00:00:00'))/86400000); }
+function posSchemeLabel(s){ const x = String(s||'').toUpperCase(); return x==='P1'||x==='MD'||x.includes('MADA') ? (lang==='ar'?'مدى':'mada') : x==='MC'?'Mastercard' : (x==='VC'||x==='VI'||x.includes('VISA'))?'Visa' : x==='AX'?'Amex' : (x||'—'); }
+let __posLast = null;
+function runPosReconcile(scoped){
+  const ar = lang==='ar'; const H = reconcileHeaders;
+  const C = { amt:posCol(H,'transaction amount'), date:posCol(H,'transaction date'), time:posCol(H,'transaction time'), type:posCol(H,'transaction type'),
+    resp:posCol(H,'response code description','response'), scheme:posCol(H,'card scheme'), card:posCol(H,'card number'), fee:posCol(H,'fees amount'),
+    vat:posCol(H,'vat amount'), settled:posCol(H,'settled'), sdate:posCol(H,'settlement date'), term:posCol(H,'terminal id'), auth:posCol(H,'auth code'), ref:posCol(H,'reference number') };
+  const box = document.getElementById('reconcileResultBox');
+  if(!C.amt || !C.date){ box.innerHTML = `<div class="login-error">${ar?'ما لقيت أعمدة "Transaction amount" و "Transaction date" في الملف.':'Transaction amount/date columns not found.'}</div>`; return; }
+  const clean = v=> String(v??'').replace(/\t/g,'').trim();
+  const txns = [], refunds = [];
+  reconcileRows.forEach(r=>{
+    const amt = parseAmount(r[C.amt]); if(isNaN(amt) || !amt) return;
+    const resp = clean(r[C.resp]).toLowerCase();
+    if(resp && !/approv|success|accept|00/.test(resp)) return;              // declined transactions are ignored
+    const type = clean(r[C.type]).toUpperCase();
+    const tx = { amt:+Math.abs(amt).toFixed(2), date:posDate(r[C.date]), time:clean(r[C.time]), scheme:clean(r[C.scheme]), card:clean(r[C.card]),
+      fee:+((parseAmount(r[C.fee])||0) + (parseAmount(r[C.vat])||0)).toFixed(2), settled:/^y/i.test(clean(r[C.settled])), sdate:posDate(r[C.sdate]),
+      term:clean(r[C.term]), auth:clean(r[C.auth]), ref:clean(r[C.ref]), type };
+    if(/REFUND|REVERS|VOID|CANCEL/.test(type) || amt<0) refunds.push(tx); else txns.push(tx);
+  });
+  if(!txns.length){ box.innerHTML = `<div class="login-error">${ar?'ما في عمليات شراء معتمدة في الملف.':'No approved purchases found.'}</div>`; return; }
+  const dates = txns.map(x=>x.date).filter(Boolean).sort(); const dFrom = dates[0], dTo = dates[dates.length-1];
+  // system card payments (span tickets and span parts of split tickets)
+  const items = [];
+  scoped.forEach(b=>{
+    if(bookingIsFullRefund(b)) return;
+    if(b.payment_method==='span') items.push({b, part:null, amt:+(Number(b.verified_amount ?? b.sell)||0).toFixed(2), date:b.date});
+    else if(b.payment_method==='split' && Array.isArray(b.payment_splits)) b.payment_splits.forEach((p,i)=>{ if(p.method==='span') items.push({b, part:i, amt:+(Number(p.amount)||0).toFixed(2), date:b.date}); });
+  });
+  const used = new Set(); const matched = [], posOnly = [];
+  txns.slice().sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time)).forEach(tx=>{
+    let best = -1, bestScore = 1e9;
+    items.forEach((it,i)=>{
+      if(used.has(i) || Math.abs(it.amt-tx.amt)>=0.01) return;
+      const dd = dayDiff(it.date, tx.date);                                   // ticket date → card date
+      if(dd < -1 || dd > 2) return;
+      const score = Math.abs(dd)*10 + (dd<0?5:0);
+      if(score < bestScore){ bestScore = score; best = i; }
+    });
+    if(best>=0){ used.add(best); matched.push({tx, it:items[best]}); } else posOnly.push(tx);
+  });
+  const sysOnly = items.filter((it,i)=>!used.has(i) && it.date>=dFrom && it.date<=dTo);
+  const sum = (a,f)=> +a.reduce((s,x)=>s+f(x),0).toFixed(2);
+  // fees: bank's real fee (percentage + VAT) vs what the system booked
+  const feeRows = matched.filter(m=>m.it.part===null).map(m=>{ const sysFee = +jrows(m.it.b.id).filter(j=>j.desc_key==='jCardFee').reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2);
+    const confirmed = jrows(m.it.b.id).some(j=>j.desc_key==='jBankReceipt'); return {...m, sysFee, confirmed, diff:+(m.tx.fee - sysFee).toFixed(2)}; });
+  const fixable = feeRows.filter(f=>f.confirmed && Math.abs(f.diff)>=0.01);
+  __posLast = {fixable};
+  const unsettled = txns.filter(t=>!t.settled);
+  const kv = (k,v,c)=>`<div class="kpi" style="--accent:${c}"><div class="kpi-label">${k}</div><div class="kpi-value" style="font-size:18px;">${v}</div></div>`;
+  const txCells = tx=>`<td>${tx.date} ${esc(tx.time)}</td><td class="num">${money(tx.amt)}</td><td>${posSchemeLabel(tx.scheme)}</td><td>${esc(tx.card)}</td><td>${esc(tx.term)}</td><td>${esc(tx.auth)}</td>`;
+  const txHead = `<th>${ar?'التاريخ والوقت':'Date/time'}</th><th>${ar?'المبلغ':'Amount'}</th><th>${ar?'البطاقة':'Scheme'}</th><th>${ar?'رقم البطاقة':'Card'}</th><th>${ar?'الجهاز':'Terminal'}</th><th>${ar?'رقم الموافقة':'Auth'}</th>`;
+  box.innerHTML = `
+    <div class="note" style="margin-bottom:8px;">📅 ${ar?`فترة التقرير: ${dFrom} → ${dTo}`:`Report period: ${dFrom} → ${dTo}`}</div>
+    <div class="kpi-row" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px;">
+      ${kv(ar?'عمليات الجهاز':'Terminal transactions', `${txns.length} — ${money(sum(txns,x=>x.amt))}`, 'var(--navy)')}
+      ${kv(ar?'مطابقة مع تذاكر':'Matched to tickets', `${matched.length} — ${money(sum(matched,m=>m.tx.amt))}`, '#1f7a4d')}
+      ${kv(ar?'بالجهاز وغير مسجلة بالنظام':'On terminal, not in system', `${posOnly.length} — ${money(sum(posOnly,x=>x.amt))}`, 'var(--red)')}
+      ${kv(ar?'شبكة بالنظام وليست بالجهاز':'Card tickets not on terminal', `${sysOnly.length} — ${money(sum(sysOnly,x=>x.amt))}`, '#A8722C')}
+    </div>
+    <div class="note" style="margin-bottom:10px;">🏦 ${ar?`رسوم البنك الفعلية (نسبة + ضريبة 15%): <b>${money(sum(txns,x=>x.fee))}</b> — صافي ينزل البنك: <b>${money(sum(txns,x=>x.amt-x.fee))}</b>`:`Actual bank fees: ${money(sum(txns,x=>x.fee))}`}
+      ${unsettled.length?`<br>⏳ ${ar?`لسا ما نزلت البنك (Settled = N): <b>${unsettled.length}</b> عملية بـ <b>${money(sum(unsettled,x=>x.amt))}</b> — لا تؤكد تذاكرها قبل ما تنزل`:`Not settled yet: ${unsettled.length}`}`:''}
+      ${refunds.length?`<br>↩️ ${ar?`مرتجعات على الجهاز: ${refunds.length} بـ ${money(sum(refunds,x=>x.amt))}`:`Terminal refunds: ${refunds.length}`}`:''}</div>
+    ${fixable.length?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;margin-bottom:10px;">💳 ${ar?`${fixable.length} تذكرة مؤكدة رسومها في النظام تختلف عن رسوم البنك الفعلية (الفرق ${money(sum(fixable,f=>f.diff))}). النظام يحسب 0.8% ثابتة، والبنك يحسب حسب البطاقة (مدى 0.7%، ماستر/فيزا 2.5%) + ضريبة.`:`${fixable.length} confirmed tickets have different fees than the bank.`}
+      ${(isAdmin()||isAccountant())?`<br><button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiApplyPosFees()">${ar?'تحديث الرسوم حسب تقرير البنك':'Update fees from bank report'}</button>`:''}</div>`:''}
+    ${posOnly.length?`<div style="font-weight:700;color:var(--red);margin:10px 0 6px;">❌ ${ar?`عمليات على الجهاز ما لها تذكرة شبكة في النظام (${posOnly.length})`:`Terminal transactions without a ticket (${posOnly.length})`}</div>
+      <p class="note">${ar?'غالبًا: تذكرة انسجلت كاش أو تحويل وهي شبكة، أو بمبلغ مختلف، أو ما انسجلت أبدًا.':'Usually a ticket recorded as cash/transfer, with a different amount, or not recorded.'}</p>
+      <div style="overflow-x:auto;margin-bottom:12px;"><table><thead><tr>${txHead}</tr></thead><tbody>${posOnly.map(tx=>`<tr>${txCells(tx)}</tr>`).join('')}</tbody></table></div>`:''}
+    ${sysOnly.length?`<div style="font-weight:700;color:#A8722C;margin:10px 0 6px;">⚠️ ${ar?`تذاكر شبكة في النظام ما لها عملية على الجهاز (${sysOnly.length}) — نفس فترة التقرير`:`Card tickets with no terminal transaction (${sysOnly.length})`}</div>
+      <div style="overflow-x:auto;margin-bottom:12px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${ar?'التاريخ':'Date'}</th><th>${ar?'المبلغ':'Amount'}</th></tr></thead>
+      <tbody>${sysOnly.map(it=>`<tr><td class="num">${it.b.booking_no}${it.part!==null?` <span style="font-size:11px">(${ar?'دفع متعدد':'split'})</span>`:''}</td><td>${esc(it.b.customer||'')}</td><td>${esc(userName(it.b.created_by))}</td><td>${it.date}</td><td class="num">${money(it.amt)}</td></tr>`).join('')}</tbody></table></div>`:''}
+    ${matched.length?`<div style="font-weight:700;color:#1f7a4d;margin:10px 0 6px;">✅ ${ar?`مطابقة (${matched.length})`:`Matched (${matched.length})`}</div>
+      <div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th>${txHead}<th>${ar?'رسوم البنك':'Bank fee'}</th><th>${ar?'نزلت البنك؟':'Settled?'}</th></tr></thead>
+      <tbody>${matched.map(m=>`<tr><td class="num">${m.it.b.booking_no}</td><td>${esc(m.it.b.customer||'')}</td><td>${esc(userName(m.it.b.created_by))}</td>${txCells(m.tx)}<td class="num">${money(m.tx.fee)}</td><td>${m.tx.settled?`✔ ${m.tx.sdate}`:'⏳'}</td></tr>`).join('')}</tbody></table></div>`:''}`;
+}
+async function applyPosFees(){
+  const list = (__posLast && __posLast.fixable) || [];
+  let n = 0;
+  for(const f of list){
+    const rows = jrows(f.it.b.id);
+    const rec = rows.find(j=>j.desc_key==='jBankReceipt'); if(!rec) continue;
+    const feeRows = rows.filter(j=>j.desc_key==='jCardFee');
+    const gross = +(Number(rec.amount) + feeRows.reduce((a,j)=>a+Number(j.amount||0),0)).toFixed(2);
+    const newFee = f.tx.fee, newNet = +(gross - newFee).toFixed(2);
+    if(newNet<0) continue;
+    const {error:e1} = await sb.from('journal').update({amount:newNet}).eq('id', rec.id); if(e1) throw e1; rec.amount = newNet;
+    if(feeRows.length){
+      const {error:e2} = await sb.from('journal').update({amount:newFee}).eq('id', feeRows[0].id); if(e2) throw e2; feeRows[0].amount = newFee;
+      for(const extra of feeRows.slice(1)){ const {error:e3} = await sb.from('journal').delete().eq('id', extra.id); if(e3) throw e3; journal = journal.filter(j=>j.id!==extra.id); }
+    }else if(newFee>0){
+      const {data, error:e4} = await sb.from('journal').insert({date:rec.date, branch_id:rec.branch_id, booking_id:f.it.b.id, desc_key:'jCardFee', desc_args:[f.it.b.booking_no],
+        debit_key:'accExpenses', credit_key:'accCustomers', amount:newFee}).select().single(); if(e4) throw e4; journal.unshift(data);
+    }
+    n++;
+  }
+  return n;
+}
 let reconcileRows = [];
 let reconcileHeaders = [];
 function reconcileFilterOptions(){
@@ -4270,7 +4386,11 @@ function renderReconcile(){
           <option value="ticket">${t('reconcileModeTicket')}</option>
           <option value="amountName">${t('reconcileModeAmountName')}</option>
           <option value="bankStatement">${t('reconcileModeBankStatement')}</option>
+          <option value="pos">${lang==='ar'?'تقرير جهاز الشبكة (مدى / فيزا / ماستر)':'Card terminal (POS) report'}</option>
         </select></div>
+        <div id="reconcileModePosBox" style="display:none;"><p class="note">${lang==='ar'
+          ? 'ارفع تقرير عمليات الجهاز من بوابة التاجر. النظام يطابق كل عملية بتذكرة الشبكة بنفس المبلغ ونفس اليوم (أو اليوم اللي بعده)، ويقارن رسوم البنك الفعلية (نسبة + ضريبة) بالمسجلة، ويبيّن المبالغ اللي لسا ما نزلت البنك.'
+          : 'Upload the merchant terminal transactions report. Each transaction is matched to a card (span) ticket with the same amount and date.'}</p></div>
         <div id="reconcileModeTicketBox" class="grid-2">
           <div class="field" style="grid-column:1/-1;"><p class="note">${t('reconcileAutoScanNote')}</p></div>
           <div class="field"><label>${t('reconcileAirlineColLabel')}</label><select id="reconcileAirlineColSel"><option value="">${t('reconcileNoneOpt')}</option></select></div>
@@ -4352,6 +4472,7 @@ function renderReconcile(){
         document.getElementById('reconcileNameColSel').innerHTML = opts;
         document.getElementById('reconcileBankAmountColSel').innerHTML = opts;
         document.getElementById('reconcileColumnBox').style.display = '';
+        if(isPosReport(reconcileHeaders)){ const ms = document.getElementById('reconcileModeSel'); ms.value = 'pos'; ms.onchange({target:ms}); }
         // show what was read, so a wrong sheet / header is visible immediately
         const prevCols = reconcileHeaders.slice(0,8);
         document.getElementById('reconcileResultBox').innerHTML = `<div class="note" style="background:#EEF5F4;padding:10px;border-radius:8px;">📄 ${lang==='ar'?`تمت قراءة <b>${reconcileRows.length}</b> سطر من <b>${sheetsUsed}</b> ورقة. أول 3 سطور:`:`Read <b>${reconcileRows.length}</b> rows from <b>${sheetsUsed}</b> sheet(s). First 3 rows:`}</div>
@@ -4366,8 +4487,9 @@ function renderReconcile(){
     document.getElementById('reconcileModeTicketBox').style.display = mode==='ticket'?'':'none';
     document.getElementById('reconcileModeAmountNameBox').style.display = mode==='amountName'?'':'none';
     document.getElementById('reconcileModeBankBox').style.display = mode==='bankStatement'?'':'none';
-    const titleMap = {ticket:t('reconcileTitle'), amountName:t('reconcileTitleAmountName'), bankStatement:t('reconcileTitleBank')};
-    const noteMap = {ticket:t('reconcileNote'), amountName:t('reconcileNoteAmountName'), bankStatement:t('reconcileNoteBank')};
+    if(document.getElementById('reconcileModePosBox')) document.getElementById('reconcileModePosBox').style.display = mode==='pos'?'':'none';
+    const titleMap = {ticket:t('reconcileTitle'), amountName:t('reconcileTitleAmountName'), bankStatement:t('reconcileTitleBank'), pos:(lang==='ar'?'مطابقة جهاز الشبكة':'Card terminal reconciliation')};
+    const noteMap = {ticket:t('reconcileNote'), amountName:t('reconcileNoteAmountName'), bankStatement:t('reconcileNoteBank'), pos:''};
     document.getElementById('reconcileTitleText').textContent = titleMap[mode];
     document.getElementById('reconcileNoteText').textContent = noteMap[mode];
     document.getElementById('reconcileResultBox').innerHTML = '';
@@ -4375,6 +4497,7 @@ function renderReconcile(){
   document.getElementById('reconcileRunBtn').onclick = ()=>{
     const mode = document.getElementById('reconcileModeSel').value;
     const scoped = getReconcileFilteredBookings();
+    if(mode==='pos'){ runPosReconcile(scoped); return; }
     const missing = [];
     const amountMismatches = [];
     let matched = 0;
@@ -4731,6 +4854,7 @@ approveProfitHandover = lockify(approveProfitHandover, 'approveProfitHandover');
 repairBooking = lockify(repairBooking, 'repairBooking');
 repairOther = lockify(repairOther, 'repairOther');
 submitProfitHandover = lockify(submitProfitHandover, 'submitProfitHandover');
+applyPosFees = lockify(applyPosFees, 'applyPosFees');
 recordSupplierRefund = lockify(recordSupplierRefund, 'recordSupplierRefund');
 fixTicketPrice = lockify(fixTicketPrice, 'fixTicketPrice');
 </script>
