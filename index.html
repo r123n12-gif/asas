@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-B1</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-B2</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -2766,19 +2766,38 @@ function integrityIssues(){
   });
   profitHandovers.filter(h=>h.status==='approved' && Math.abs(Number(h.total_profit))>0.004).forEach(h=>{
     if(!journal.some(j=>j.desc_key==='jProfitHandover' && (j.desc_args||[])[1]===h.id))
-      issues.push({b:null, issue: ar?`تسليم أرباح معتمد بدون قيد — ${userName(h.employee_id)} (${(h.created_at||'').slice(0,10)})`:`Approved profit handover without entry — ${userName(h.employee_id)}`, expected:+Number(h.total_profit).toFixed(2), actual:0});
+      issues.push({b:null, fix:{kind:'handover', id:h.id}, issue: ar?`تسليم أرباح معتمد بدون قيد — ${userName(h.employee_id)} (${(h.created_at||'').slice(0,10)})`:`Approved profit handover without entry — ${userName(h.employee_id)}`, expected:+Number(h.total_profit).toFixed(2), actual:0});
   });
   miscReceipts.filter(r=>r.status==='confirmed').forEach(r=>{
-    if(!miscReceiptJournalRow(r)) issues.push({b:null, issue: ar?`مبلغ بدون تذكرة معتمد بدون قيد — ${userName(r.employee_id)}`:`Confirmed misc receipt without entry — ${userName(r.employee_id)}`, expected:+Number(r.amount).toFixed(2), actual:0});
+    if(!miscReceiptJournalRow(r)) issues.push({b:null, fix:{kind:'misc', id:r.id}, issue: ar?`مبلغ بدون تذكرة معتمد بدون قيد — ${userName(r.employee_id)}`:`Confirmed misc receipt without entry — ${userName(r.employee_id)}`, expected:+Number(r.amount).toFixed(2), actual:0});
   });
   const orphans = journal.filter(j=>j.booking_id && !ids.has(j.booking_id));
-  if(orphans.length) issues.push({b:null, issue: ar?`قيود مرتبطة بتذاكر محذوفة (${orphans.length})`:`Entries linked to deleted tickets (${orphans.length})`, expected:0, actual:+orphans.reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2)});
+  if(orphans.length) issues.push({b:null, fix:{kind:'orphans'}, issue: ar?`قيود مرتبطة بتذاكر محذوفة (${orphans.length})`:`Entries linked to deleted tickets (${orphans.length})`, expected:0, actual:+orphans.reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2)});
   return issues;
 }
 function bookingConfirmedGross(id){
   return +jrows(id).filter(j=>j.desc_key==='jBankReceipt' || j.desc_key==='jCardFee').reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2);
 }
 /* Rebuild a ticket's automatic journal entries from the ticket itself (the ticket is the source of truth). */
+async function repairOther(fix){
+  if(fix.kind==='handover'){
+    const h = profitHandovers.find(x=>x.id===fix.id); if(!h) return;
+    const amt = +Number(h.total_profit||0).toFixed(2);
+    if(journal.some(j=>j.desc_key==='jProfitHandover' && (j.desc_args||[])[1]===h.id)) return;
+    const {data, error} = await sb.from('journal').insert({date:(h.reviewed_at||h.created_at||'').slice(0,10)||todayStr(), branch_id:h.branch_id||null, desc_key:'jProfitHandover', desc_args:[userName(h.employee_id), h.id],
+      debit_key: amt>0?'accProfitWithdrawn':'accCashOnHand', credit_key: amt>0?'accCashOnHand':'accProfitWithdrawn', amount:Math.abs(amt)}).select().single();
+    if(error) throw error; journal.unshift(data);
+  }else if(fix.kind==='misc'){
+    const r = miscReceipts.find(x=>x.id===fix.id); if(!r || miscReceiptJournalRow(r)) return;
+    const {data, error} = await sb.from('journal').insert({date:(r.confirmed_at||r.created_at||'').slice(0,10)||todayStr(), branch_id:r.branch_id||null, desc_key:'jMiscReceipt', desc_args:[userName(r.employee_id), r.note||'-', r.id],
+      debit_key: r.method==='cash'?'accCashOnHand':'accBank', credit_key:'accMiscReceipts', amount:+Number(r.amount).toFixed(2)}).select().single();
+    if(error) throw error; journal.unshift(data);
+  }else if(fix.kind==='orphans'){
+    const ids = new Set(bookings.map(b=>b.id));
+    const del = journal.filter(j=>j.booking_id && !ids.has(j.booking_id)).map(j=>j.id);
+    if(del.length){ const {error} = await sb.from('journal').delete().in('id', del); if(error) throw error; const d = new Set(del); journal = journal.filter(j=>!d.has(j.id)); }
+  }
+}
 async function repairBooking(bookingId){
   const ar = lang==='ar';
   let b = bookings.find(x=>x.id===bookingId);
@@ -2872,12 +2891,13 @@ function openIntegrityModal(){
     <p class="note">${ar?'يطابق كل تذكرة مع قيودها المحاسبية: الإيراد، التكلفة، رصيد العملاء، قيود البنك.':'Matches every ticket against its journal entries: revenue, cost, receivable, bank entries.'}</p>
     ${list.length===0?`<div style="padding:16px;color:#1f7a4d;font-weight:700;">✔ ${ar?`لا توجد أي أخطاء — تم فحص ${bookings.length} تذكرة و ${journal.length} قيد.`:`No issues — checked ${bookings.length} tickets and ${journal.length} entries.`}</div>`
     :`<div class="login-error">${ar?`تم العثور على ${list.length} ملاحظة`:`${list.length} issue(s) found`}</div>
-    ${(isAdmin()||isAccountant()) && list.some(x=>x.b)?`<button class="btn btn-gold" style="margin-top:8px;" onclick="uiRepairAll()">🔧 ${ar?'إصلاح كل التذاكر':'Fix all tickets'}</button>`:''}
+    ${(isAdmin()||isAccountant()) && list.some(x=>x.b||x.fix)?`<button class="btn btn-gold" style="margin-top:8px;" onclick="uiRepairAll()">🔧 ${ar?'إصلاح كل التذاكر':'Fix all tickets'}</button>`:''}
     <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${ar?'الملاحظة':'Issue'}</th><th>${ar?'المفروض':'Expected'}</th><th>${ar?'الموجود':'Actual'}</th><th></th></tr></thead>
     <tbody>${list.map((x,i)=>{ const first = x.b && list.findIndex(y=>y.b && y.b.id===x.b.id)===i;
       return `<tr><td class="num">${x.b?x.b.booking_no:'—'}</td><td>${x.b?esc(x.b.customer||''):'—'}</td><td>${x.b?userName(x.b.created_by):'—'}</td><td>${x.issue}</td>
       <td class="num">${typeof x.expected==='number'?money(x.expected):x.expected}</td><td class="num">${typeof x.actual==='number'?money(x.actual):x.actual}</td>
-      <td>${first && (isAdmin()||isAccountant())?`<button class="btn btn-gold btn-sm" onclick="uiRepairBooking('${x.b.id}')">🔧 ${ar?'إصلاح':'Fix'}</button>`:''}</td></tr>`; }).join('')}</tbody></table></div>`}
+      <td>${first && (isAdmin()||isAccountant())?`<button class="btn btn-gold btn-sm" onclick="uiRepairBooking('${x.b.id}')">🔧 ${ar?'إصلاح':'Fix'}</button>`
+          : (x.fix && (isAdmin()||isAccountant()) ? `<button class="btn btn-gold btn-sm" onclick='uiRepairOther(${JSON.stringify(JSON.stringify(x.fix)).replace(/'/g,"&#39;")})'>🔧 ${ar?'إصلاح':'Fix'}</button>` : '')}</td></tr>`; }).join('')}</tbody></table></div>`}
     ${(()=>{ const w = integrityWarnings(); if(!w.length) return ''; return `<h4 style="margin:16px 0 6px;color:#A8722C;">⚠️ ${ar?`تنبيهات للمراجعة (${w.length}) — مو أخطاء محاسبية، لكن تستاهل نظرة`:`Review warnings (${w.length})`}</h4>
       <div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${ar?'التنبيه':'Warning'}</th><th>${ar?'البيع':'Sell'}</th><th>${ar?'التكلفة':'Cost'}</th><th></th></tr></thead>
       <tbody>${w.map(x=>`<tr><td class="num">${x.b.booking_no}</td><td>${esc(x.b.customer||'')}</td><td>${userName(x.b.created_by)}</td><td>${x.issue}</td><td class="num">${money(x.sell)}</td><td class="num">${money(x.cost)}</td>
@@ -3590,10 +3610,18 @@ window.uiApproveMiscReceipt = async function(id){
   if(dupWarn && !confirm(dupWarn)) return;
   try{ await approveMiscReceipt(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
+window.uiRepairOther = async function(fixJson){
+  const fix = JSON.parse(fixJson); const ar = lang==='ar';
+  const msg = fix.kind==='orphans' ? (ar?'حذف القيود المرتبطة بتذاكر محذوفة؟':'Delete entries linked to deleted tickets?') : (ar?'تسجيل القيد الناقص؟':'Post the missing entry?');
+  if(!confirm(msg)) return;
+  try{ await repairOther(fix); alert(ar?'✔ تم الإصلاح':'Fixed'); openIntegrityModal(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
 window.uiRepairAll = async function(){
   const ar = lang==='ar';
   const ids = [...new Set(integrityIssues().filter(x=>x.b).map(x=>x.b.id))];
-  if(!ids.length) return;
+  const others = integrityIssues().filter(x=>!x.b && x.fix);
+  for(const o of others){ try{ await repairOther(o.fix); }catch(e){ console.error(e); } }
+  if(!ids.length){ openIntegrityModal(); return; }
   if(!confirm(ar?`إصلاح قيود ${ids.length} تذكرة من بيانات التذاكر نفسها؟`:`Rebuild entries of ${ids.length} ticket(s)?`)) return;
   const msgs = [];
   for(const id of ids){
@@ -4687,6 +4715,7 @@ verifySplitPayment = lockify(verifySplitPayment, 'verifySplitPayment');
 approveRefund = lockify(approveRefund, 'approveRefund');
 approveProfitHandover = lockify(approveProfitHandover, 'approveProfitHandover');
 repairBooking = lockify(repairBooking, 'repairBooking');
+repairOther = lockify(repairOther, 'repairOther');
 recordSupplierRefund = lockify(recordSupplierRefund, 'recordSupplierRefund');
 fixTicketPrice = lockify(fixTicketPrice, 'fixTicketPrice');
 </script>
