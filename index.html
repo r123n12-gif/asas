@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C1</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C2</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1567,7 +1567,11 @@ function renderLogin(app){
     try{
       const {data, error} = await sb.rpc('verify_login', {p_username: uname, p_password: pwd});
       if(error) throw error;
-      if(data && data.length>0){ setSession(data[0]); boot(); }
+      if(data && data.length>0){
+        const {data:st} = await sb.from('app_users').select('active').eq('id', data[0].id).maybeSingle();
+        if(st && st.active===false){ document.getElementById('loginErrorBox').innerHTML = `<div class="login-error">${lang==='ar'?'هذا الحساب موقوف. راجع المدير.':'This account is disabled.'}</div>`; btn.disabled=false; btn.textContent=t('loginBtn'); return; }
+        setSession(data[0]); boot();
+      }
       else{ document.getElementById('loginErrorBox').innerHTML = `<div class="login-error">${t('loginError')}</div>`; btn.disabled=false; btn.textContent=t('loginBtn'); }
     }catch(err){
       console.error(err);
@@ -3876,6 +3880,10 @@ window.uiEditUser = function(id){
       <div class="field"><label>${lang==='ar'?'أسماء المستخدم عند الموردين (أكبر، جاليليو، العربية…)':'Usernames at suppliers (Akbar, Galileo, Air Arabia…)'}</label>
         <input name="supplierAliases" value="${esc(u.supplier_aliases||'')}" placeholder="${lang==='ar'?'مثال: AHMED MAHER, 8K4KMM, Malik Abdullah — افصل بفاصلة':'e.g. AHMED MAHER, 8K4KMM — comma separated'}">
         <div class="note">${lang==='ar'?'يُستخدم في المطابقة: التذاكر اللي في كشف المورد وما انسجلت، يطلع جنبها اسم الموظف.':'Used in reconciliation to show which employee issued unrecorded tickets.'}</div></div>
+      ${isAdmin() && u.id!==currentUser()?.id ? `<div class="field" style="border-top:1px dashed #ddd;padding-top:10px;margin-top:6px;"><label>🔑 ${lang==='ar'?'إعادة تعيين كلمة المرور (لو نسيها)':'Reset password (if forgotten)'}</label>
+        <div style="display:flex;gap:8px;"><input type="text" id="resetPwdInput" placeholder="${lang==='ar'?'كلمة مرور جديدة (6 أحرف على الأقل)':'New password (min 6)'}" autocomplete="off">
+        <button type="button" class="btn btn-ghost btn-sm" id="resetPwdBtn">${lang==='ar'?'إعادة تعيين':'Reset'}</button></div>
+        <div class="note">${lang==='ar'?'أعطِ الموظف الكلمة الجديدة، وخلّه يغيّرها من "حسابي".':'Give the new password to the user; they can change it from "My account".'}</div></div>` : ''}
       <div id="editUserErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
         <button type="submit" class="btn btn-primary" id="editUserSaveBtn">${t('save')}</button>
@@ -3892,7 +3900,8 @@ window.uiEditUser = function(id){
       btn.disabled=false; btn.textContent=t('save'); return;
     }
     try{
-      const aliases = String(f.get('supplierAliases')||'').split(',').map(x=>x.trim()).filter(Boolean).join(', ');
+      const aliasesRaw = f.get('supplierAliases');
+      const aliases = String(aliasesRaw||'').split(',').map(x=>x.trim()).filter(Boolean).join(', ');
       const {error} = await sb.from('app_users').update({name:f.get('name'), username:f.get('username'), role, branch_id:branchId, supplier_aliases:aliases||null}).eq('id', id);
       if(error) throw error;
       Object.assign(u, {name:f.get('name'), username:f.get('username'), role, branch_id:branchId, supplier_aliases:aliases||null});
@@ -3903,6 +3912,22 @@ window.uiEditUser = function(id){
       document.getElementById('editUserErrorBox').innerHTML = `<div class="login-error">${msg}</div>`;
       btn.disabled=false; btn.textContent=t('save');
     }
+  };
+  const rb = document.getElementById('resetPwdBtn');
+  if(rb) rb.onclick = async ()=>{
+    const ar = lang==='ar'; const np = document.getElementById('resetPwdInput').value.trim();
+    if(np.length<6){ alert(ar?'كلمة المرور لازم 6 أحرف أو أكثر.':'Min 6 characters.'); return; }
+    const adminPwd = prompt(ar?'للتأكيد: اكتب كلمة مرورك أنت (المدير):':'Confirm with YOUR admin password:');
+    if(!adminPwd) return;
+    rb.disabled = true;
+    try{
+      const {data, error} = await sb.rpc('admin_reset_password', {p_admin_username: currentUser().username, p_admin_password: adminPwd, p_user_id: id, p_new_password: np});
+      if(error) throw error;
+      if(!data) throw new Error(ar?'ما تغيّرت — تأكد من كلمة مرورك.':'Not changed.');
+      alert(ar?`✔ تم. كلمة المرور الجديدة: ${np}`:`Done. New password: ${np}`);
+      document.getElementById('resetPwdInput').value='';
+    }catch(e){ console.error(e); alert(/not authorized|غير مصرح/i.test(String(e.message))?(ar?'كلمة مرورك غير صحيحة.':'Wrong admin password.'):errTextPlain()); }
+    finally{ rb.disabled = false; }
   };
 };
 function openUserModal(){
