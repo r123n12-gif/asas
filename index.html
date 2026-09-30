@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C2</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C3</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -151,7 +151,7 @@ const T = {
     subLedger:'دليل الحسابات، القيود اليومية، وقائمة الدخل', subCommissions:'عمولات شركات الطيران وأنظمة الحجز',
     subReports:'مقارنة أداء الفروع والموظفين مع فلترة كاملة (مورد، فرع، موظف، فترة)', subUsers:'إدارة حسابات الموظفين وصلاحياتهم', subSettings:'إدارة الفروع والبيانات',
     allBranches:'كل الفروع', logout:'تسجيل الخروج', loggedInAs:'مسجّل الدخول:',
-    kpiSales:'إجمالي المبيعات', kpiProfit:'صافي الربح (مبيعات + عمولات − تكلفة − مصروفات)',
+    kpiSales:'إجمالي المبيعات', kpiProfit:'صافي الربح (مبيعات − تكلفة − مصروفات ورسوم البنك)',
     kpiCount:'عدد الحجوزات', kpiPendingComm:'عمولات مستحقة (غير محصّلة)',
     recentBookings:'آخر الحجوزات', addBooking:'+ حجز جديد', branchCompareSales:'مقارنة الفروع — المبيعات',
     colNo:'#', colType:'النوع', colCustomer:'العميل', colBranch:'الفرع', colSupplier:'المصدر',
@@ -337,7 +337,7 @@ const T = {
     subLedger:'Chart of accounts, daily journal, and income statement', subCommissions:'Airline and GDS commissions',
     subReports:'Compare branch and employee performance with full filters (supplier, branch, employee, period)', subUsers:'Manage employee accounts and permissions', subSettings:'Manage branches and data',
     allBranches:'All branches', logout:'Log out', loggedInAs:'Logged in as:',
-    kpiSales:'Total sales', kpiProfit:'Net profit (sales + commission − cost − expenses)',
+    kpiSales:'Total sales', kpiProfit:'Net profit (sales − cost − expenses & bank fees)',
     kpiCount:'Number of bookings', kpiPendingComm:'Pending commissions (uncollected)',
     recentBookings:'Recent bookings', addBooking:'+ New booking', branchCompareSales:'Branch comparison — Sales',
     colNo:'#', colType:'Type', colCustomer:'Customer', colBranch:'Branch', colSupplier:'Supplier',
@@ -771,12 +771,13 @@ async function submitDeposit(data){
 async function approveDeposit(id){
   const d0 = deposits.find(x=>x.id===id);
   if(!d0 || d0.status==='approved') return;
-  const {error} = await sb.from('cash_deposits').update({status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
-  if(error) throw error;
-  const d = deposits.find(x=>x.id===id); if(d){ d.status='approved'; }
+  // entry first, then status — if the status update fails the entry is removed, so nothing is half-done
   const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:d0.branch_id, deposit_id:id,
     desc_key:'jDeposit', desc_args:[destLabel(d0.destination)], debit_key: isSupplierDest(d0.destination) ? 'accSuppliers' : 'accBank', credit_key:'accCashOnHand', amount:d0.amount }).select().single();
   if(jErr) throw jErr;
+  const {error} = await sb.from('cash_deposits').update({status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
+  if(error){ await sb.from('journal').delete().eq('id', jIns.id); throw error; }
+  d0.status = 'approved';
   journal.unshift(jIns);
 }
 async function rejectDeposit(id, notes){
@@ -892,7 +893,7 @@ function bookingSupplierRefund(b){
 function bookingSupplierRefundKnown(b){ return b.supplier_refund_amount!=null || bookingSupplierRefund(b)>0.004; }
 function bookingEffectiveCost(b){ return +((Number(b.cost)||0) - bookingSupplierRefund(b)).toFixed(2); }
 function bookingNetSupplierCost(b){ return bookingEffectiveCost(b); }
-function bookingProfitNow(b){ return +(b.refunded ? bookingEffectiveSell(b)-bookingEffectiveCost(b) : Number(b.profit_amount||0)).toFixed(2); }
+function bookingProfitNow(b){ return +(b.refunded ? bookingEffectiveSell(b)-bookingEffectiveCost(b) : (Number(b.sell)||0)-(Number(b.cost)||0)).toFixed(2); }
 function handoverBookingIds(h){
   let ids = h.booking_ids;
   if(typeof ids==='string'){ try{ ids = JSON.parse(ids); }catch(e){ ids = ids.replace(/[{}\[\]"]/g,'').split(',').map(x=>x.trim()).filter(Boolean); } }
@@ -924,9 +925,18 @@ async function submitProfitHandover(dateFrom, dateTo, list){
   profitHandovers.unshift(ins);
   return ins;
 }
+function handoverCurrentTotal(h){
+  return +handoverBookingIds(h).map(id=>bookings.find(b=>b.id===id)).filter(Boolean).reduce((a,b)=>a+bookingProfitNow(b),0).toFixed(2);
+}
 async function approveProfitHandover(id){
   const h = profitHandovers.find(x=>x.id===id);
-  if(!h) return;
+  if(!h || h.status!=='pending') return;
+  const now = handoverCurrentTotal(h);
+  if(handoverBookingIds(h).length && Math.abs(now - Number(h.total_profit||0))>0.009){
+    const {error:eT} = await sb.from('profit_handovers').update({total_profit:now}).eq('id', id);
+    if(eT) throw eT;
+    h.total_profit = now;
+  }
   const {error} = await sb.from('profit_handovers').update({status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
   if(error) throw error;
   h.status='approved';
@@ -2774,6 +2784,8 @@ function integrityIssues(){
       if(!b.transfer_verified && receipts>0) add(ar?'عليه قيد بنكي لكن حالته غير مؤكد':'Has bank entry but not marked confirmed', '—', '—');
     }
     if(!rows.some(j=>j.desc_key==='jSale')) add(ar?'لا يوجد قيد مبيعات':'No sale entry', '—', '—');
+    if(b.cost_reviewed && !b.refunded && Math.abs((Number(b.profit_amount)||0) - ((Number(b.sell)||0)-(Number(b.cost)||0)))>0.01)
+      issues.push({b, fix:{kind:'profitField', id:b.id}, issue: ar?'الربح المحفوظ لا يساوي البيع − التكلفة':'Stored profit ≠ sell − cost', expected:+((Number(b.sell)||0)-(Number(b.cost)||0)).toFixed(2), actual:+(Number(b.profit_amount)||0).toFixed(2)});
     const cust = bal(rows,'accCustomers','debit'), pend = bookingPendingAmount(b);
     if(Math.abs(cust-pend)>0.05) add(ar?'رصيد العملاء لا يطابق المعلّق':'Receivable ≠ pending', pend, cust);
     const rev = bal(rows,'accSalesRev','credit'), expRev = bookingIsFullRefund(b) ? 0 : bookingEffectiveSell(b);
@@ -2809,6 +2821,11 @@ async function repairOther(fix){
     const {data, error} = await sb.from('journal').insert({date:(r.confirmed_at||r.created_at||'').slice(0,10)||todayStr(), branch_id:r.branch_id||null, desc_key:'jMiscReceipt', desc_args:[userName(r.employee_id), r.note||'-', r.id],
       debit_key: r.method==='cash'?'accCashOnHand':'accBank', credit_key:'accMiscReceipts', amount:+Number(r.amount).toFixed(2)}).select().single();
     if(error) throw error; journal.unshift(data);
+  }else if(fix.kind==='profitField'){
+    const b = bookings.find(x=>x.id===fix.id); if(!b) return;
+    const p = +((Number(b.sell)||0)-(Number(b.cost)||0)).toFixed(2);
+    const {error} = await sb.from('bookings').update({profit_amount:p, margin:p, net_profit:p}).eq('id', b.id); if(error) throw error;
+    b.profit_amount = p; b.margin = p; b.net_profit = p;
   }else if(fix.kind==='orphans'){
     const ids = new Set(bookings.map(b=>b.id));
     const del = journal.filter(j=>j.booking_id && !ids.has(j.booking_id)).map(j=>j.id);
@@ -3794,7 +3811,12 @@ function openDepositModal(){
     }
   };
 }
-window.uiApproveDeposit = async function(id){ try{ await approveDeposit(id); render(); }catch(e){ alert(errTextPlain()); } };
+window.uiApproveDeposit = async function(id){
+  const d = deposits.find(x=>x.id===id); if(!d) return;
+  const ar = lang==='ar';
+  if(!confirm(ar?`اعتماد إيداع ${money(d.amount)} من ${userName(d.submitted_by)} إلى ${destLabel(d.destination)}؟\n\nتأكد إن المبلغ وصل فعلًا${isSupplierDest(d.destination)?' لحساب المورد':' للبنك'} قبل الاعتماد.`:`Approve deposit of ${money(d.amount)}?`)) return;
+  try{ await approveDeposit(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
 window.uiRejectDeposit = async function(id){
   const reason = prompt(t('rejectReason'))||'';
   try{ await rejectDeposit(id, reason); render(); }catch(e){ alert(errTextPlain()); }
@@ -4037,7 +4059,11 @@ function renderProfits(){
 }
 
 window.uiApproveProfitHandover = async function(id){
-  if(!confirm(t('confirmApproveHandover'))) return;
+  const h = profitHandovers.find(x=>x.id===id); if(!h) return;
+  const ar = lang==='ar'; const now = handoverCurrentTotal(h), old = +Number(h.total_profit||0).toFixed(2);
+  const diffMsg = handoverBookingIds(h).length && Math.abs(now-old)>0.009
+    ? (ar?`\n\n⚠️ تغيّرت أرباح تذاكر هذا الطلب بعد ما أرسله الموظف (تعديل تكلفة أو استرجاع):\nالمبلغ في الطلب: ${money(old)}\nالمبلغ الصحيح الآن: ${money(now)}\nبيُعتمد المبلغ الصحيح.`:`\n\nAmount changed since submission: ${money(old)} → ${money(now)}. The current amount will be approved.`) : '';
+  if(!confirm((ar?`اعتماد استلام أرباح ${userName(h.employee_id)} بمبلغ ${money(handoverBookingIds(h).length?now:old)} كاش؟`:`Approve profit handover of ${money(now)}?`) + diffMsg)) return;
   try{ await approveProfitHandover(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiRejectProfitHandover = async function(id){
