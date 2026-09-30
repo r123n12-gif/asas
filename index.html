@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C4</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C6</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -909,6 +909,26 @@ function eligibleProfitBookings(employeeId, dateFrom, dateTo){
   return bookings.filter(b=> b.created_by===employeeId && b.cost_reviewed && !(b.refunded && !bookingSupplierRefundKnown(b))
     && !(bookingIsFullRefund(b) && Math.abs(bookingProfitNow(b))<0.005) && !lockedIds.has(b.id)
     && (!dateFrom || b.date>=dateFrom) && (!dateTo || b.date<=dateTo));
+}
+function bulkHandoverPreview(dateTo){
+  return users.filter(u=>u.role==='employee').map(u=>{
+    const list = eligibleProfitBookings(u.id, null, dateTo);
+    return {u, list, total:+list.reduce((a,b)=>a+bookingProfitNow(b),0).toFixed(2)};
+  }).filter(x=>x.list.length);
+}
+async function bulkHandoverUntil(dateTo){
+  const out = [];
+  for(const x of bulkHandoverPreview(dateTo)){
+    const {data:ins, error} = await sb.from('profit_handovers').insert({
+      branch_id:x.u.branch_id||null, employee_id:x.u.id, date_from:null, date_to:dateTo,
+      total_profit:x.total, booking_ids:x.list.map(b=>b.id), status:'pending'
+    }).select().single();
+    if(error) throw error;
+    profitHandovers.unshift(ins);
+    await approveProfitHandover(ins.id);
+    out.push({name:x.u.name, count:x.list.length, total:x.total});
+  }
+  return out;
 }
 async function submitProfitHandover(dateFrom, dateTo, list){
   const u = currentUser();
@@ -3650,10 +3670,43 @@ window.uiConvertToSpan = async function(id, amt){
   if(!confirm(ar?`تحويل التذكرة #${b.booking_no} (${b.customer||''}) من ${b.payment_method==='cash'?'كاش':b.payment_method} إلى شبكة؟\n\nالمبلغ ${money(amt)} بينشال من كاش الموظف ${userName(b.created_by)}، وتصير التذكرة "بانتظار التأكيد" عشان تأكدها من تقرير الجهاز.`:`Convert ticket #${b.booking_no} to card?`)) return;
   try{ await convertToSpan(id); document.getElementById('reconcileRunBtn').onclick(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
+window.uiConfirmPosSettled = async function(){
+  const ar = lang==='ar'; const list = (__posLast && __posLast.confirmable) || [];
+  if(!list.length) return;
+  if(!confirm(ar?`تأكيد استلام ${list.length} تذكرة شبكة نزلت البنك حسب تقرير الجهاز؟\n\nالمبلغ: ${money(list.reduce((a,m)=>a+m.tx.amt,0))}\nوتنسجل رسوم البنك الفعلية لكل عملية.`:`Confirm ${list.length} settled card tickets?`)) return;
+  try{ const n = await confirmPosSettled(); alert(ar?`✔ تم تأكيد ${n} تذكرة`:`Confirmed ${n}`); document.getElementById('reconcileRunBtn').onclick(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
 window.uiApplyPosFees = async function(){
   const ar = lang==='ar'; const n = (__posLast && __posLast.fixable || []).length;
   if(!n || !confirm(ar?`تحديث رسوم ${n} تذكرة حسب رسوم البنك الفعلية؟\nالمبلغ الكلي للتذكرة ما يتغير — يتوزع بس بين "البنك" و"رسوم البنك".`:`Update fees of ${n} tickets?`)) return;
   try{ const k = await applyPosFees(); alert(ar?`✔ تم تحديث ${k} تذكرة`:`Updated ${k}`); document.getElementById('reconcileRunBtn').onclick(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
+window.openBulkHandoverModal = function(){
+  const ar = lang==='ar';
+  const d = new Date(); const last = new Date(d.getFullYear(), d.getMonth(), 0);
+  const def = `${last.getFullYear()}-${String(last.getMonth()+1).padStart(2,'0')}-${String(last.getDate()).padStart(2,'0')}`;
+  showModal(`<div class="modal-head"><h3>🧾 ${ar?'تسليم كل الأرباح حتى تاريخ':'Hand over all profits up to a date'}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <p class="note">${ar?'يسجّل لكل موظف تسليم أرباح <b>معتمد</b> لكل تذاكره اللي ما انسلّم ربحها لين هذا التاريخ، وينخصم من "كاش لسا بعهدته". استخدمه لما الأرباح فعلًا انسلّمت للإدارة، عشان تبدأ من التاريخ اللي بعده على نظافة.':'Records an approved handover for every employee for all unhanded tickets up to this date.'}</p>
+    <div class="field"><label>${ar?'حتى تاريخ (شامل)':'Up to (inclusive)'}</label><input type="date" id="bulkHoDate" value="${def}"></div>
+    <div id="bulkHoPreview"></div>
+    <div style="display:flex;gap:8px;margin-top:12px;"><button class="btn btn-primary" id="bulkHoBtn">${ar?'اعتماد التسليم للكل':'Approve for all'}</button><button class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>`);
+  const draw = ()=>{
+    const pv = bulkHandoverPreview(document.getElementById('bulkHoDate').value);
+    const tot = pv.reduce((a,x)=>a+x.total,0);
+    document.getElementById('bulkHoPreview').innerHTML = pv.length ? `<table><thead><tr><th>${t('colEmployee')}</th><th>${ar?'التذاكر':'Tickets'}</th><th>${ar?'الأرباح':'Profit'}</th><th>${ar?'كاش بعهدته الآن → بعد':'Cash now → after'}</th></tr></thead>
+      <tbody>${pv.map(x=>`<tr><td>${esc(x.u.name)}</td><td class="num">${x.list.length}</td><td class="num" style="font-weight:700">${money(x.total)}</td><td class="num">${money(employeeCashOnHand(x.u.id))} → <b>${money(+(employeeCashOnHand(x.u.id)-x.total).toFixed(2))}</b></td></tr>`).join('')}
+      <tr><td><b>${ar?'المجموع':'Total'}</b></td><td></td><td class="num"><b>${money(+tot.toFixed(2))}</b></td><td></td></tr></tbody></table>`
+      : `<div class="empty">${ar?'ما في أرباح غير مسلّمة لين هذا التاريخ.':'Nothing to hand over.'}</div>`;
+    document.getElementById('bulkHoBtn').disabled = !pv.length;
+  };
+  document.getElementById('bulkHoDate').onchange = draw; draw();
+  document.getElementById('bulkHoBtn').onclick = async ()=>{
+    const dt = document.getElementById('bulkHoDate').value; const pv = bulkHandoverPreview(dt);
+    if(!confirm(ar?`اعتماد تسليم أرباح ${pv.length} موظف بمجموع ${money(pv.reduce((a,x)=>a+x.total,0))} حتى ${dt}؟\n\nتأكد إن الأرباح فعلًا انسلّمت للإدارة — المبالغ بتنخصم من كاش الموظفين.`:'Approve?')) return;
+    const btn = document.getElementById('bulkHoBtn'); btn.disabled = true;
+    try{ const r = await bulkHandoverUntil(dt); closeModal(); alert((ar?'✔ تم:\n':'Done:\n') + r.map(x=>`${x.name}: ${x.count} ${ar?'تذكرة':'tickets'} — ${money(x.total)}`).join('\n')); render(); }
+    catch(e){ console.error(e); alert(errTextPlain()); btn.disabled = false; }
+  };
 };
 window.uiRepairOther = async function(fixJson){
   const fix = JSON.parse(fixJson); const ar = lang==='ar';
@@ -4030,6 +4083,7 @@ function renderProfits(){
   });
   const totalHandedOver = approvedHistory.reduce((s,h)=>s+Number(h.total_profit||0),0);
   document.getElementById('content').innerHTML = `
+    ${isAdmin()?`<div style="margin-bottom:12px;"><button class="btn btn-gold" onclick="openBulkHandoverModal()">🧾 ${lang==='ar'?'تسليم كل الأرباح حتى تاريخ (تصفية للبدء من جديد)':'Hand over all profits up to a date'}</button></div>`:''}
     <div class="kpi-row" style="grid-template-columns:repeat(1,1fr);">
       <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">${t('totalHandedOverProfit')}</div><div class="kpi-value">${money(totalHandedOver)}</div></div>
     </div>
@@ -4284,7 +4338,10 @@ function runPosReconcile(scoped){
   const feeRows = matched.filter(m=>m.it.part===null).map(m=>{ const sysFee = +jrows(m.it.b.id).filter(j=>j.desc_key==='jCardFee').reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2);
     const confirmed = jrows(m.it.b.id).some(j=>j.desc_key==='jBankReceipt'); return {...m, sysFee, confirmed, diff:+(m.tx.fee - sysFee).toFixed(2)}; });
   const fixable = feeRows.filter(f=>f.confirmed && Math.abs(f.diff)>=0.01);
-  __posLast = {fixable};
+  const confirmable = matched.filter(m=>m.tx.settled && (m.it.part===null
+      ? !jrows(m.it.b.id).some(j=>j.desc_key==='jBankReceipt')
+      : !(m.it.b.payment_splits||[])[m.it.part]?.verified));
+  __posLast = {fixable, confirmable};
   const unsettled = txns.filter(t=>!t.settled);
   const kv = (k,v,c)=>`<div class="kpi" style="--accent:${c}"><div class="kpi-label">${k}</div><div class="kpi-value" style="font-size:18px;">${v}</div></div>`;
   const txCells = tx=>`<td>${tx.date} ${esc(tx.time)}</td><td class="num">${money(tx.amt)}</td><td>${posSchemeLabel(tx.scheme)}</td><td>${esc(tx.card)}</td><td>${esc(tx.term)}</td><td>${esc(tx.auth)}</td>`;
@@ -4300,6 +4357,8 @@ function runPosReconcile(scoped){
     <div class="note" style="margin-bottom:10px;">🏦 ${ar?`رسوم البنك الفعلية (نسبة + ضريبة 15%): <b>${money(sum(txns,x=>x.fee))}</b> — صافي ينزل البنك: <b>${money(sum(txns,x=>x.amt-x.fee))}</b>`:`Actual bank fees: ${money(sum(txns,x=>x.fee))}`}
       ${unsettled.length?`<br>⏳ ${ar?`لسا ما نزلت البنك (Settled = N): <b>${unsettled.length}</b> عملية بـ <b>${money(sum(unsettled,x=>x.amt))}</b> — لا تؤكد تذاكرها قبل ما تنزل`:`Not settled yet: ${unsettled.length}`}`:''}
       ${refunds.length?`<br>↩️ ${ar?`مرتجعات على الجهاز: ${refunds.length} بـ ${money(sum(refunds,x=>x.amt))}`:`Terminal refunds: ${refunds.length}`}`:''}</div>
+    ${confirmable.length?`<div class="note" style="background:#E8F4EE;padding:10px;border-radius:8px;color:#1f7a4d;font-weight:600;margin-bottom:10px;">✅ ${ar?`${confirmable.length} تذكرة مطابقة ونزلت البنك فعلًا (Settled = Y) بـ ${money(sum(confirmable,m=>m.tx.amt))}، لكنها في النظام لسا "بانتظار التأكيد".`:`${confirmable.length} matched & settled tickets are still awaiting confirmation.`}
+      ${(isAdmin()||isAccountant())?`<br><button class="btn btn-primary btn-sm" style="margin-top:6px;" onclick="uiConfirmPosSettled()">${ar?`تأكيد الاستلام لها كلها (مع رسوم البنك الفعلية)`:'Confirm all (with actual bank fees)'}</button>`:''}</div>`:''}
     ${fixable.length?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;margin-bottom:10px;">💳 ${ar?`${fixable.length} تذكرة مؤكدة رسومها في النظام تختلف عن رسوم البنك الفعلية (الفرق ${money(sum(fixable,f=>f.diff))}). النظام يحسب 0.8% ثابتة، والبنك يحسب حسب البطاقة (مدى 0.7%، ماستر/فيزا 2.5%) + ضريبة.`:`${fixable.length} confirmed tickets have different fees than the bank.`}
       ${(isAdmin()||isAccountant())?`<br><button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiApplyPosFees()">${ar?'تحديث الرسوم حسب تقرير البنك':'Update fees from bank report'}</button>`:''}</div>`:''}
     ${posOnly.length?`<div style="font-weight:700;color:var(--red);margin:10px 0 6px;">❌ ${ar?`عمليات على الجهاز ما لها تذكرة شبكة في النظام (${posOnly.length})`:`Terminal transactions without a ticket (${posOnly.length})`}</div>
@@ -4324,6 +4383,31 @@ async function convertToSpan(bookingId){
   const {error} = await sb.from('bookings').update(upd).eq('id', b.id); if(error) throw error;
   Object.assign(b, upd);
   await repairBooking(b.id);   // sale entry moves from the till to "awaiting card settlement"
+}
+async function confirmPosSettled(){
+  const list = (__posLast && __posLast.confirmable) || [];
+  let n = 0;
+  for(const m of list){
+    const b = bookings.find(x=>x.id===m.it.b.id); if(!b) continue;
+    if(m.it.part===null){
+      if(jrows(b.id).some(j=>j.desc_key==='jBankReceipt')) continue;
+      await verifyPaymentReceived(b.id, m.tx.amt);
+      // replace the system's flat fee with the bank's real fee for this transaction
+      const rows = jrows(b.id), rec = rows.find(j=>j.desc_key==='jBankReceipt'), fees = rows.filter(j=>j.desc_key==='jCardFee');
+      if(rec){
+        const gross = +(Number(rec.amount) + fees.reduce((a,j)=>a+Number(j.amount||0),0)).toFixed(2);
+        const newNet = +(gross - m.tx.fee).toFixed(2);
+        const {error:e1} = await sb.from('journal').update({amount:newNet}).eq('id', rec.id); if(e1) throw e1; rec.amount = newNet;
+        if(fees.length){ const {error:e2} = await sb.from('journal').update({amount:m.tx.fee}).eq('id', fees[0].id); if(e2) throw e2; fees[0].amount = m.tx.fee; }
+        else if(m.tx.fee>0){ const {data, error:e3} = await sb.from('journal').insert({date:rec.date, branch_id:rec.branch_id, booking_id:b.id, desc_key:'jCardFee', desc_args:[b.booking_no], debit_key:'accExpenses', credit_key:'accCustomers', amount:m.tx.fee}).select().single(); if(e3) throw e3; journal.unshift(data); }
+      }
+    }else{
+      if((b.payment_splits||[])[m.it.part]?.verified) continue;
+      await verifySplitPayment(b.id, m.it.part);
+    }
+    n++;
+  }
+  return n;
 }
 async function applyPosFees(){
   const list = (__posLast && __posLast.fixable) || [];
@@ -4939,6 +5023,8 @@ repairOther = lockify(repairOther, 'repairOther');
 submitProfitHandover = lockify(submitProfitHandover, 'submitProfitHandover');
 applyPosFees = lockify(applyPosFees, 'applyPosFees');
 convertToSpan = lockify(convertToSpan, 'convertToSpan');
+confirmPosSettled = lockify(confirmPosSettled, 'confirmPosSettled');
+bulkHandoverUntil = lockify(bulkHandoverUntil, 'bulkHandoverUntil');
 recordSupplierRefund = lockify(recordSupplierRefund, 'recordSupplierRefund');
 fixTicketPrice = lockify(fixTicketPrice, 'fixTicketPrice');
 </script>
