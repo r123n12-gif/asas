@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C3</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C4</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -3644,6 +3644,12 @@ window.uiApproveMiscReceipt = async function(id){
   if(dupWarn && !confirm(dupWarn)) return;
   try{ await approveMiscReceipt(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
+window.uiConvertToSpan = async function(id, amt){
+  const b = bookings.find(x=>x.id===id); if(!b) return;
+  const ar = lang==='ar';
+  if(!confirm(ar?`تحويل التذكرة #${b.booking_no} (${b.customer||''}) من ${b.payment_method==='cash'?'كاش':b.payment_method} إلى شبكة؟\n\nالمبلغ ${money(amt)} بينشال من كاش الموظف ${userName(b.created_by)}، وتصير التذكرة "بانتظار التأكيد" عشان تأكدها من تقرير الجهاز.`:`Convert ticket #${b.booking_no} to card?`)) return;
+  try{ await convertToSpan(id); document.getElementById('reconcileRunBtn').onclick(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
 window.uiApplyPosFees = async function(){
   const ar = lang==='ar'; const n = (__posLast && __posLast.fixable || []).length;
   if(!n || !confirm(ar?`تحديث رسوم ${n} تذكرة حسب رسوم البنك الفعلية؟\nالمبلغ الكلي للتذكرة ما يتغير — يتوزع بس بين "البنك" و"رسوم البنك".`:`Update fees of ${n} tickets?`)) return;
@@ -4260,6 +4266,19 @@ function runPosReconcile(scoped){
     if(best>=0){ used.add(best); matched.push({tx, it:items[best]}); } else posOnly.push(tx);
   });
   const sysOnly = items.filter((it,i)=>!used.has(i) && it.date>=dFrom && it.date<=dTo);
+  const usedCand = new Set();
+  posOnly.forEach(tx=>{
+    let best = null, bestScore = 1e9;
+    scoped.forEach(b=>{
+      if(usedCand.has(b.id) || bookingIsFullRefund(b) || b.payment_method==='span') return;
+      const amts = b.payment_method==='split' && Array.isArray(b.payment_splits) ? b.payment_splits.filter(p=>p.method!=='span').map(p=>Number(p.amount)||0) : [Number(b.sell)||0];
+      if(!amts.some(a=>Math.abs(a-tx.amt)<0.01)) return;
+      const dd = dayDiff(b.date, tx.date); if(dd<-1 || dd>2) return;
+      const sc = Math.abs(dd)*10 + (b.payment_method==='cash'?0:1);
+      if(sc<bestScore){ bestScore = sc; best = b; }
+    });
+    if(best){ usedCand.add(best.id); tx.cand = best; }
+  });
   const sum = (a,f)=> +a.reduce((s,x)=>s+f(x),0).toFixed(2);
   // fees: bank's real fee (percentage + VAT) vs what the system booked
   const feeRows = matched.filter(m=>m.it.part===null).map(m=>{ const sysFee = +jrows(m.it.b.id).filter(j=>j.desc_key==='jCardFee').reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2);
@@ -4285,13 +4304,26 @@ function runPosReconcile(scoped){
       ${(isAdmin()||isAccountant())?`<br><button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiApplyPosFees()">${ar?'تحديث الرسوم حسب تقرير البنك':'Update fees from bank report'}</button>`:''}</div>`:''}
     ${posOnly.length?`<div style="font-weight:700;color:var(--red);margin:10px 0 6px;">❌ ${ar?`عمليات على الجهاز ما لها تذكرة شبكة في النظام (${posOnly.length})`:`Terminal transactions without a ticket (${posOnly.length})`}</div>
       <p class="note">${ar?'غالبًا: تذكرة انسجلت كاش أو تحويل وهي شبكة، أو بمبلغ مختلف، أو ما انسجلت أبدًا.':'Usually a ticket recorded as cash/transfer, with a different amount, or not recorded.'}</p>
-      <div style="overflow-x:auto;margin-bottom:12px;"><table><thead><tr>${txHead}</tr></thead><tbody>${posOnly.map(tx=>`<tr>${txCells(tx)}</tr>`).join('')}</tbody></table></div>`:''}
+      ${posOnly.some(t=>t.cand)?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;margin-bottom:8px;">🔎 ${ar?`${posOnly.filter(t=>t.cand).length} عملية منها لقيت لها تذكرة بنفس المبلغ واليوم لكن مسجلة بطريقة دفع ثانية (غالبًا كاش) — غالبًا الموظف سجلها غلط. تأكد وحوّلها لشبكة:`:'Some have a same-amount ticket recorded with another payment method:'}</div>`:''}
+      <div style="overflow-x:auto;margin-bottom:12px;"><table><thead><tr>${txHead}<th>${ar?'تذكرة محتملة':'Likely ticket'}</th><th></th></tr></thead><tbody>${posOnly.map(tx=>`<tr>${txCells(tx)}
+        <td>${tx.cand?`<b>#${tx.cand.booking_no}</b> ${esc(tx.cand.customer||'')} — ${esc(userName(tx.cand.created_by))}<br><span style="color:var(--red);font-size:12px;">${ar?'مسجلة':'recorded as'}: ${tx.cand.payment_method==='cash'?(ar?'كاش':'cash'):tx.cand.payment_method==='transfer'?(ar?'تحويل':'transfer'):esc(tx.cand.payment_method)} (${tx.cand.date})</span>`:'—'}</td>
+        <td>${tx.cand && tx.cand.payment_method!=='split' && (isAdmin()||isAccountant())?`<button class="btn btn-gold btn-sm" onclick="uiConvertToSpan('${tx.cand.id}', ${tx.amt})">${ar?'تحويلها لشبكة':'Make card'}</button>`:''}</td></tr>`).join('')}</tbody></table></div>`:''}
     ${sysOnly.length?`<div style="font-weight:700;color:#A8722C;margin:10px 0 6px;">⚠️ ${ar?`تذاكر شبكة في النظام ما لها عملية على الجهاز (${sysOnly.length}) — نفس فترة التقرير`:`Card tickets with no terminal transaction (${sysOnly.length})`}</div>
       <div style="overflow-x:auto;margin-bottom:12px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${ar?'التاريخ':'Date'}</th><th>${ar?'المبلغ':'Amount'}</th></tr></thead>
       <tbody>${sysOnly.map(it=>`<tr><td class="num">${it.b.booking_no}${it.part!==null?` <span style="font-size:11px">(${ar?'دفع متعدد':'split'})</span>`:''}</td><td>${esc(it.b.customer||'')}</td><td>${esc(userName(it.b.created_by))}</td><td>${it.date}</td><td class="num">${money(it.amt)}</td></tr>`).join('')}</tbody></table></div>`:''}
     ${matched.length?`<div style="font-weight:700;color:#1f7a4d;margin:10px 0 6px;">✅ ${ar?`مطابقة (${matched.length})`:`Matched (${matched.length})`}</div>
       <div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th>${txHead}<th>${ar?'رسوم البنك':'Bank fee'}</th><th>${ar?'نزلت البنك؟':'Settled?'}</th></tr></thead>
       <tbody>${matched.map(m=>`<tr><td class="num">${m.it.b.booking_no}</td><td>${esc(m.it.b.customer||'')}</td><td>${esc(userName(m.it.b.created_by))}</td>${txCells(m.tx)}<td class="num">${money(m.tx.fee)}</td><td>${m.tx.settled?`✔ ${m.tx.sdate}`:'⏳'}</td></tr>`).join('')}</tbody></table></div>`:''}`;
+}
+async function convertToSpan(bookingId){
+  const b = bookings.find(x=>x.id===bookingId); if(!b) throw new Error('booking not found');
+  if(b.payment_method==='span') return;
+  if(b.payment_method==='split') throw new Error(lang==='ar'?'تذكرة دفع متعدد — عدّل أجزاءها من شاشة التذكرة.':'Split ticket — edit it from the ticket.');
+  if(jrows(b.id).some(j=>j.desc_key==='jBankReceipt')) throw new Error(lang==='ar'?'هذي التذكرة عليها تحويل مؤكد في البنك — ما تتحول.':'Confirmed bank transfer — cannot convert.');
+  const upd = {payment_method:'span', payment_status:'pending', transfer_verified:false, bank_name:null};
+  const {error} = await sb.from('bookings').update(upd).eq('id', b.id); if(error) throw error;
+  Object.assign(b, upd);
+  await repairBooking(b.id);   // sale entry moves from the till to "awaiting card settlement"
 }
 async function applyPosFees(){
   const list = (__posLast && __posLast.fixable) || [];
@@ -4906,6 +4938,7 @@ repairBooking = lockify(repairBooking, 'repairBooking');
 repairOther = lockify(repairOther, 'repairOther');
 submitProfitHandover = lockify(submitProfitHandover, 'submitProfitHandover');
 applyPosFees = lockify(applyPosFees, 'applyPosFees');
+convertToSpan = lockify(convertToSpan, 'convertToSpan');
 recordSupplierRefund = lockify(recordSupplierRefund, 'recordSupplierRefund');
 fixTicketPrice = lockify(fixTicketPrice, 'fixTicketPrice');
 </script>
