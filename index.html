@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C6</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C7</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -550,8 +550,9 @@ function errDetail(){
   const e = __lastErr;
   return [e.message, e.details, e.hint].filter(Boolean).join(' | ') + (e.code ? ` (${e.code})` : '');
 }
-function errText(){ const d = errDetail(); return d ? `${t('connError')}<div dir="ltr" style="font-size:12px;margin-top:6px;opacity:.85;word-break:break-word;">${esc(d)}</div>` : t('connError'); }
-function errTextPlain(){ const d = errDetail(); return d ? `${t('connError')}\n\n${d}` : t('connError'); }
+function errIsRule(){ return __lastErr && !__lastErr.code && __lastErr instanceof Error && Date.now()-__lastErrAt <= 3000; }
+function errText(){ if(errIsRule()) return esc(__lastErr.message); const d = errDetail(); return d ? `${t('connError')}<div dir="ltr" style="font-size:12px;margin-top:6px;opacity:.85;word-break:break-word;">${esc(d)}</div>` : t('connError'); }
+function errTextPlain(){ if(errIsRule()) return __lastErr.message; const d = errDetail(); return d ? `${t('connError')}\n\n${d}` : t('connError'); }
 let __jIdx = null, __jRef = null, __jLen = -1;
 function jrows(bookingId){
   if(!__jIdx || __jRef!==journal || __jLen!==journal.length){
@@ -1218,7 +1219,9 @@ async function updateBooking(id, data){
   const matchesBank = !isSplit && prevB && prevB.payment_method===method && Math.abs((Number(data.sell)||0) - bookingConfirmedGross(id))<0.01;
   if(prevB && prevB.supplier_settled && Math.abs((Number(data.cost)||0)-(Number(prevB.cost)||0))>0.004)
     throw new Error(lang==='ar' ? 'لا يمكن تعديل التكلفة: تم سداد المورد لهذه التذكرة بالمبلغ القديم.' : 'Cost cannot change: the supplier was already paid for this ticket.');
-  if(prevConfirmed && !matchesBank && (Math.abs((Number(data.sell)||0)-(Number(prevB.sell)||0))>0.004 || prevB.payment_method!==method))
+  const returnedForFix = !!prevB && !!prevB.edit_requested && !isSplit && prevB.payment_method===method;
+  const priceChanged = !!prevB && Math.abs((Number(data.sell)||0)-(Number(prevB.sell)||0))>0.004;
+  if(prevConfirmed && !matchesBank && !returnedForFix && (priceChanged || prevB.payment_method!==method))
     throw new Error(lang==='ar'
       ? 'لا يمكن تعديل مبلغ البيع أو طريقة الدفع لتذكرة تحويلها مؤكَّد في البنك — المبلغ المستلم ثابت. يمكن تعديل باقي البيانات (الاسم، التكلفة، المورد...).'
       : 'Cannot change the sale amount or payment method of a ticket whose transfer is confirmed. Other fields can be edited.');
@@ -1271,6 +1274,19 @@ async function updateBooking(id, data){
     const {error:e4} = await sb.from('journal').delete().eq('id', existingCost.id);
     if(e4) throw e4;
     journal = journal.filter(j=>j.id!==existingCost.id);
+  }
+  // accountant-returned confirmed transfer whose price was corrected: move the bank entry to the corrected amount
+  if(prevConfirmed && returnedForFix && priceChanged){
+    const rows = journal.filter(j=>j.booking_id===id && (j.desc_key==='jBankReceipt' || j.desc_key==='jCardFee'));
+    const rec = rows.find(j=>j.desc_key==='jBankReceipt');
+    if(rec){
+      const rate = method==='span'?0.008 : method==='installment'?0.07 : 0;
+      const fee = +(sell*rate).toFixed(2), net = +(sell-fee).toFixed(2);
+      const {error:eR} = await sb.from('journal').update({amount:net}).eq('id', rec.id); if(eR) throw eR; rec.amount = net;
+      const feeRows = rows.filter(j=>j.desc_key==='jCardFee');
+      if(feeRows.length){ const {error:eF} = await sb.from('journal').update({amount:fee}).eq('id', feeRows[0].id); if(eF) throw eF; feeRows[0].amount = fee; }
+      else if(fee>0){ const {data:fIns, error:eI} = await sb.from('journal').insert({date:rec.date, branch_id:rec.branch_id, booking_id:id, desc_key:'jCardFee', desc_args:rec.desc_args, debit_key:'accExpenses', credit_key:'accCustomers', amount:fee}).select().single(); if(eI) throw eI; journal.unshift(fIns); }
+    }
   }
 }
 function bookingIsLocked(b){
