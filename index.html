@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C7</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C8</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1749,10 +1749,10 @@ function bookingsTable(list, mode){
   if(list.length===0) return `<div class="empty">${t('emptyBookings')}</div>`;
   const showActions = mode!=='none';
   return `<div style="overflow-x:auto;"><table>
-      <thead><tr><th>${t('colNo')}</th><th>${t('colAirline')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colBranch')}</th>
+      <thead><tr><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colAirline')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colBranch')}</th>
         <th>${t('colNet')}</th><th>${t('colProfit')}</th><th>${t('colSell')}</th><th>${t('colSupplier')}</th><th>${t('colInvoiceNo')}</th><th>${t('colPayStatus')}</th><th>${t('colPaymentMethod')}</th>${showActions?'<th></th>':''}</tr></thead>
       <tbody>${list.map(b=>`
-        <tr><td class="num">${b.booking_no}</td><td><b>${esc(b.airline||'—')}</b></td><td>${esc(b.customer)}</td>
+        <tr><td class="num">${b.booking_no}</td><td style="white-space:nowrap">${b.date||''}</td><td><b>${esc(b.airline||'—')}</b></td><td>${esc(b.customer)}</td>
           <td>${b.is_open_ticket?`<span class="tag pending">${t('tagOpen')}</span>`:(b.ticket_no||'—')}${b.flight_route?`<br><span style="font-size:10.5px;color:var(--ink-soft)">${esc(b.flight_route)}</span>`:''}</td>
           <td>${branchName(b.branch_id)}</td>
           <td class="num">${b.cost_reviewed?money(b.cost):`<span class="tag pending">${t('pendingReviewTag')}</span>`}</td><td class="num">${canSeeOwnProfit()?(b.cost_reviewed?profitCell(b.profit_amount):`<span class="tag pending">${t('pendingReviewTag')}</span>`):moneyOrHidden(0)}</td>
@@ -3342,8 +3342,8 @@ function renderTransfers(){
     transferParts(b).forEach(p=>{ if(p.status==='pending') pendingSplitRows.push({b, s:b.payment_splits[p.part], i:p.part}); });
   });
   let html = `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingVerifyTitle')}</h3></div>
-      ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${t('colFee')}</th><th></th></tr></thead>
-      <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
+      ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${t('colFee')}</th><th></th></tr></thead>
+      <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td style="white-space:nowrap">${b.date||''}</td><td>${esc(b.customer)}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
         <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payTransfer')}</td>
         <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
         <td class="num">${money(bookingPendingAmount(b))}${b.refunded?`<div style="font-size:11px;color:#A8722C;">${lang==='ar'?'بعد استرجاع جزئي':'after partial refund'}</div>`:''}</td>
@@ -3352,8 +3352,8 @@ function renderTransfers(){
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingSplitTitle')}</h3></div>
       <p class="note">${t('pendingSplitNote')}</p>
-      ${pendingSplitRows.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${t('originalAmountLabel')}</th><th></th></tr></thead>
-      <tbody>${pendingSplitRows.map(({b,s,i})=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
+      ${pendingSplitRows.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${t('originalAmountLabel')}</th><th></th></tr></thead>
+      <tbody>${pendingSplitRows.map(({b,s,i})=>`<tr><td class="num">${b.booking_no}</td><td style="white-space:nowrap">${b.date||''}</td><td>${esc(b.customer)}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
         <td>${s.method==='span'?t('paySpan'):s.method==='installment'?t('payInstallment'):t('payTransfer')}</td>
         <td>${s.method==='span'?'—':bankLabel(s.bankName)}</td>
         <td class="num" style="font-weight:600">${money((transferParts(b).find(p=>p.part===i)||{}).counted ?? s.amount)}${b.refunded?`<div style="font-size:11px;color:#A8722C;">${lang==='ar'?'بعد استرجاع جزئي':'after partial refund'}</div>`:''}</td>
@@ -3902,9 +3902,9 @@ window.uiVerifyTransfer = async function(id){
   const expected = b.refunded ? bookingPendingAmount(b) : (Number(b.sell)||0);
   const val = prompt(`${t('actualAmountPrompt')} (${t('fieldSellPrice')}: ${money(expected)})`, String(expected));
   if(val===null) return;
-  const amt = Number(val);
-  if(isNaN(amt) || amt<0){ alert(t('invalidNumber')); return; }
-  try{ await verifyPaymentReceived(id, amt); render(); }catch(e){ console.error(e); alert(e && e.message && !e.code ? e.message : t('connError')); render(); }
+  const amt = parseAmount(val);
+  if(isNaN(amt) || amt<=0){ alert(t('invalidNumber')); return; }
+  try{ await verifyPaymentReceived(id, +amt.toFixed(2)); render(); }catch(e){ console.error(e); alert(errTextPlain()); render(); }
 };
 window.uiRejectTransfer = async function(id){
   if(!confirm(t('confirmRejectTransfer'))) return;
