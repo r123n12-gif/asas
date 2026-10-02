@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-C8</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-D1</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -273,7 +273,7 @@ const T = {
     quickAllTime:'كل الوقت',
     applySearchBtn:'بحث / تطبيق الفلاتر', searchResultTitle:'نتيجة البحث',
     employeeFinSummaryTitle:'الملخص المالي للموظف', employeeFinSummaryNote:'نظرة شاملة على وضع الموظف المالي: كم باع، كم ودّع، كم تحويل تأكّد، وكم باقي عليه غير مسوّى (بغض النظر عن الفترة المحددة فوق).',
-    efsTotalSales:'إجمالي المبيعات (كل الوقت)', efsDeposited:'إجمالي المودّع (كاش معتمد)', efsTransferred:'إجمالي التحويلات المؤكّدة', efsPendingBalance:'إجمالي الباقي عليه', efsCashOnHand:'كاش لسا بعهدته', efsCharges:'مبالغ مطلوبة (قيود يدوية)',
+    efsTotalSales:'إجمالي المبيعات (كل الوقت)', efsDeposited:'إجمالي المودّع (كاش معتمد)', efsTransferred:'إجمالي التحويلات المؤكّدة', efsPendingBalance:'إجمالي الباقي عليه', efsCashOnHand:'كاش التذاكر بعهدته (سستم فير — بدون الربح)', efsCharges:'مبالغ مطلوبة (قيود يدوية)',
     addChargeBtn:'+ تسجيل مبلغ مطلوب من الموظف', fieldChargeReason:'السبب', chargeReasonPlaceholder:'مثلاً: عجز صندوق، سلفة، إلخ...', sendChargeBtn:'إرسال للموظف',
     chargeSourceLabel:'مصدر المبلغ', chargeSourceCash:'نقدي من الصندوق', chargeSourceBank:'سحب من حساب البنك (أونلاين)',
     sendMiscReceiptBtn:'تسجيل', pleaseSelectEmployee:'الرجاء اختيار الموظف المعني بهذا المبلغ', miscReceiptRejectedAlertTitle:'تنبيه: طلب مبلغ بدون تذكرة تم رفضه',
@@ -744,12 +744,37 @@ function employeeCashOnHand(employeeId){
   const approvedDeposits = deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').reduce((s,d)=>s+Number(d.amount||0),0);
   return +(costOfCash-approvedDeposits-approvedHandovers(h=>h.employee_id===employeeId)).toFixed(2);
 }
+function employeeCashSplit(employeeId){
+  const total = employeeCashOnHand(employeeId);
+  const mine = bookings.filter(b=>b.created_by===employeeId);
+  const notRequested = pendingProfitHandoverAmount(mine);                                    // profit not yet sent
+  const awaiting = +profitHandovers.filter(h=>h.employee_id===employeeId && h.status==='pending').reduce((a,h)=>a+Number(h.total_profit||0),0).toFixed(2); // sent, waiting approval
+  const profitDue = +Math.max(0, notRequested + awaiting).toFixed(2);
+  const depositDue = +(total - profitDue).toFixed(2);
+  const locked = lockedHandoverIds();
+  const pendingIds = new Set(profitHandovers.filter(h=>h.employee_id===employeeId && h.status==='pending').flatMap(handoverBookingIds));
+  const transferProfit = +mine.filter(b=>b.payment_method!=='cash' && b.cost_reviewed && !(b.refunded && !bookingSupplierRefundKnown(b)) && (!locked.has(b.id) || pendingIds.has(b.id)))
+    .reduce((a,b)=>a+bookingProfitNow(b),0).toFixed(2);
+  return {total, profitDue, awaiting, notRequested, depositDue, transferProfit};
+}
+function cashSplitCards(employeeId){
+  const c = employeeCashSplit(employeeId); const ar = lang==='ar';
+  return `<div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:10px;">
+    <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">💰 ${ar?'كاش الأرباح — يُسلَّم للإدارة':'Profit cash — hand to management'}</div><div class="kpi-value">${money(c.profitDue)}</div>
+      ${c.transferProfit>0.004?`<div style="font-size:12px;color:var(--muted,#666);margin-top:4px;">${ar?'منها ربح تذاكر تحويل/شبكة':'of which transfer/card tickets'}: ${money(c.transferProfit)}</div>`:''}
+      ${c.awaiting?`<div style="font-size:12px;color:#A8722C;margin-top:4px;">${ar?'منها بانتظار اعتماد الإدارة':'awaiting approval'}: ${money(c.awaiting)}</div>`:''}</div>
+    <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">🏦 ${ar?'كاش التذاكر — يُودَع':'Ticket cash — to deposit'}</div><div class="kpi-value" style="${c.depositDue<0?'color:var(--red)':''}">${money(c.depositDue)}</div>
+      ${c.depositDue<0?`<div style="font-size:12px;color:var(--red);margin-top:4px;">${ar?'بالسالب: أودع أو سلّم أكثر من المسجل — غالبًا تذاكر ما انسجلت أو انسجلت بطريقة دفع غلط':'Negative: more than recorded'}</div>`:''}</div>
+    <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${ar?'المجموع بعهدته':'Total in hand'}</div><div class="kpi-value">${money(c.total)}</div></div>
+  </div>`;
+}
 function employeeCashBreakdownHTML(){
   const employees = users.filter(u=>u.role==='employee');
-  const rows = employees.map(u=>({name:u.name, branch:branchName(u.branch_id), bal:employeeCashOnHand(u.id)})).filter(r=>r.bal!==0 || true);
+  const rows = employees.map(u=>({name:u.name, branch:branchName(u.branch_id), c:employeeCashSplit(u.id)}));
   if(rows.length===0) return `<div class="empty">${t('emptyData')}</div>`;
-  return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('colUserName')}</th><th>${t('fieldBranch')}</th><th>${t('colAmount')}</th></tr></thead>
-    <tbody>${rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${r.branch}</td><td class="num" style="font-weight:600">${money(r.bal)}</td></tr>`).join('')}</tbody></table></div>`;
+  const ar = lang==='ar';
+  return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('colUserName')}</th><th>${t('fieldBranch')}</th><th>💰 ${ar?'أرباح للإدارة':'Profit'}</th><th>🏦 ${ar?'يُودَع':'To deposit'}</th><th>${ar?'المجموع':'Total'}</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${r.branch}</td><td class="num">${money(r.c.profitDue)}</td><td class="num" style="font-weight:600;${r.c.depositDue<0?'color:var(--red)':''}">${money(r.c.depositDue)}</td><td class="num">${money(r.c.total)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 async function uploadReceiptFile(file){
   const extMatch = /\.([a-zA-Z0-9]+)$/.exec(file.name||'');
@@ -1420,10 +1445,12 @@ function employeeFinancialSummary(employeeId){
   const parts = mine.flatMap(transferParts);
   const totalTransferred = +parts.filter(p=>p.status==='confirmed').reduce((s,p)=>s+p.counted,0).toFixed(2);
   const pendingTransfers = +parts.filter(p=>p.status==='pending').reduce((s,p)=>s+p.counted,0).toFixed(2);
-  const cashOnHand = employeeCashOnHand(employeeId);
+  const split = employeeCashSplit(employeeId);
+  const cashOnHand = split.depositDue;          // ticket cash only — profit is handed separately to management
+  const profitDue = split.profitDue;
   const charges = outstandingEmployeeCharges(employeeId);
   const pendingAmt = +(pendingTransfers + cashOnHand + charges).toFixed(2);
-  return {totalSales, totalDeposited, totalTransferred, pendingAmt, pendingTransfers, cashOnHand, charges};
+  return {totalSales, totalDeposited, totalTransferred, pendingAmt, pendingTransfers, cashOnHand, charges, profitDue};
 }
 function pendingConfirmationAmount(list){
   return +list.flatMap(transferParts).filter(p=>p.status==='pending').reduce((s,p)=>s+p.counted,0).toFixed(2);
@@ -1639,14 +1666,14 @@ function renderDashboard(){
   const u = currentUser();
   // outstanding is a balance as of today: it ignores the date range and follows the branch + employee filters
   let pendingAmt = pendingConfirmationAmount(filteredBookings());
-  if(u.role==='employee') pendingAmt = +(pendingAmt + employeeCashOnHand(u.id) + outstandingEmployeeCharges(u.id)).toFixed(2);
+  if(u.role==='employee') pendingAmt = +(pendingAmt + employeeCashSplit(u.id).depositDue + outstandingEmployeeCharges(u.id)).toFixed(2);
   else if(canSeeAllBranches()){
     const bf = effectiveBranchFilter();
     const sellerIds = new Set(filteredBookings().map(b=>b.created_by).filter(Boolean));
     const scopeEmployees = employeeFilter!=='all'
       ? users.filter(e=>e.id===employeeFilter)
       : users.filter(e=>(e.role==='employee' && (bf==='all'||e.branch_id===bf)) || sellerIds.has(e.id));
-    pendingAmt = +(pendingAmt + scopeEmployees.reduce((s,e)=>s+employeeCashOnHand(e.id)+outstandingEmployeeCharges(e.id),0)).toFixed(2);
+    pendingAmt = +(pendingAmt + scopeEmployees.reduce((s,e)=>s+employeeCashSplit(e.id).depositDue+outstandingEmployeeCharges(e.id),0)).toFixed(2);
   }
   const myPendingCharges = u.role==='employee' ? employeeCharges.filter(c=>c.employee_id===u.id && !c.settled) : [];
   const myRejectedMisc = u.role==='employee' ? miscReceipts.filter(r=>r.employee_id===u.id && r.status==='rejected') : [];
@@ -1798,7 +1825,7 @@ function renderMySales(){
   const list = bookings.filter(b=> b.created_by===u.id && (!mySalesDateFrom||b.date>=mySalesDateFrom) && (!mySalesDateTo||b.date<=mySalesDateTo));
   const allMine = bookings.filter(b=>b.created_by===u.id);
   const tt = computeTotals(list, []);
-  const pendingAmt = +(pendingConfirmationAmount(allMine) + employeeCashOnHand(u.id) + outstandingEmployeeCharges(u.id)).toFixed(2);
+  const pendingAmt = +(pendingConfirmationAmount(allMine) + employeeCashSplit(u.id).depositDue + outstandingEmployeeCharges(u.id)).toFixed(2);
   const myCharges = employeeCharges.filter(c=>c.employee_id===u.id && !c.settled);
   const myRejectedMiscMS = miscReceipts.filter(r=>r.employee_id===u.id && r.status==='rejected');
   const myReturnedForEditMS = bookings.filter(b=>b.created_by===u.id && b.edit_requested);
@@ -3232,20 +3259,23 @@ function renderReports(){
         <button class="btn btn-ghost btn-sm" id="efsPrintBtn">${t('printReport')}</button>
       </div>
       <p class="note">${t('employeeFinSummaryNote')}</p>
+      ${cashSplitCards(reportEmployeeFilter)}
       <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);">
         <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${t('efsTotalSales')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.totalSales):moneyOrHidden(0)}</div></div>
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('efsDeposited')}</div><div class="kpi-value">${money(es.totalDeposited)}</div></div>
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('efsTransferred')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.totalTransferred):moneyOrHidden(0)}</div></div>
       </div>
       <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-top:10px;">
-        <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsPendingBalance')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.pendingAmt):moneyOrHidden(0)}</div>${canSeeSalesTotals()?`<div style="font-size:12px;color:var(--muted,#666);margin-top:4px;line-height:1.6;">${lang==='ar'?'تحويلات بانتظار التأكيد':'Transfers awaiting confirmation'}: ${money(es.pendingTransfers)}<br>+ ${t('efsCashOnHand')}: ${money(es.cashOnHand)}<br>+ ${t('efsCharges')}: ${money(es.charges)}</div>`:''}</div>
+        <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsPendingBalance')}</div><div class="kpi-value">${canSeeSalesTotals()?money(es.pendingAmt):moneyOrHidden(0)}</div>${canSeeSalesTotals()?`<div style="font-size:12px;color:var(--muted,#666);margin-top:4px;line-height:1.6;">${lang==='ar'?'تحويلات بانتظار التأكيد':'Transfers awaiting confirmation'}: ${money(es.pendingTransfers)}<br>+ ${t('efsCashOnHand')}: ${money(es.cashOnHand)}<br>+ ${t('efsCharges')}: ${money(es.charges)}<br><span style="color:var(--gold,#A8722C)">(${lang==='ar'?'الأرباح منفصلة':'profit separate'}: ${money(es.profitDue)})</span></div>`:''}</div>
         <div class="kpi" style="--accent:#A8722C"><div class="kpi-label">${t('efsCashOnHand')}</div><div class="kpi-value">${money(es.cashOnHand)}</div>${(()=>{ const cb = employeeCashBreakdown(reportEmployeeFilter); const ar = lang==='ar';
         return `<div style="font-size:12px;color:var(--muted,#666);margin-top:4px;line-height:1.7;">
           ${ar?'كاش مستلم من التذاكر':'Cash from tickets'}: ${money(cb.cashIn)}${cb.misc?`<br>+ ${ar?'مبالغ كاش بدون تذكرة':'Misc cash'}: ${money(cb.misc)}`:''}
           <br>− ${ar?'إيداعات معتمدة':'Approved deposits'}: ${money(cb.deps)}<br>− ${ar?'أرباح معتمد تسليمها':'Approved profit handovers'}: ${money(cb.handed)}
           ${cb.pendingDeps?`<br><span style="color:#A8722C">${ar?'إيداعات بانتظار الاعتماد (غير مخصومة)':'Deposits awaiting approval'}: ${money(cb.pendingDeps)}</span>`:''}
           ${cb.pendingHand?`<br><span style="color:#A8722C">${ar?'تسليم أرباح بانتظار الاعتماد (غير مخصوم)':'Profit handover awaiting approval'}: ${money(cb.pendingHand)}</span>`:''}
-          ${cb.notHandedProfit?`<br><span style="color:#A8722C">${ar?'أرباح لم يُطلب تسليمها بعد (داخل الرقم)':'Profit not yet handed over (included)'}: ${money(cb.notHandedProfit)}</span>`:''}
+          <br>= ${ar?'المجموع بعهدته':'Total in hand'}: ${money(cb.total)}
+          <br>− ${ar?'أرباح تُسلَّم للإدارة (منفصلة)':'Profit for management (separate)'}: ${money(employeeCashSplit(reportEmployeeFilter).profitDue)}
+          <br><b>= ${ar?'كاش التذاكر (يُودَع)':'Ticket cash (to deposit)'}: ${money(employeeCashSplit(reportEmployeeFilter).depositDue)}</b>
         </div>`; })()}${es.cashOnHand<-0.01?`<div style="font-size:12px;color:var(--red);margin-top:4px;line-height:1.5;">⚠️ ${lang==='ar'?'بالسالب: أودع/سلّم أكثر من الكاش المسجل عليه — غالبًا فيه تذاكر كاش ما انسجلت بالنظام':'Negative: deposited more than recorded cash — likely unrecorded cash tickets'}</div>`:''}</div>
         <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('efsCharges')}</div><div class="kpi-value">${money(es.charges)}</div></div>
       </div>
@@ -3375,9 +3405,7 @@ function renderDeposits(){
   const canManage = canSeeAllBranches();
   let html = '';
   if(!canManage){
-    const bal = employeeCashOnHand(u.id);
-    html += `<div class="kpi-row" style="grid-template-columns:1fr;"><div class="kpi" style="--accent:var(--gold)">
-      <div class="kpi-label">${t('myPersonalCash')}</div><div class="kpi-value">${money(bal)}</div></div></div>`;
+    html += cashSplitCards(u.id);
   }else{
     const rows = branches.map(b=>({name:b.name, bal:branchCashOnHand(b.id)}));
     html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('allBranchesCash')}</h3></div>
@@ -3840,7 +3868,7 @@ function openDepositModal(){
   const branchOptions = canManage ? branches : branches.filter(b=>b.id===u.branch_id);
   const defaultBranch = u.branch_id || (branchOptions[0]?.id||'');
   const employeesInBranch = (branchId)=> users.filter(x=>x.role==='employee' && x.branch_id===branchId);
-  const suggestedAmount = canManage ? '' : Math.max(0, employeeCashOnHand(u.id)) || '';
+  const suggestedAmount = canManage ? '' : Math.max(0, employeeCashSplit(u.id).depositDue) || '';
   showModal(`
     <div class="modal-head"><h3>${t('addDeposit')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="depositForm">
@@ -3863,11 +3891,11 @@ function openDepositModal(){
     const refreshEmployees = (branchId)=>{
       const opts = employeesInBranch(branchId);
       empSel.innerHTML = opts.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('');
-      document.getElementById('depositAmountInput').value = opts[0] ? (Math.max(0, employeeCashOnHand(opts[0].id)) || '') : '';
+      document.getElementById('depositAmountInput').value = opts[0] ? (Math.max(0, employeeCashSplit(opts[0].id).depositDue) || '') : '';
     };
     refreshEmployees(defaultBranch || branchOptions[0]?.id);
     branchSel.onchange = (e)=>refreshEmployees(e.target.value);
-    empSel.onchange = (e)=>{ document.getElementById('depositAmountInput').value = Math.max(0, employeeCashOnHand(e.target.value)) || ''; };
+    empSel.onchange = (e)=>{ document.getElementById('depositAmountInput').value = Math.max(0, employeeCashSplit(e.target.value).depositDue) || ''; };
   }
   document.getElementById('depositForm').onsubmit = async (e)=>{
     e.preventDefault();
