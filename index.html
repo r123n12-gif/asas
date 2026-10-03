@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-D1</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-D3</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -801,8 +801,8 @@ async function approveDeposit(id){
   const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:d0.branch_id, deposit_id:id,
     desc_key:'jDeposit', desc_args:[destLabel(d0.destination)], debit_key: isSupplierDest(d0.destination) ? 'accSuppliers' : 'accBank', credit_key:'accCashOnHand', amount:d0.amount }).select().single();
   if(jErr) throw jErr;
-  const {error} = await sb.from('cash_deposits').update({status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
-  if(error){ await sb.from('journal').delete().eq('id', jIns.id); throw error; }
+  try{ await mustUpdate('cash_deposits', id, {status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}); }
+  catch(error){ await sb.from('journal').delete().eq('id', jIns.id); throw error; }
   d0.status = 'approved';
   journal.unshift(jIns);
 }
@@ -821,7 +821,7 @@ async function verifySplitPayment(bookingId, splitIndex){
   const splits = b.payment_splits.map((s,i)=> i===splitIndex ? {...s, verified:true, verified_by:currentUser()?.id||null, verified_at:new Date().toISOString(),
     ...(confirmedAmt!=null && Math.abs(confirmedAmt-(Number(s.amount)||0))>0.004 ? {verified_amount:confirmedAmt} : {})} : s);
   const allVerified = splits.every(s=>s.verified || s.method==='cash');
-  const {error} = await sb.from('bookings').update({payment_splits:splits, payment_status: allVerified?'paid':'pending', transfer_verified: allVerified}).eq('id', bookingId);
+  const error = null; await mustUpdate('bookings', bookingId, {payment_splits:splits, payment_status: allVerified?'paid':'pending', transfer_verified: allVerified});
   if(error) throw error;
   b.payment_splits = splits; b.payment_status = allVerified?'paid':'pending'; b.transfer_verified = allVerified;
   const s = splits[splitIndex];
@@ -840,12 +840,20 @@ async function rejectTransfer(bookingId, note){
   if(error) throw error;
   const b = bookings.find(x=>x.id===bookingId); if(b){ b.edit_requested=true; b.edit_note=note||null; }
 }
+async function mustUpdate(table, id, patch){
+  const {data, error} = await sb.from(table).update(patch).eq('id', id).select('id');
+  if(error) throw error;
+  if(!data || !data.length) throw new Error(lang==='ar'
+    ? `ما انحفظ التعديل في قاعدة البيانات (${table}) — غالبًا صلاحيات الجدول (RLS) تمنع التعديل. نفّذ سطر الصلاحيات في Supabase.`
+    : `The change was not saved (${table}) — table permissions (RLS) are blocking updates.`);
+  return data;
+}
 async function verifyPaymentReceived(bookingId, actualAmount){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) return;
   if(b.refunded && bookingPendingAmount(b)<=0) throw new Error(lang==='ar'?'لا يوجد مبلغ بانتظار التأكيد في هذه التذكرة (مسترجعة).':'Nothing awaiting confirmation on this ticket (refunded).');
   if(journal.some(j=>j.booking_id===bookingId && j.desc_key==='jBankReceipt')){
-    await sb.from('bookings').update({transfer_verified:true, payment_status:'paid'}).eq('id', bookingId);
+    await mustUpdate('bookings', bookingId, {transfer_verified:true, payment_status:'paid'});
     b.transfer_verified = true; b.payment_status='paid';
     throw new Error(lang==='ar' ? 'هذا التحويل مؤكَّد مسبقًا (تم تصحيح حالته فقط بدون قيد جديد).' : 'This transfer was already confirmed (status corrected, no new entry).');
   }
@@ -872,15 +880,16 @@ async function verifyPaymentReceived(bookingId, actualAmount){
   const feeAmount = feeRate>0 ? +(sell*feeRate).toFixed(2) : 0;
   const netToBank = +(sell-feeAmount).toFixed(2);
   const verifiedAmt = (b.refunded && Math.abs(sell-(Number(b.sell)||0))>0.004) ? sell : null;
-  const {error} = await sb.from('bookings').update({transfer_verified:true, transfer_verified_by:currentUser()?.id||null, transfer_verified_at:new Date().toISOString(), payment_status:'paid'}).eq('id', bookingId);
-  if(error) throw error;
-  b.transfer_verified = true; b.payment_status='paid'; if(verifiedAmt!=null) b.verified_amount = verifiedAmt;
+  // entries first, then the status; if the status cannot be saved the entries are removed again (nothing half-done)
   const jRows = [{ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
     desc_key:'jBankReceipt', desc_args:[b.booking_no, b.customer], debit_key:'accBank', credit_key:'accCustomers', amount:netToBank }];
   if(feeAmount>0) jRows.push({ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
     desc_key:'jCardFee', desc_args:[b.booking_no], debit_key:'accExpenses', credit_key:'accCustomers', amount:feeAmount });
   const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
   if(jErr) throw jErr;
+  try{ await mustUpdate('bookings', bookingId, {transfer_verified:true, transfer_verified_by:currentUser()?.id||null, transfer_verified_at:new Date().toISOString(), payment_status:'paid'}); }
+  catch(e){ await sb.from('journal').delete().in('id', jIns.map(j=>j.id)); throw e; }
+  b.transfer_verified = true; b.payment_status='paid'; if(verifiedAmt!=null) b.verified_amount = verifiedAmt;
   journal.unshift(...jIns.reverse());
 }
 async function reviewBookingCost(bookingId, netCost){
@@ -1138,12 +1147,29 @@ function requirePositive(v){
   return +n.toFixed(2);
 }
 const __busy = new Set();
+let __syncTimer = null;
+function busyBadge(on){
+  let el = document.getElementById('busyBadge');
+  if(!el && on){ el = document.createElement('div'); el.id = 'busyBadge';
+    el.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#0F2A3F;color:#fff;padding:8px 16px;border-radius:20px;z-index:9999;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,.2)';
+    document.body.appendChild(el); }
+  if(el){ el.textContent = lang==='ar' ? '⏳ جاري الحفظ…' : '⏳ Saving…'; el.style.display = on ? 'block' : 'none'; }
+}
 function lockify(fn, name){
   return async function(...args){
     const key = name + ':' + JSON.stringify(args[0]);
     if(__busy.has(key)) return;
-    __busy.add(key);
-    try{ return await fn.apply(this, args); } finally { __busy.delete(key); }
+    __busy.add(key); busyBadge(true);
+    try{ return await fn.apply(this, args); }
+    finally {
+      __busy.delete(key);
+      if(!__busy.size){
+        busyBadge(false);
+        // pull the latest data once everything is saved, so the screen never shows a half-updated state
+        clearTimeout(__syncTimer);
+        __syncTimer = setTimeout(async ()=>{ if(__busy.size) return; try{ await fetchAll(); const ov = document.getElementById('overlay'); if(!(ov && ov.classList.contains('show'))) render(); }catch(e){ console.error('sync failed', e); } }, 800);
+      }
+    }
   };
 }
 function todayStr(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
@@ -1531,7 +1557,7 @@ let autoRefreshInterval = null;
 function startAutoRefresh(){
   if(autoRefreshInterval) return;
   autoRefreshInterval = setInterval(async ()=>{
-    if(!getSession() || document.hidden) return;
+    if(!getSession() || document.hidden || __busy.size) return;
     const overlay = document.getElementById('overlay');
     if(overlay && overlay.classList.contains('show')) return;
     // never wipe work in progress: the reconciliation page (uploaded file, chosen columns, results)
@@ -5069,6 +5095,14 @@ applyPosFees = lockify(applyPosFees, 'applyPosFees');
 convertToSpan = lockify(convertToSpan, 'convertToSpan');
 confirmPosSettled = lockify(confirmPosSettled, 'confirmPosSettled');
 bulkHandoverUntil = lockify(bulkHandoverUntil, 'bulkHandoverUntil');
+rejectDeposit = lockify(rejectDeposit, 'rejectDeposit');
+rejectTransfer = lockify(rejectTransfer, 'rejectTransfer');
+rejectMiscReceipt = lockify(rejectMiscReceipt, 'rejectMiscReceipt');
+rejectProfitHandover = lockify(rejectProfitHandover, 'rejectProfitHandover');
+rejectRefund = lockify(rejectRefund, 'rejectRefund');
+submitDeposit = lockify(submitDeposit, 'submitDeposit');
+addBooking = lockify(addBooking, 'addBooking');
+updateBooking = lockify(updateBooking, 'updateBooking');
 recordSupplierRefund = lockify(recordSupplierRefund, 'recordSupplierRefund');
 fixTicketPrice = lockify(fixTicketPrice, 'fixTicketPrice');
 </script>
