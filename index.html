@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-D3</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-D4</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -4951,8 +4951,8 @@ function renderReconcile(){
         </div>
         ${missing.length===0?`<div class="empty">${t('reconcileAllMatched')}</div>`:`
         <div class="note" style="color:var(--red);font-weight:600;">🚩 ${t('reconcileBankNotFoundNote')}</div>
-        <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colPaymentMethod')}</th><th>${t('colAmount')}</th><th>${t('colBranch')}</th></tr></thead>
-          <tbody>${missing.map(b=>`<tr><td style="font-weight:700;color:var(--red);">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${esc(b.ticket_no||'—')}</td>
+        <div style="overflow-x:auto;margin-top:8px;"><table><thead><tr><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colEmployee')}</th><th>${t('colCustomer')}</th><th>${t('colTicketNo')}</th><th>${t('colPaymentMethod')}</th><th>${t('colAmount')}</th><th>${t('colBranch')}</th></tr></thead>
+          <tbody>${missing.map(b=>`<tr><td style="font-weight:700;color:var(--red);">${b.booking_no}</td><td style="white-space:nowrap">${b.date||''}</td><td style="font-weight:600">${esc(userName(b.created_by))}</td><td>${esc(b.customer)}</td><td>${esc(b.ticket_no||'—')}</td>
             <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):b.payment_method==='split'?(lang==='ar'?'دفع متعدد':'Split'):t('payTransfer')}</td><td class="num">${money(b._bankAmt!=null?b._bankAmt:b.sell)}</td><td>${branchName(b.branch_id)}</td></tr>`).join('')}</tbody>
         </table></div>`}`;
       const matchedList = missing._matchedList||[];
