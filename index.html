@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-D4</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-D5</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1148,6 +1148,7 @@ function requirePositive(v){
 }
 const __busy = new Set();
 let __syncTimer = null;
+const __processing = new Set();
 function busyBadge(on){
   let el = document.getElementById('busyBadge');
   if(!el && on){ el = document.createElement('div'); el.id = 'busyBadge';
@@ -3391,7 +3392,9 @@ function renderReports(){
 function renderTransfers(){
   document.getElementById('pageSub').textContent = t('subTransfers');
   const scopedBookings = filteredBookings();
-  const pendingTransfers = scopedBookings.filter(b=>b.payment_method!=='cash' && b.payment_method!=='split' && transferParts(b).some(p=>p.status==='pending'));
+  const pendingAll = scopedBookings.filter(b=>b.payment_method!=='cash' && b.payment_method!=='split' && transferParts(b).some(p=>p.status==='pending'));
+  const pendingTransfers = pendingAll.filter(b=>!b.edit_requested);
+  const returnedTransfers = pendingAll.filter(b=>b.edit_requested);
   const verifiedTransfers = scopedBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && b.transfer_verified);
   const pendingSplitRows = [];
   scopedBookings.filter(b=>b.payment_method==='split' && Array.isArray(b.payment_splits)).forEach(b=>{
@@ -3404,7 +3407,10 @@ function renderTransfers(){
         <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
         <td class="num">${money(bookingPendingAmount(b))}${b.refunded?`<div style="font-size:11px;color:#A8722C;">${lang==='ar'?'بعد استرجاع جزئي':'after partial refund'}</div>`:''}</td>
         <td class="num">${b.payment_method==='span'?money(+(bookingPendingAmount(b)*0.008).toFixed(2)):b.payment_method==='installment'?money(+(bookingPendingAmount(b)*0.07).toFixed(2)):'—'}</td>
-        <td style="display:flex;gap:6px;"><button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectTransfer('${b.id}')">${t('rejectTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
+        <td style="display:flex;gap:6px;">${__processing.has(b.id)?`<span style="color:#A8722C;font-weight:600;">⏳ ${lang==='ar'?'جاري الحفظ…':'Saving…'}</span>`:`<button class="btn btn-primary btn-sm" onclick="uiVerifyTransfer('${b.id}')">${t('verifyTransferBtn')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectTransfer('${b.id}')">${t('rejectTransferBtn')}</button>`}</td></tr>`).join('')}</tbody></table></div>`}
+      ${returnedTransfers.length?`<div style="margin-top:14px;"><div style="font-weight:700;color:#A8722C;margin-bottom:6px;">↩ ${lang==='ar'?`مرجعة للموظف للتصحيح (${returnedTransfers.length}) — ترجع هنا بعد ما يعدّلها`:`Returned to employee (${returnedTransfers.length})`}</div>
+        <div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colAmount')}</th><th>${lang==='ar'?'سبب الإرجاع':'Reason'}</th></tr></thead>
+        <tbody>${returnedTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.date||''}</td><td>${esc(b.customer||'')}</td><td>${esc(userName(b.created_by))}</td><td class="num">${money(bookingPendingAmount(b))}</td><td>${esc(b.edit_note||'—')}</td></tr>`).join('')}</tbody></table></div></div>`:''}
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingSplitTitle')}</h3></div>
       <p class="note">${t('pendingSplitNote')}</p>
@@ -3414,7 +3420,7 @@ function renderTransfers(){
         <td>${s.method==='span'?'—':bankLabel(s.bankName)}</td>
         <td class="num" style="font-weight:600">${money((transferParts(b).find(p=>p.part===i)||{}).counted ?? s.amount)}${b.refunded?`<div style="font-size:11px;color:#A8722C;">${lang==='ar'?'بعد استرجاع جزئي':'after partial refund'}</div>`:''}</td>
         <td class="num">${money(b.sell)}</td>
-        <td><button class="btn btn-primary btn-sm" onclick="uiVerifySplitPayment('${b.id}', ${i})">${t('verifyTransferBtn')}</button></td></tr>`).join('')}</tbody></table></div>`}
+        <td>${__processing.has(b.id+':'+i)?`<span style="color:#A8722C;font-weight:600;">⏳</span>`:`<button class="btn btn-primary btn-sm" onclick="uiVerifySplitPayment('${b.id}', ${i})">${t('verifyTransferBtn')}</button>`}</td></tr>`).join('')}</tbody></table></div>`}
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('verifiedTransfersTitle')}</h3></div>
       ${verifiedTransfers.length===0?`<div class="empty">${t('noVerifiedTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th></tr></thead>
@@ -3958,16 +3964,22 @@ window.uiVerifyTransfer = async function(id){
   if(val===null) return;
   const amt = parseAmount(val);
   if(isNaN(amt) || amt<=0){ alert(t('invalidNumber')); return; }
-  try{ await verifyPaymentReceived(id, +amt.toFixed(2)); render(); }catch(e){ console.error(e); alert(errTextPlain()); render(); }
+  __processing.add(id); render();
+  try{ await verifyPaymentReceived(id, +amt.toFixed(2)); }catch(e){ console.error(e); alert(errTextPlain()); }
+  finally{ __processing.delete(id); render(); }
 };
 window.uiRejectTransfer = async function(id){
   if(!confirm(t('confirmRejectTransfer'))) return;
   const note = prompt(t('editNotePrompt'))||'';
-  try{ await rejectTransfer(id, note); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
+  __processing.add(id); render();
+  try{ await rejectTransfer(id, note); }catch(e){ console.error(e); alert(errTextPlain()); }
+  finally{ __processing.delete(id); render(); }
 };
 window.uiVerifySplitPayment = async function(id, splitIndex){
   if(!confirm(t('confirmVerifySplit'))) return;
-  try{ await verifySplitPayment(id, splitIndex); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
+  const k = id+':'+splitIndex; __processing.add(k); render();
+  try{ await verifySplitPayment(id, splitIndex); }catch(e){ console.error(e); alert(errTextPlain()); }
+  finally{ __processing.delete(k); render(); }
 };
 window.uiSettleSupplier = async function(id){ try{ await settleSupplierPayment(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); } };
 window.uiReviewCost = function(id){
