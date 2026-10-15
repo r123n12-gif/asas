@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-D7</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-D8</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -575,7 +575,21 @@ async function fetchAllRows(table, cols, asc){
   }
   return {data:out, error:null};
 }
+let __fetching = null, __lastSig = '';
+function dataSignature(){
+  let x = 0;
+  for(const b of bookings) x += (Number(b.sell)||0)*3 + (Number(b.cost)||0) + (b.transfer_verified?7:0) + (b.refunded?11:0) + (b.refund_status?13:0) + (b.cost_reviewed?17:0) + (b.edit_requested?19:0) + (b.supplier_settled?23:0) + (Number(b.refund_amount)||0);
+  for(const j of journal) x += Number(j.amount)||0;
+  const st = a=> a.map(r=>r.status||'').join('');
+  return [bookings.length, journal.length, deposits.length, profitHandovers.length, employeeCharges.length, miscReceipts.length, manualExpenses.length, users.length,
+    x.toFixed(2), st(deposits), st(profitHandovers), st(miscReceipts), employeeCharges.map(c=>(c.settled?1:0)+(c.payment_claimed?2:0)).join('')].join('|');
+}
 async function fetchAll(){
+  if(__fetching) return __fetching;
+  __fetching = fetchAllNow().finally(()=>{ __fetching = null; });
+  return __fetching;
+}
+async function fetchAllNow(){
   const [b, u, bk, jr, ex, dp, ph, ec, mr] = await Promise.all([
     fetchAllRows('branches','*',true),
     fetchAllRows('app_users','id,name,username,role,branch_id,active,supplier_aliases',true).then(r=> r.error ? fetchAllRows('app_users','id,name,username,role,branch_id,active',true) : r),
@@ -1196,7 +1210,7 @@ function lockify(fn, name){
         busyBadge(false);
         // pull the latest data once everything is saved, so the screen never shows a half-updated state
         clearTimeout(__syncTimer);
-        __syncTimer = setTimeout(async ()=>{ if(__busy.size) return; try{ await fetchAll(); const ov = document.getElementById('overlay'); if(!(ov && ov.classList.contains('show'))) render(); }catch(e){ console.error('sync failed', e); } }, 800);
+        __syncTimer = setTimeout(async ()=>{ if(__busy.size) return; try{ const before = dataSignature(); await fetchAll(); const sig = dataSignature(); __lastSig = sig; const ov = document.getElementById('overlay'); if(sig!==before && !(ov && ov.classList.contains('show'))) render(); }catch(e){ console.error('sync failed', e); } }, 1500);
       }
     }
   };
@@ -1594,8 +1608,12 @@ function startAutoRefresh(){
     const ae = document.activeElement;
     const typing = ae && ['INPUT','SELECT','TEXTAREA'].includes(ae.tagName);
     if(route==='reconcile') return;
-    try{ await fetchAll(); if(!typing) render(); }catch(e){ console.error('auto-refresh failed', e); }
-  }, 15000);
+    try{
+      await fetchAll();
+      const sig = dataSignature();
+      if(sig !== __lastSig && !typing){ __lastSig = sig; render(); }
+    }catch(e){ console.error('auto-refresh failed', e); }
+  }, 45000);
 }
 function stopAutoRefresh(){
   if(autoRefreshInterval){ clearInterval(autoRefreshInterval); autoRefreshInterval=null; }
@@ -1827,7 +1845,16 @@ function renderDashboard(){
   document.getElementById('dashDateFromInput').onchange = (e)=>{ dashDateFrom = e.target.value||null; renderDashboard(); };
   document.getElementById('dashDateToInput').onchange = (e)=>{ dashDateTo = e.target.value||null; renderDashboard(); };
 }
+let bookingsShowAll = false;
+var reportsShowAll = false;
+window.uiShowAllBookings = function(){ bookingsShowAll = true; render(); };
 function bookingsTable(list, mode){
+  const fullCount = list.length;
+  if(!bookingsShowAll && fullCount > 300) list = list.slice(0, 300);
+  const more = fullCount > list.length ? `<div style="text-align:center;margin:10px 0;"><button class="btn btn-ghost" onclick="uiShowAllBookings()">${lang==='ar'?`عرض الكل (${fullCount}) — المعروض الآن آخر ${list.length}`:`Show all (${fullCount})`}</button></div>` : '';
+  return bookingsTableInner(list, mode) + more;
+}
+function bookingsTableInner(list, mode){
   if(list.length===0) return `<div class="empty">${t('emptyBookings')}</div>`;
   const showActions = mode!=='none';
   return `<div style="overflow-x:auto;"><table>
@@ -3350,7 +3377,7 @@ function renderReports(){
         </div>
       </div>
       <p class="note">${t('ticketDetailsNote')}</p>
-      ${scoped.length===0?`<div class="empty">${t('emptyData')}</div>`:bookingsTableHTML(scoped)}
+      ${scoped.length===0?`<div class="empty">${t('emptyData')}</div>`:bookingsTableHTML(reportsShowAll?scoped:scoped.slice(0,300))+(scoped.length>300&&!reportsShowAll?`<div style="text-align:center;margin:10px 0;"><button class="btn btn-ghost" onclick="reportsShowAll=true;render()">${lang==='ar'?`عرض الكل (${scoped.length}) — المعروض آخر 300 (الطباعة والتصدير فيها الكل)`:`Show all (${scoped.length})`}</button></div>`:'')}
     </div>
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('refundsReportTitle')}</h3>
