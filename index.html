@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-E4</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-E5</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -717,10 +717,13 @@ function outstandingEmployeeCharges(employeeId){
 function bookingRefundAmount(b){
   if(!b || !b.refunded) return 0;
   const sell = Number(b.sell)||0;
+  if(isRefundOnly(b)) return +(Number(b.refund_amount)||0).toFixed(2);
   return +Math.min(sell, b.refund_amount!=null ? Number(b.refund_amount) : sell).toFixed(2);
 }
-function bookingEffectiveSell(b){ return +Math.max(0, (Number(b.sell)||0) - bookingRefundAmount(b)).toFixed(2); }
-function bookingIsFullRefund(b){ return !!b.refunded && bookingRefundAmount(b) >= (Number(b.sell)||0) - 0.01; }
+// a ticket registered only to record its refund (sold outside the system): no sale, no cost — profit = airline refund − customer refund
+function isRefundOnly(b){ return !!b && !(Number(b.sell)>0) && !(Number(b.cost)>0) && !!b.refund_status; }
+function bookingEffectiveSell(b){ return isRefundOnly(b) ? +(-bookingRefundAmount(b)).toFixed(2) : +Math.max(0, (Number(b.sell)||0) - bookingRefundAmount(b)).toFixed(2); }
+function bookingIsFullRefund(b){ return !!b.refunded && !isRefundOnly(b) && bookingRefundAmount(b) >= (Number(b.sell)||0) - 0.01; }
 function bookingCashNet(b){
   const sell = Number(b.sell)||0;
   let cashIn = 0;
@@ -1054,9 +1057,9 @@ async function editApprovedRefund(bookingId, refundAmount, method, supplierRefun
   const b = bookings.find(x=>x.id===bookingId); if(!b) throw new Error('booking not found');
   if(!b.refunded) throw new Error(lang==='ar'?'التذكرة غير مسترجعة.':'Not refunded.');
   const amt = +Number(refundAmount).toFixed(2);
-  if(!(amt>0) || amt>(Number(b.sell)||0)+0.01) throw new Error(t('invalidRefundAmount'));
+  if(!(amt>0) || (!isRefundOnly(b) && amt>(Number(b.sell)||0)+0.01)) throw new Error(t('invalidRefundAmount'));
   const sup = (supplierRefund===null || supplierRefund===undefined || supplierRefund==='') ? null : +Number(supplierRefund).toFixed(2);
-  if(sup!=null && (sup<0 || sup>(Number(b.cost)||0)+0.01)) throw new Error(lang==='ar'?'مسترد المورد لازم يكون بين 0 والتكلفة.':'Supplier refund must be between 0 and cost.');
+  if(sup!=null && (sup<0 || (!isRefundOnly(b) && sup>(Number(b.cost)||0)+0.01))) throw new Error(lang==='ar'?'مسترد المورد لازم يكون بين 0 والتكلفة.':'Supplier refund must be between 0 and cost.');
   const old = journal.filter(j=>j.booking_id===bookingId && (j.desc_key==='jRefund' || j.desc_key==='jSupplierRefund'));
   const keepDate = (old.find(j=>j.desc_key==='jRefund')||old[0]||{}).date || todayStr();
   await mustUpdate('bookings', bookingId, {refund_amount:amt, refund_method:method||'cash', supplier_refund_amount:sup});
@@ -1109,7 +1112,7 @@ async function recordSupplierRefund(bookingId, amount){
   if(!b.refunded) throw new Error(lang==='ar'?'التذكرة غير مسترجعة.':'Ticket is not refunded.');
   if(bookingSupplierRefundKnown(b)) throw new Error(lang==='ar'?'مسترد المورد مسجل مسبقًا لهذه التذكرة.':'Supplier refund already recorded.');
   const amt = +Number(amount).toFixed(2);
-  if(!(amt>=0) || amt > (Number(b.cost)||0)+0.01) throw new Error(lang==='ar'?`مبلغ غير صحيح — لازم يكون بين 0 والتكلفة ${money(b.cost)}.`:'Invalid amount.');
+  if(!(amt>=0) || (!isRefundOnly(b) && amt > (Number(b.cost)||0)+0.01)) throw new Error(lang==='ar'?`مبلغ غير صحيح — لازم يكون بين 0 والتكلفة ${money(b.cost)}.`:'Invalid amount.');
   const {error} = await sb.from('bookings').update({supplier_refund_amount:amt}).eq('id', bookingId);
   if(error) throw error;
   b.supplier_refund_amount = amt;
@@ -1148,7 +1151,7 @@ function supplierDepositCredit(name){
 function supplierBalances(list){
   const map = {};
   list.forEach(b=>{
-    if(!b.supplier || !(Number(b.cost)>0)) return;
+    if(!b.supplier || (!(Number(b.cost)>0) && !(bookingSupplierRefund(b)>0))) return;
     if(!map[b.supplier]) map[b.supplier] = {owed:0, settled:0};
     const cost = Number(b.cost)||0, supRef = bookingSupplierRefund(b);
     if(b.supplier_settled){
@@ -2936,7 +2939,7 @@ function integrityIssues(){
       if(b.transfer_verified && receipts===0) add(ar?'مؤكَّد بدون قيد بنكي':'Confirmed without bank entry', '—', '—');
       if(!b.transfer_verified && receipts>0) add(ar?'عليه قيد بنكي لكن حالته غير مؤكد':'Has bank entry but not marked confirmed', '—', '—');
     }
-    if(!rows.some(j=>j.desc_key==='jSale')) add(ar?'لا يوجد قيد مبيعات':'No sale entry', '—', '—');
+    if(!rows.some(j=>j.desc_key==='jSale') && (Number(b.sell)||0)>0) add(ar?'لا يوجد قيد مبيعات':'No sale entry', '—', '—');
     if(b.cost_reviewed && !b.refunded && Math.abs((Number(b.profit_amount)||0) - ((Number(b.sell)||0)-(Number(b.cost)||0)))>0.01)
       issues.push({b, fix:{kind:'profitField', id:b.id}, issue: ar?'الربح المحفوظ لا يساوي البيع − التكلفة':'Stored profit ≠ sell − cost', expected:+((Number(b.sell)||0)-(Number(b.cost)||0)).toFixed(2), actual:+(Number(b.profit_amount)||0).toFixed(2)});
     const cust = bal(rows,'accCustomers','debit'), pend = bookingPendingAmount(b);
@@ -3009,7 +3012,7 @@ async function repairBooking(bookingId){
   rows.filter(j=>j.desc_key==='jSale').forEach(j=>delIds.push(j.id));
   if(b.payment_method==='split' && Array.isArray(b.payment_splits))
     b.payment_splits.forEach(x=>ins.push({date:b.date, branch_id:b.branch_id, booking_id:b.id, desc_key:'jSale', desc_args:saleArgs, debit_key: x.method==='cash'?'accCashOnHand':'accCustomers', credit_key:'accSalesRev', amount:+Number(x.amount||0).toFixed(2)}));
-  else ins.push({date:b.date, branch_id:b.branch_id, booking_id:b.id, desc_key:'jSale', desc_args:saleArgs, debit_key: b.payment_method==='cash'?'accCashOnHand':'accCustomers', credit_key:'accSalesRev', amount:+(Number(b.sell)||0).toFixed(2)});
+  else if((Number(b.sell)||0)>0) ins.push({date:b.date, branch_id:b.branch_id, booking_id:b.id, desc_key:'jSale', desc_args:saleArgs, debit_key: b.payment_method==='cash'?'accCashOnHand':'accCustomers', credit_key:'accSalesRev', amount:+(Number(b.sell)||0).toFixed(2)});
   // 2) cost row
   rows.filter(j=>j.desc_key==='jCost').forEach(j=>delIds.push(j.id));
   if(b.cost_reviewed && Number(b.cost)>0) ins.push({date:b.date, branch_id:b.branch_id, booking_id:b.id, desc_key:'jCost', desc_args:[b.booking_no, b.airline||'-'], debit_key:'accCogs', credit_key:'accSuppliers', amount:+Number(b.cost).toFixed(2)});
@@ -3559,136 +3562,90 @@ function depositsTableHTML(list, showApprove){
       ${showApprove?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveDeposit('${d.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectDeposit('${d.id}')">${t('reject')}</button></td>`:''}
     </tr>${d.note?`<tr><td colspan="8" style="background:#EEF3F8;font-size:11.5px;color:var(--navy);">🗒️ ${esc(d.note)}</td></tr>`:''}`).join('')}</tbody></table></div>`;
 }
-function openQuickRefundModal(){
-  const u = currentUser();
-  const scope = isAdmin() ? bookings : bookings.filter(b=>b.created_by===u.id);
+function openQuickRefundModal(){ openUnifiedRefundModal(null); }
+window.uiPickRefundTicket = function(id){ openUnifiedRefundModal(id); };
+function openNewTicketRefundModal(){ openUnifiedRefundModal(null); }
+function normTkt(v){ return String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,''); }
+function openRefundRequestModal(bookingId){ openUnifiedRefundModal(bookingId); }
+function openUnifiedRefundModal(prefillId){
+  const u = currentUser(); const ar = lang==='ar';
+  const scope = (isAdmin()||isAccountant()) ? bookings : bookings.filter(b=>b.created_by===u.id);
+  let linked = prefillId ? bookings.find(x=>x.id===prefillId) : null;
+  const L = linked || {};
   showModal(`
-    <div class="modal-head"><h3>${t('quickRefundBtn')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
-    <p class="note">${t('quickRefundNote')}</p>
-    <div class="field"><input type="text" id="quickRefundSearchInput" placeholder="${t('bookingsSearchPlaceholder')}" autofocus></div>
-    <div id="quickRefundResults" style="max-height:320px;overflow-y:auto;margin-top:10px;"></div>
-    <div style="margin-top:10px;text-align:center;"><button type="button" class="btn btn-ghost btn-sm" id="quickRefundNewTicketBtn">${t('newTicketRefundBtn')}</button></div>`);
-  const renderResults = (term)=>{
-    const box = document.getElementById('quickRefundResults');
-    if(!term || term.trim().length<1){ box.innerHTML = `<p class="note">${t('quickRefundTypeHint')}</p>`; return; }
-    const low = term.trim().toLowerCase();
-    const matches = scope.filter(b=>!b.refunded && ((b.ticket_no||'').toLowerCase().includes(low) || (b.customer||'').toLowerCase().includes(low) || (b.booking_no||'').toString().includes(low))).slice(0,20);
-    if(matches.length===0){ box.innerHTML = `<div class="empty">${t('emptyData')}</div>`; return; }
-    box.innerHTML = matches.map(b=>`<div style="padding:8px;border-bottom:1px solid var(--line);cursor:pointer;" onclick="uiPickRefundTicket('${b.id}')">
-      <div style="font-weight:700;">${t('colNo')}: ${b.booking_no} — ${esc(b.customer)}</div>
-      <div class="note">${esc(b.ticket_no)||'—'} · ${money(b.sell)} · ${b.date}</div>
-    </div>`).join('');
-  };
-  renderResults('');
-  document.getElementById('quickRefundSearchInput').oninput = (e)=>renderResults(e.target.value);
-  document.getElementById('quickRefundNewTicketBtn').onclick = ()=>openNewTicketRefundModal();
-}
-function openNewTicketRefundModal(){
-  const u = currentUser();
-  showModal(`
-    <div class="modal-head"><h3>${t('newTicketRefundTitle')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
-    <p class="note">${t('newTicketRefundNote')}</p>
-    <form id="newTicketRefundForm">
-      <div class="grid-2">
-        <div class="field"><label>${t('fieldCustomer')}</label><input type="text" name="customer" required></div>
-        <div class="field"><label>${t('fieldTicketNo')}</label><input type="text" name="ticketNo"></div>
-      </div>
-      <div class="grid-2">
-        <div class="field"><label>${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell" required min="0.01"></div>
-        <div class="field"><label>${t('fieldSystemFare')}</label><input type="number" step="0.01" name="cost" required min="0"></div>
-      </div>
-      <div class="field"><label>${t('fieldAirline')}</label><input type="text" name="airline"></div>
-      <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="originalMethod">
-        <option value="cash">${t('payCash')}</option><option value="transfer">${t('payTransfer')}</option>
-      </select></div>
-      <hr style="border-color:var(--line);margin:14px 0;">
-      <p class="note" style="font-weight:600;">${t('refundDetailsSectionTitle')}</p>
-      <div class="field"><label>${t('fieldRefundAmount')}</label><input type="number" step="0.01" name="refundAmount" required min="0.01"></div>
-      <p class="note">${t('refundAmountHint')}</p>
-      <div class="field"><label>${t('fieldRefundMethod')}</label><select name="refundMethod">
-        <option value="cash">${t('payCash')}</option><option value="transfer">${t('payTransfer')}</option>
-      </select></div>
-      <div class="field"><label>${t('fieldRefundReceipt')}</label><input type="file" name="receipt" accept="image/*,.pdf" required></div>
-      <div id="newTicketRefundErrorBox"></div>
-      <div style="margin-top:16px;display:flex;gap:10px;">
-        <button type="submit" class="btn btn-primary" id="newTicketRefundSaveBtn">${t('submitRefundBtn')}</button>
-        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
-      </div>
-    </form>`);
-  document.getElementById('newTicketRefundForm').onsubmit = async (e)=>{
-    e.preventDefault();
-    const btn = document.getElementById('newTicketRefundSaveBtn');
-    const f = new FormData(e.target);
-    const file = f.get('receipt');
-    if(!file || !file.size){ document.getElementById('newTicketRefundErrorBox').innerHTML = `<div class="login-error">${t('receiptRequired')}</div>`; return; }
-    const sell = Number(f.get('sell'))||0;
-    const refundAmt = Number(f.get('refundAmount'));
-    if(!refundAmt || refundAmt<=0 || refundAmt>sell+0.01){
-      document.getElementById('newTicketRefundErrorBox').innerHTML = `<div class="login-error">${t('invalidRefundAmount')}</div>`; return;
-    }
-    btn.disabled=true; btn.textContent=t('uploading');
-    try{
-      await addBooking({ customer:f.get('customer'), ticketNo:f.get('ticketNo'), airline:f.get('airline'),
-        branchId:u.branch_id, source:'مباشر', date:todayStr(), sell, cost:Number(f.get('cost'))||0, paymentMethod:f.get('originalMethod') });
-      const newBooking = bookings[0];
-      await requestRefund(newBooking.id, file, null, f.get('refundMethod'), refundAmt);
-      closeModal(); render();
-    }catch(err){
-      console.error(err);
-      document.getElementById('newTicketRefundErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`;
-      btn.disabled=false; btn.textContent=t('submitRefundBtn');
-    }
-  };
-}
-window.uiPickRefundTicket = function(id){ openRefundRequestModal(id); };
-function openRefundRequestModal(bookingId){
-  const b = bookings.find(x=>x.id===bookingId);
-  if(!b) return;
-  showModal(`
-    <div class="modal-head"><h3>${t('modalRequestRefund')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <div class="modal-head"><h3>${ar?'طلب استرجاع':'Refund request'}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="refundRequestForm">
-      <div class="note">${t('refundRequestNote')} (${t('colNo')}: ${b.booking_no} — ${esc(b.customer)})</div>
-      <p class="note">${t('originalAmountLabel')}: <strong>${money(b.sell)}</strong></p>
-      ${b.refund_status==='rejected' && b.refund_note?`<div class="note" style="background:#FBEFE0;color:#A8722C;padding:8px;border-radius:8px;">📝 ${lang==='ar'?'ملاحظة المحاسب':'Accountant note'}: ${esc(b.refund_note)}</div>`:''}
-      <div class="field"><label>${t('fieldRefundAmount')}</label><input type="number" step="0.01" name="refundAmount" value="${b.refund_amount!=null?b.refund_amount:b.sell}" max="${b.sell}" min="0.01" required></div>
-      <p class="note">${lang==='ar'?'اكتب المبلغ اللي استلمه العميل بيده فعلًا. لو كاش ← ينخصم من كاشك بعد اعتماد المحاسب. لو تحويل ← من البنك بعد الاعتماد.':t('refundAmountHint')}</p>
-      <div class="field" style="display:none"><label>${lang==='ar'?'المسترد من المورد (اختياري — لو معروف الحين)':'Supplier refund (optional, if known now)'}</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'اتركه فاضي لو ما تعرفه':'Leave empty if unknown'}"></div>
-      <div class="field"><label>${t('fieldRefundMethod')}</label><select name="refundMethod" id="refundReqMethodSel">
-        <option value="cash">${t('payCash')}</option>
-        <option value="transfer">${t('payTransfer')}</option>
-      </select></div>
-      <p class="note" id="refundMethodHint">${t('refundCashHint')}</p>
-      <div class="field"><label>${t('fieldRefundReceipt')}${b.refund_receipt_url?` (${lang==='ar'?'مرفق سابقًا — ارفع جديد بس لو تبي تغيّره':'already attached — optional'})`:''}</label><input type="file" name="receipt" accept="image/*,.pdf" ${b.refund_receipt_url?'':'required'}></div>
-      <div class="field"><label>${t('fieldRefundNote')}</label><input name="note" placeholder="${t('refundNotePlaceholder')}"></div>
-      <div id="refundErrorBox"></div>
-      <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
-        <button type="submit" class="btn btn-primary" id="refundSaveBtn">${t('submitRefundBtn')}</button>
-        <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
+      ${L.refund_status==='rejected' && L.refund_note?`<div class="note" style="background:#FBEFE0;color:#A8722C;padding:8px;border-radius:8px;">📝 ${ar?'ملاحظة المحاسب':'Accountant note'}: ${esc(L.refund_note)}</div>`:''}
+      <div class="grid-2">
+        <div class="field"><label>${ar?'رقم التذكرة':'Ticket no.'}</label><input name="ticketNo" id="urTicket" value="${esc(L.ticket_no||'')}" ${linked?'readonly':''} required autocomplete="off"></div>
+        <div class="field"><label>${ar?'اسم العميل':'Customer'}</label><input name="customer" id="urCustomer" value="${esc(L.customer||'')}" ${linked?'readonly':''} required></div>
       </div>
+      <div id="urFound" class="note"></div>
+      <div class="field" id="urSupplierBox" style="display:none"><label>${ar?'المورد (اللي انقطعت منه التذكرة)':'Supplier'}</label><select name="supplier" id="urSupplier">${SOURCE_PRESETS.map(x=>`<option>${x}</option>`).join('')}</select></div>
+      <div class="grid-2">
+        <div class="field"><label>${ar?'المبلغ المسترد من الطيران':'Refund from the airline'}</label><input type="number" step="0.01" min="0" name="supplierRefund" id="urSup" value="${L.supplier_refund_amount!=null?L.supplier_refund_amount:''}" placeholder="${ar?'لو ما تعرفه اتركه فاضي':'blank if unknown'}"></div>
+        <div class="field"><label>${ar?'المبلغ الفعلي المسترد للعميل':'Actually refunded to the customer'}</label><input type="number" step="0.01" min="0.01" name="refundAmount" id="urCust" value="${L.refund_amount!=null?L.refund_amount:''}" required></div>
+      </div>
+      <div class="note" id="urProfit" style="font-weight:600;"></div>
+      <div class="field"><label>${ar?'طريقة الاسترجاع للعميل':'Refund method'}</label><select name="refundMethod" id="urMethod">
+        <option value="cash" ${L.refund_method!=='transfer'?'selected':''}>${ar?'كاش — ينخصم من كاشك بعد اعتماد المحاسب':'Cash — from your cash after approval'}</option>
+        <option value="transfer" ${L.refund_method==='transfer'?'selected':''}>${ar?'تحويل — من البنك بعد اعتماد المحاسب':'Transfer — from the bank after approval'}</option></select></div>
+      <div class="field"><label>${ar?'نموذج / إيصال الرفند':'Refund form / receipt'}${L.refund_receipt_url?` (${ar?'مرفق سابقًا — ارفع جديد بس لو تبي تغيّره':'already attached'})`:''}</label><input type="file" name="receipt" accept="image/*,.pdf" ${L.refund_receipt_url?'':'required'}></div>
+      <div class="field"><label>${t('fieldRefundNote')}</label><input name="note" value="${esc(L.refund_status==='rejected'?'':(L.refund_note||''))}"></div>
+      <p class="note">${ar?'الطلب يبقى معلّق لين يعتمده المحاسب — ما ينخصم شي قبل الاعتماد.':'Stays pending until the accountant approves it.'}</p>
+      <div id="refundErrorBox"></div>
+      <div style="margin-top:12px;display:flex;gap:10px;"><button type="submit" class="btn btn-primary" id="refundSaveBtn">${ar?'إرسال للمحاسب للاعتماد':'Send for approval'}</button><button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>
     </form>`);
-  document.getElementById('refundReqMethodSel').value = b.refund_method==='transfer' ? 'transfer' : 'cash';
-  document.getElementById('refundReqMethodSel').onchange = (e)=>{
-    document.getElementById('refundMethodHint').textContent = e.target.value==='cash' ? t('refundCashHint') : t('refundTransferHint');
+  const findTicket = ()=>{
+    if(prefillId) return linked;
+    const k = normTkt(document.getElementById('urTicket').value);
+    if(k.length<5) return null;
+    const hits = scope.filter(b=>!b.refunded && b.refund_status!=='pending' && (normTkt(b.ticket_no)===k || (k.length>=6 && normTkt(b.ticket_no).includes(k))));
+    return hits.length===1 ? hits[0] : null;
   };
+  const draw = ()=>{
+    linked = findTicket();
+    const box = document.getElementById('urFound');
+    document.getElementById('urSupplierBox').style.display = linked ? 'none' : '';
+    if(linked){
+      if(!prefillId) document.getElementById('urCustomer').value = linked.customer||'';
+      box.innerHTML = `✔ ${ar?'التذكرة موجودة بالنظام':'Ticket found'}: #${linked.booking_no} — ${ar?'البيع':'sale'} ${money(linked.sell)} — ${ar?'التكلفة':'cost'} ${money(linked.cost)} — ${esc(userName(linked.created_by))}`;
+    }else box.innerHTML = normTkt(document.getElementById('urTicket').value).length>=5 ? `ℹ️ ${ar?'التذكرة مو مسجلة بالنظام — بتنسجل كاسترجاع فقط (بدون بيع)، والربح = المسترد من الطيران − المسترد للعميل':'Not in the system — recorded as refund only'}` : '';
+    const sup = document.getElementById('urSup').value, cust = parseAmount(document.getElementById('urCust').value)||0;
+    const pb = document.getElementById('urProfit');
+    if(sup===''){ pb.innerHTML = `⏳ ${ar?'المسترد من الطيران غير معروف — الربح ينحسب لما يتسجل':'Airline refund unknown'}`; return; }
+    const refundProfit = +(parseAmount(sup) - cust).toFixed(2);
+    const total = linked ? +((Number(linked.sell)||0)-(Number(linked.cost)||0) + refundProfit).toFixed(2) : refundProfit;
+    pb.innerHTML = `${ar?'ربح الاسترجاع':'Refund profit'} (${money(parseAmount(sup))} − ${money(cust)}): <b style="color:${refundProfit<0?'var(--red)':'#1f7a4d'}">${money(refundProfit)}</b>`
+      + (linked ? ` — ${ar?'ربح التذكرة النهائي':'final ticket profit'}: <b style="color:${total<0?'var(--red)':'#1f7a4d'}">${money(total)}</b>` : '');
+  };
+  ['urTicket','urSup','urCust'].forEach(id=>document.getElementById(id).oninput = draw); draw();
   document.getElementById('refundRequestForm').onsubmit = async (e)=>{
     e.preventDefault();
-    const btn = document.getElementById('refundSaveBtn');
+    const btn = document.getElementById('refundSaveBtn'); const err = m=>{ document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${m}</div>`; };
     const f = new FormData(e.target);
     const file = f.get('receipt');
-    if((!file || !file.size) && !b.refund_receipt_url){ document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${t('receiptRequired')}</div>`; return; }
-    const refundAmt = parseAmount(f.get('refundAmount'));
-    if(!refundAmt || refundAmt<=0 || refundAmt>Number(b.sell)+0.01){
-      document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${t('invalidRefundAmount')}</div>`; return;
-    }
-    btn.disabled=true; btn.textContent=t('uploading');
+    const cust = +(parseAmount(f.get('refundAmount'))||0).toFixed(2);
+    const supRaw = f.get('supplierRefund'); const sup = (supRaw===''||supRaw===null||supRaw===undefined) ? null : +(parseAmount(supRaw)||0).toFixed(2);
+    linked = findTicket();
+    if(!(cust>0)) return err(t('invalidRefundAmount'));
+    if(linked && cust>(Number(linked.sell)||0)+0.01) return err(ar?`المسترد للعميل أكبر من سعر البيع (${money(linked.sell)}).`:'More than the sale price.');
+    if(linked && sup!=null && sup>(Number(linked.cost)||0)+0.01) return err(ar?`المسترد من الطيران أكبر من التكلفة (${money(linked.cost)}).`:'More than the cost.');
+    if((!file || !file.size) && !(linked && linked.refund_receipt_url)) return err(t('receiptRequired'));
+    if(!String(f.get('customer')||'').trim() || !String(f.get('ticketNo')||'').trim()) return err(ar?'اكتب اسم العميل ورقم التذكرة.':'Customer and ticket no. are required.');
+    btn.disabled = true; btn.textContent = t('uploading');
     try{
-      await requestRefund(bookingId, file, f.get('note'), f.get('refundMethod'), refundAmt, f.get('supplierRefund'));
+      let id = linked && linked.id;
+      if(!id){
+        const row = { date:todayStr(), customer:String(f.get('customer')).trim(), branch_id:u.branch_id||(branches[0]&&branches[0].id)||null, airline:'-', ticket_no:String(f.get('ticketNo')).trim(),
+          supplier:f.get('supplier')||null, sell:0, cost:0, commission_rate:0, commission:0, profit_amount:0, margin:0, net_profit:0, payment_status:'paid', cost_reviewed:true,
+          payment_method:'cash', transfer_verified:false, commission_status:'pending', created_by:u.id, note:(ar?'استرجاع لتذكرة غير مسجلة بالنظام':'Refund for a ticket outside the system') };
+        const {data:ins, error} = await sb.from('bookings').insert(row).select().single(); if(error) throw error;
+        bookings.unshift(ins); id = ins.id;
+      }
+      await requestRefund(id, file, f.get('note'), f.get('refundMethod'), cust, sup);
       closeModal(); render();
-    }catch(err){
-      console.error(err);
-      document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${errText()}</div>`;
-      btn.disabled=false; btn.textContent=t('submitRefundBtn');
-    }
+    }catch(ex){ console.error(ex); err(errText()); btn.disabled=false; btn.textContent=ar?'إرسال للمحاسب للاعتماد':'Send for approval'; }
   };
 }
 window.uiRequestRefund = function(id){ openRefundRequestModal(id); };
@@ -3700,7 +3657,7 @@ window.uiEditApprovedRefund = function(id){
       <div class="field"><label>${ar?'المبلغ المسترد للعميل':'Refunded to customer'}</label><input type="number" step="0.01" id="erAmt" value="${b.refund_amount!=null?b.refund_amount:b.sell}"></div>
       <div class="field"><label>${t('fieldRefundMethod')}</label><select id="erMethod"><option value="cash" ${b.refund_method!=='transfer'?'selected':''}>${t('payCash')} — ${ar?'ينخصم من كاش الموظف':'from employee cash'}</option><option value="transfer" ${b.refund_method==='transfer'?'selected':''}>${t('payTransfer')} — ${ar?'من البنك':'from bank'}</option></select></div>
     </div>
-    <div class="field" style="display:none"><label>${ar?'المسترد من المورد (اتركه فاضي لو ما وصل)':'Supplier refund (blank if unknown)'}</label><input type="number" step="0.01" id="erSup" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}"></div>
+    <div class="field"><label>${ar?'المبلغ المسترد من الطيران (اتركه فاضي لو ما وصل)':'Supplier refund (blank if unknown)'}</label><input type="number" step="0.01" id="erSup" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}"></div>
     <div id="erErr"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
       <button class="btn btn-primary" id="erSave">${t('save')}</button>
@@ -3736,9 +3693,9 @@ window.uiApproveRefund = function(id){
         <div class="field"><label>${t('fieldRefundAmount')} (${lang==='ar'?'للعميل':'to customer'})</label><input type="number" step="0.01" min="0.01" max="${b.sell}" id="apCustAmt" value="${b.refund_amount!=null?b.refund_amount:b.sell}"></div>
         <div class="field"><label>${t('fieldRefundMethod')}</label><select id="apMethod"><option value="cash" ${isTransfer?'':'selected'}>${t('payCash')}</option><option value="transfer" ${isTransfer?'selected':''}>${t('payTransfer')}</option></select></div>
       </div>
-      <div class="field" style="display:none"><label>${lang==='ar'?'المسترد من المورد':'Supplier refund'} (${lang==='ar'?'التكلفة':'cost'}: ${money(b.cost)})</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" id="apSupRef" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'فاضي = ما نعرفه بعد (يُسجَّل لاحقًا)':'Empty = not known yet'}"></div>
-      <div class="note" id="apRefProfit" style="display:none"></div>
-      <p class="note">${lang==='ar'?'سجّل هنا بس اللي استلمه العميل فعليًا. مسترد المورد يتسجل لحاله لاحقًا من قائمة "بانتظار تسجيل مسترد المورد".':'Only what the customer actually received. The supplier refund is recorded later, separately.'}</p>
+      <div class="field"><label>${lang==='ar'?'المبلغ المسترد من الطيران':'Airline refund'} (${lang==='ar'?'التكلفة':'cost'}: ${money(b.cost)})</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" id="apSupRef" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'فاضي = ما نعرفه بعد (يُسجَّل لاحقًا)':'Empty = not known yet'}"></div>
+      <div class="note" id="apRefProfit" style="font-weight:600"></div>
+
       <div class="field" id="apProofBox" style="${isTransfer?'':'display:none'}"><label>${t('fieldRefundProof')}</label><input type="file" name="refundProof" accept="image/*,.pdf"></div>
       <div id="approveRefundErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
@@ -3750,7 +3707,7 @@ window.uiApproveRefund = function(id){
     const v = document.getElementById('apSupRef').value; const box = document.getElementById('apRefProfit');
     const cust = parseAmount(document.getElementById('apCustAmt').value)||0;
     if(v===''){ box.innerHTML = lang==='ar'?'⏳ مسترد المورد غير معروف — التذكرة بتظهر في "بانتظار تسجيل مسترد المورد" لين تسجله.':'Supplier refund unknown — record it later.'; return; }
-    const p = +(((Number(b.sell)||0)-cust) - ((Number(b.cost)||0)-Number(v))).toFixed(2);
+    const p = +(((Number(b.sell)||0)-cust) - ((Number(b.cost)||0)-Number(v))).toFixed(2);  // = original profit + (airline refund − customer refund)
     box.innerHTML = `${lang==='ar'?'ربح التذكرة بعد الاسترجاع':'Ticket profit after refund'}: <b style="color:${p<0?'var(--red)':'#1f7a4d'}">${money(p)}</b>`;
   };
   document.getElementById('apSupRef').oninput = _apCalc; document.getElementById('apCustAmt').oninput = _apCalc; _apCalc();
@@ -3762,7 +3719,7 @@ window.uiApproveRefund = function(id){
     const file = f.get('refundProof');
     const method = document.getElementById('apMethod').value;
     const custAmt = +(parseAmount(document.getElementById('apCustAmt').value)||0).toFixed(2);
-    if(!(custAmt>0) || custAmt>(Number(b.sell)||0)+0.01){ document.getElementById('approveRefundErrorBox').innerHTML = `<div class="login-error">${t('invalidRefundAmount')}</div>`; return; }
+    if(!(custAmt>0) || (!isRefundOnly(b) && custAmt>(Number(b.sell)||0)+0.01)){ document.getElementById('approveRefundErrorBox').innerHTML = `<div class="login-error">${t('invalidRefundAmount')}</div>`; return; }
     if(method==='transfer' && (!file || !file.size)){
       document.getElementById('approveRefundErrorBox').innerHTML = `<div class="login-error">${t('refundProofRequired')}</div>`;
       return;
@@ -3775,7 +3732,7 @@ window.uiApproveRefund = function(id){
       }
       const sv = document.getElementById('apSupRef').value;
       const supVal = sv==='' ? null : +Number(sv).toFixed(2);
-      if(supVal!=null && (supVal<0 || supVal>(Number(b.cost)||0)+0.01)) throw new Error(lang==='ar'?'مسترد المورد لازم يكون بين 0 والتكلفة.':'Supplier refund must be between 0 and the cost.');
+      if(supVal!=null && (supVal<0 || (!isRefundOnly(b) && supVal>(Number(b.cost)||0)+0.01))) throw new Error(lang==='ar'?'مسترد المورد لازم يكون بين 0 والتكلفة.':'Supplier refund must be between 0 and the cost.');
       if(supVal!==(b.supplier_refund_amount??null)){ const {error:eS} = await sb.from('bookings').update({supplier_refund_amount:supVal}).eq('id', id); if(eS) throw eS; b.supplier_refund_amount = supVal; }
       await approveRefund(id, method, proofUrl);
       closeModal(); render();
