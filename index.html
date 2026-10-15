@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-D5</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-D7</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1016,16 +1016,44 @@ async function rejectProfitHandover(id, note){
   const h = profitHandovers.find(x=>x.id===id); if(h){ h.status='rejected'; h.notes=note||null; }
 }
 async function requestRefund(bookingId, file, note, refundMethod, refundAmount, supplierRefund){
-  const receiptUrl = await uploadReceiptFile(file);
-  const {data:updated, error} = await sb.from('bookings').update({ refund_status:'pending', refund_method:refundMethod||'cash', refund_amount:refundAmount!=null?Number(refundAmount):null, supplier_refund_amount:(supplierRefund!==undefined && supplierRefund!==null && supplierRefund!=='')?+Number(supplierRefund).toFixed(2):null, refund_receipt_url:receiptUrl, refund_note:note||null,
-    refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString() }).eq('id', bookingId).select().single();
-  if(error) throw error;
-  const idx = bookings.findIndex(b=>b.id===bookingId); if(idx>-1) bookings[idx]=updated;
+  const b = bookings.find(x=>x.id===bookingId);
+  if(!b) throw new Error('booking not found');
+  if(b.refunded) throw new Error(lang==='ar'?'هذي التذكرة مسترجعة ومعتمدة — ما يتعدل طلبها.':'Refund already approved.');
+  const receiptUrl = (file && file.size) ? await uploadReceiptFile(file) : (b.refund_receipt_url||null);
+  if(!receiptUrl) throw new Error(t('receiptRequired'));
+  const patch = { refund_status:'pending', refund_method:refundMethod||'cash', refund_amount:refundAmount!=null?+Number(refundAmount).toFixed(2):null,
+    supplier_refund_amount:(supplierRefund!==undefined && supplierRefund!==null && supplierRefund!=='')?+Number(supplierRefund).toFixed(2):null,
+    refund_receipt_url:receiptUrl, refund_note:note||null, refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString() };
+  await mustUpdate('bookings', bookingId, patch);
+  Object.assign(b, patch);
 }
 async function rejectRefund(bookingId, note){
   const {error} = await sb.from('bookings').update({refund_status:'rejected', refund_note:note||null, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}).eq('id', bookingId);
   if(error) throw error;
   const b = bookings.find(x=>x.id===bookingId); if(b){ b.refund_status='rejected'; b.refund_note=note||null; }
+}
+async function editApprovedRefund(bookingId, refundAmount, method, supplierRefund){
+  const b = bookings.find(x=>x.id===bookingId); if(!b) throw new Error('booking not found');
+  if(!b.refunded) throw new Error(lang==='ar'?'التذكرة غير مسترجعة.':'Not refunded.');
+  const amt = +Number(refundAmount).toFixed(2);
+  if(!(amt>0) || amt>(Number(b.sell)||0)+0.01) throw new Error(t('invalidRefundAmount'));
+  const sup = (supplierRefund===null || supplierRefund===undefined || supplierRefund==='') ? null : +Number(supplierRefund).toFixed(2);
+  if(sup!=null && (sup<0 || sup>(Number(b.cost)||0)+0.01)) throw new Error(lang==='ar'?'مسترد المورد لازم يكون بين 0 والتكلفة.':'Supplier refund must be between 0 and cost.');
+  const old = journal.filter(j=>j.booking_id===bookingId && (j.desc_key==='jRefund' || j.desc_key==='jSupplierRefund'));
+  const keepDate = (old.find(j=>j.desc_key==='jRefund')||old[0]||{}).date || todayStr();
+  await mustUpdate('bookings', bookingId, {refund_amount:amt, refund_method:method||'cash', supplier_refund_amount:sup});
+  b.refund_amount = amt; b.refund_method = method||'cash'; b.supplier_refund_amount = sup;
+  if(old.length){ const {error} = await sb.from('journal').delete().in('id', old.map(j=>j.id)); if(error) throw error; const d = new Set(old.map(j=>j.id)); journal = journal.filter(j=>!d.has(j.id)); }
+  await postRefundReversal(bookingId);
+  const fresh = journal.filter(j=>j.booking_id===bookingId && (j.desc_key==='jRefund' || j.desc_key==='jSupplierRefund') && j.date!==keepDate);
+  if(fresh.length){ const {error} = await sb.from('journal').update({date:keepDate}).in('id', fresh.map(j=>j.id)); if(error) throw error; fresh.forEach(j=>j.date=keepDate); }
+}
+async function cancelApprovedRefund(bookingId){
+  const b = bookings.find(x=>x.id===bookingId); if(!b) throw new Error('booking not found');
+  const old = journal.filter(j=>j.booking_id===bookingId && (j.desc_key==='jRefund' || j.desc_key==='jSupplierRefund'));
+  await mustUpdate('bookings', bookingId, {refunded:false, refund_status:null, refund_amount:null, supplier_refund_amount:null, refund_method:null});
+  Object.assign(b, {refunded:false, refund_status:null, refund_amount:null, supplier_refund_amount:null, refund_method:null});
+  if(old.length){ const {error} = await sb.from('journal').delete().in('id', old.map(j=>j.id)); if(error) throw error; const d = new Set(old.map(j=>j.id)); journal = journal.filter(j=>!d.has(j.id)); }
 }
 async function postRefundReversal(bookingId){
   const b = bookings.find(x=>x.id===bookingId);
@@ -1825,7 +1853,7 @@ function bookingsTable(list, mode){
               ${isAdmin() && !bookingIsLocked(b)?`<button class="btn btn-danger btn-sm" onclick="uiDeleteBooking('${b.id}')">${t('delete')}</button>`:''}
               ${b.edit_requested?`<span class="tag pending">${t('returnedTag')}</span>`:`<button class="btn btn-ghost btn-sm" onclick="uiRequestEdit('${b.id}')">${t('returnToEmployee')}</button>`}`:''}
             ${mode==='employee' && (isWithinEditWindow(b)||b.edit_requested)?`<button class="btn btn-gold btn-sm" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>`:mode==='employee'?`<span class="tag" style="color:var(--ink-soft);background:#F0EEE6;">${t('editWindowExpired')}</span>`:''}
-            ${(mode==='employee'||isAdmin()) && !b.refunded && (!b.refund_status||b.refund_status==='rejected')?`<button class="btn btn-ghost btn-sm" onclick="uiRequestRefund('${b.id}')">${b.refund_status==='rejected'?t('resubmitRefundBtn'):t('requestRefundBtn')}</button>`:''}
+            ${(mode==='employee'||isAdmin()) && !b.refunded && (!b.refund_status||b.refund_status==='rejected'||b.refund_status==='pending')?`<button class="btn btn-ghost btn-sm" onclick="uiRequestRefund('${b.id}')">${b.refund_status==='rejected'?t('resubmitRefundBtn'):b.refund_status==='pending'?(lang==='ar'?'تعديل طلب الاسترجاع':'Edit refund request'):t('requestRefundBtn')}</button>`:''}
           </td>`:''}
         </tr>${mode==='employee' && b.edit_requested && b.edit_note?`<tr><td colspan="13" style="background:#FBEFE0;font-size:11.5px;color:#A8722C;">📝 ${t('editNoteLabel')}: ${esc(b.edit_note)}</td></tr>`:''}${b.refund_status==='rejected' && b.refund_note?`<tr><td colspan="13" style="background:#FBE9E7;font-size:11.5px;color:var(--red);">🚫 ${t('refundRejectReasonLabel')}: ${esc(b.refund_note)}</td></tr>`:''}${b.note?`<tr><td colspan="13" style="background:#EEF3F8;font-size:11.5px;color:var(--navy);">🗒️ ${t('fieldBookingNote')}: ${esc(b.note)}</td></tr>`:''}`).join('')}</tbody></table></div>`;
 }
@@ -3586,15 +3614,16 @@ function openRefundRequestModal(bookingId){
     <form id="refundRequestForm">
       <div class="note">${t('refundRequestNote')} (${t('colNo')}: ${b.booking_no} — ${esc(b.customer)})</div>
       <p class="note">${t('originalAmountLabel')}: <strong>${money(b.sell)}</strong></p>
-      <div class="field"><label>${t('fieldRefundAmount')}</label><input type="number" step="0.01" name="refundAmount" value="${b.sell}" max="${b.sell}" min="0.01" required></div>
+      ${b.refund_status==='rejected' && b.refund_note?`<div class="note" style="background:#FBEFE0;color:#A8722C;padding:8px;border-radius:8px;">📝 ${lang==='ar'?'ملاحظة المحاسب':'Accountant note'}: ${esc(b.refund_note)}</div>`:''}
+      <div class="field"><label>${t('fieldRefundAmount')}</label><input type="number" step="0.01" name="refundAmount" value="${b.refund_amount!=null?b.refund_amount:b.sell}" max="${b.sell}" min="0.01" required></div>
       <p class="note">${t('refundAmountHint')}</p>
-      <div class="field"><label>${lang==='ar'?'المسترد من المورد (اختياري — لو معروف الحين)':'Supplier refund (optional, if known now)'}</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" placeholder="${lang==='ar'?'اتركه فاضي لو ما تعرفه':'Leave empty if unknown'}"></div>
+      <div class="field" style="${(isAdmin()||isAccountant())?'':'display:none'}"><label>${lang==='ar'?'المسترد من المورد (اختياري — لو معروف الحين)':'Supplier refund (optional, if known now)'}</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'اتركه فاضي لو ما تعرفه':'Leave empty if unknown'}"></div>
       <div class="field"><label>${t('fieldRefundMethod')}</label><select name="refundMethod" id="refundReqMethodSel">
         <option value="cash">${t('payCash')}</option>
         <option value="transfer">${t('payTransfer')}</option>
       </select></div>
       <p class="note" id="refundMethodHint">${t('refundCashHint')}</p>
-      <div class="field"><label>${t('fieldRefundReceipt')}</label><input type="file" name="receipt" accept="image/*,.pdf" required></div>
+      <div class="field"><label>${t('fieldRefundReceipt')}${b.refund_receipt_url?` (${lang==='ar'?'مرفق سابقًا — ارفع جديد بس لو تبي تغيّره':'already attached — optional'})`:''}</label><input type="file" name="receipt" accept="image/*,.pdf" ${b.refund_receipt_url?'':'required'}></div>
       <div class="field"><label>${t('fieldRefundNote')}</label><input name="note" placeholder="${t('refundNotePlaceholder')}"></div>
       <div id="refundErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;justify-content:start;">
@@ -3602,6 +3631,7 @@ function openRefundRequestModal(bookingId){
         <button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button>
       </div>
     </form>`);
+  document.getElementById('refundReqMethodSel').value = b.refund_method==='transfer' ? 'transfer' : 'cash';
   document.getElementById('refundReqMethodSel').onchange = (e)=>{
     document.getElementById('refundMethodHint').textContent = e.target.value==='cash' ? t('refundCashHint') : t('refundTransferHint');
   };
@@ -3610,8 +3640,8 @@ function openRefundRequestModal(bookingId){
     const btn = document.getElementById('refundSaveBtn');
     const f = new FormData(e.target);
     const file = f.get('receipt');
-    if(!file || !file.size){ document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${t('receiptRequired')}</div>`; return; }
-    const refundAmt = Number(f.get('refundAmount'));
+    if((!file || !file.size) && !b.refund_receipt_url){ document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${t('receiptRequired')}</div>`; return; }
+    const refundAmt = parseAmount(f.get('refundAmount'));
     if(!refundAmt || refundAmt<=0 || refundAmt>Number(b.sell)+0.01){
       document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${t('invalidRefundAmount')}</div>`; return;
     }
@@ -3627,6 +3657,30 @@ function openRefundRequestModal(bookingId){
   };
 }
 window.uiRequestRefund = function(id){ openRefundRequestModal(id); };
+window.uiEditApprovedRefund = function(id){
+  const b = bookings.find(x=>x.id===id); if(!b) return; const ar = lang==='ar';
+  showModal(`<div class="modal-head"><h3>✏️ ${ar?'تعديل استرجاع معتمد':'Edit approved refund'} — #${b.booking_no}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <p class="note">${esc(b.customer||'')} — ${ar?'سعر البيع':'Sale'}: <b>${money(b.sell)}</b> — ${ar?'التكلفة':'Cost'}: ${money(b.cost)} — ${esc(userName(b.created_by))}</p>
+    <div class="grid-2">
+      <div class="field"><label>${ar?'المبلغ المسترد للعميل':'Refunded to customer'}</label><input type="number" step="0.01" id="erAmt" value="${b.refund_amount!=null?b.refund_amount:b.sell}"></div>
+      <div class="field"><label>${t('fieldRefundMethod')}</label><select id="erMethod"><option value="cash" ${b.refund_method!=='transfer'?'selected':''}>${t('payCash')} — ${ar?'ينخصم من كاش الموظف':'from employee cash'}</option><option value="transfer" ${b.refund_method==='transfer'?'selected':''}>${t('payTransfer')} — ${ar?'من البنك':'from bank'}</option></select></div>
+    </div>
+    <div class="field"><label>${ar?'المسترد من المورد (اتركه فاضي لو ما وصل)':'Supplier refund (blank if unknown)'}</label><input type="number" step="0.01" id="erSup" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}"></div>
+    <div id="erErr"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+      <button class="btn btn-primary" id="erSave">${t('save')}</button>
+      <button class="btn btn-danger" id="erCancel">${ar?'إلغاء الاسترجاع بالكامل':'Cancel the refund'}</button>
+      <button class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>`);
+  document.getElementById('erSave').onclick = async ()=>{
+    const btn = document.getElementById('erSave'); btn.disabled = true;
+    try{ await editApprovedRefund(id, parseAmount(document.getElementById('erAmt').value), document.getElementById('erMethod').value, document.getElementById('erSup').value===''?null:parseAmount(document.getElementById('erSup').value)); closeModal(); render(); }
+    catch(e){ console.error(e); document.getElementById('erErr').innerHTML = `<div class="login-error">${errText()}</div>`; btn.disabled = false; }
+  };
+  document.getElementById('erCancel').onclick = async ()=>{
+    if(!confirm(ar?`إلغاء استرجاع التذكرة #${b.booking_no} بالكامل؟\nترجع التذكرة كأنها ما انسترجعت، وتنحذف قيود الاسترجاع (ويرجع المبلغ لكاش الموظف لو كان كاش).`:'Cancel this refund entirely?')) return;
+    try{ await cancelApprovedRefund(id); closeModal(); render(); }catch(e){ console.error(e); document.getElementById('erErr').innerHTML = `<div class="login-error">${errText()}</div>`; }
+  };
+};
 window.uiApproveRefund = function(id){
   const b = bookings.find(x=>x.id===id);
   if(!b) return;
@@ -3635,11 +3689,14 @@ window.uiApproveRefund = function(id){
     <div class="modal-head"><h3>${t('modalApproveRefund')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <p class="note">${t('colNo')}: ${b.booking_no} — ${esc(b.customer)}</p>
     ${canSeeSalesTotals()?`<p class="note">${t('originalAmountLabel')}: ${money(b.sell)} — ${t('fieldRefundAmount')}: <strong>${money(b.refund_amount!=null?b.refund_amount:b.sell)}</strong></p>`:''}
-    <p class="note">${t('fieldRefundMethod')}: <strong>${isTransfer?t('payTransfer'):t('payCash')}</strong></p>
     <form id="approveRefundForm">
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldRefundAmount')} (${lang==='ar'?'للعميل':'to customer'})</label><input type="number" step="0.01" min="0.01" max="${b.sell}" id="apCustAmt" value="${b.refund_amount!=null?b.refund_amount:b.sell}"></div>
+        <div class="field"><label>${t('fieldRefundMethod')}</label><select id="apMethod"><option value="cash" ${isTransfer?'':'selected'}>${t('payCash')}</option><option value="transfer" ${isTransfer?'selected':''}>${t('payTransfer')}</option></select></div>
+      </div>
       <div class="field"><label>${lang==='ar'?'المسترد من المورد':'Supplier refund'} (${lang==='ar'?'التكلفة':'cost'}: ${money(b.cost)})</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" id="apSupRef" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'فاضي = ما نعرفه بعد (يُسجَّل لاحقًا)':'Empty = not known yet'}"></div>
       <div class="note" id="apRefProfit"></div>
-      ${isTransfer?`<div class="field"><label>${t('fieldRefundProof')}</label><input type="file" name="refundProof" accept="image/*" required></div>`:''}
+      <div class="field" id="apProofBox" style="${isTransfer?'':'display:none'}"><label>${t('fieldRefundProof')}</label><input type="file" name="refundProof" accept="image/*,.pdf"></div>
       <div id="approveRefundErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
         <button type="submit" class="btn btn-primary" id="approveRefundBtn">${t('approve')}</button>
@@ -3648,29 +3705,36 @@ window.uiApproveRefund = function(id){
     </form>`);
   const _apCalc = ()=>{
     const v = document.getElementById('apSupRef').value; const box = document.getElementById('apRefProfit');
-    const cust = Number(b.refund_amount!=null?b.refund_amount:b.sell)||0;
+    const cust = parseAmount(document.getElementById('apCustAmt').value)||0;
     if(v===''){ box.innerHTML = lang==='ar'?'⏳ مسترد المورد غير معروف — التذكرة بتظهر في "بانتظار تسجيل مسترد المورد" لين تسجله.':'Supplier refund unknown — record it later.'; return; }
     const p = +(((Number(b.sell)||0)-cust) - ((Number(b.cost)||0)-Number(v))).toFixed(2);
     box.innerHTML = `${lang==='ar'?'ربح التذكرة بعد الاسترجاع':'Ticket profit after refund'}: <b style="color:${p<0?'var(--red)':'#1f7a4d'}">${money(p)}</b>`;
   };
-  document.getElementById('apSupRef').oninput = _apCalc; _apCalc();
+  document.getElementById('apSupRef').oninput = _apCalc; document.getElementById('apCustAmt').oninput = _apCalc; _apCalc();
+  document.getElementById('apMethod').onchange = (e)=>{ document.getElementById('apProofBox').style.display = e.target.value==='transfer' ? '' : 'none'; };
   document.getElementById('approveRefundForm').onsubmit = async (e)=>{
     e.preventDefault();
     const btn = document.getElementById('approveRefundBtn');
     const f = new FormData(e.target);
     const file = f.get('refundProof');
-    if(isTransfer && (!file || !file.size)){
+    const method = document.getElementById('apMethod').value;
+    const custAmt = +(parseAmount(document.getElementById('apCustAmt').value)||0).toFixed(2);
+    if(!(custAmt>0) || custAmt>(Number(b.sell)||0)+0.01){ document.getElementById('approveRefundErrorBox').innerHTML = `<div class="login-error">${t('invalidRefundAmount')}</div>`; return; }
+    if(method==='transfer' && (!file || !file.size)){
       document.getElementById('approveRefundErrorBox').innerHTML = `<div class="login-error">${t('refundProofRequired')}</div>`;
       return;
     }
     btn.disabled=true; btn.textContent=t('saving');
     try{
-      const proofUrl = isTransfer ? await uploadReceiptFile(file) : null;
+      const proofUrl = method==='transfer' ? await uploadReceiptFile(file) : null;
+      if(custAmt!==(b.refund_amount!=null?+Number(b.refund_amount).toFixed(2):+Number(b.sell).toFixed(2)) || method!==(b.refund_method||'cash')){
+        await mustUpdate('bookings', id, {refund_amount:custAmt, refund_method:method}); b.refund_amount = custAmt; b.refund_method = method;
+      }
       const sv = document.getElementById('apSupRef').value;
       const supVal = sv==='' ? null : +Number(sv).toFixed(2);
       if(supVal!=null && (supVal<0 || supVal>(Number(b.cost)||0)+0.01)) throw new Error(lang==='ar'?'مسترد المورد لازم يكون بين 0 والتكلفة.':'Supplier refund must be between 0 and the cost.');
       if(supVal!==(b.supplier_refund_amount??null)){ const {error:eS} = await sb.from('bookings').update({supplier_refund_amount:supVal}).eq('id', id); if(eS) throw eS; b.supplier_refund_amount = supVal; }
-      await approveRefund(id, b.refund_method, proofUrl);
+      await approveRefund(id, method, proofUrl);
       closeModal(); render();
     }catch(err){
       console.error(err);
@@ -4568,7 +4632,7 @@ function renderRefunds(){
       <td class="num">${showActions ? '—' : (canSeeProfit()?refProfit(b):t('hiddenValue'))}</td>
       <td><a href="${b.refund_receipt_url}" target="_blank">${t('viewReceipt')}</a></td>
       ${showActions?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveRefund('${b.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectRefund('${b.id}')">${t('reject')}</button></td>`
-        :`<td><span class="tag ${b.refund_status==='approved'?'collected':'rejected'}">${b.refund_status==='approved'?t('approve'):t('reject')}</span></td>`}</tr>`;
+        :`<td><span class="tag ${b.refund_status==='approved'?'collected':'rejected'}">${b.refund_status==='approved'?t('approve'):t('reject')}</span>${b.refund_status==='approved' && b.refunded && (isAdmin()||isAccountant())?` <button class="btn btn-ghost btn-sm" onclick="uiEditApprovedRefund('${b.id}')">✏️ ${lang==='ar'?'تعديل':'Edit'}</button>`:''}</td>`}</tr>`;
   const awaitingSup = scoped.filter(b=>b.refunded && b.refund_status==='approved' && !bookingSupplierRefundKnown(b));
   const refProfit = b=> bookingSupplierRefundKnown(b) ? money(bookingProfitNow(b)) : '⏳';
   document.getElementById('content').innerHTML = `
@@ -5105,6 +5169,8 @@ repairOther = lockify(repairOther, 'repairOther');
 submitProfitHandover = lockify(submitProfitHandover, 'submitProfitHandover');
 applyPosFees = lockify(applyPosFees, 'applyPosFees');
 convertToSpan = lockify(convertToSpan, 'convertToSpan');
+editApprovedRefund = lockify(editApprovedRefund, 'editApprovedRefund');
+cancelApprovedRefund = lockify(cancelApprovedRefund, 'cancelApprovedRefund');
 confirmPosSettled = lockify(confirmPosSettled, 'confirmPosSettled');
 bulkHandoverUntil = lockify(bulkHandoverUntil, 'bulkHandoverUntil');
 rejectDeposit = lockify(rejectDeposit, 'rejectDeposit');
