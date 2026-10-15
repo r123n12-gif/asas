@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-D8</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-E2</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -763,22 +763,25 @@ function employeeCashSplit(employeeId){
   const mine = bookings.filter(b=>b.created_by===employeeId);
   const notRequested = pendingProfitHandoverAmount(mine);                                    // profit not yet sent
   const awaiting = +profitHandovers.filter(h=>h.employee_id===employeeId && h.status==='pending').reduce((a,h)=>a+Number(h.total_profit||0),0).toFixed(2); // sent, waiting approval
-  const profitDue = +Math.max(0, notRequested + awaiting).toFixed(2);
+  const profitAll = +Math.max(0, notRequested + awaiting).toFixed(2);
+  // the employee hands profit only from the cash he really holds; whatever is left is transfer/card profit already in the bank
+  const profitDue = +Math.min(profitAll, Math.max(0, total)).toFixed(2);
+  const profitFromBank = +(profitAll - profitDue).toFixed(2);
   const depositDue = +(total - profitDue).toFixed(2);
   const locked = lockedHandoverIds();
   const pendingIds = new Set(profitHandovers.filter(h=>h.employee_id===employeeId && h.status==='pending').flatMap(handoverBookingIds));
   const transferProfit = +mine.filter(b=>b.payment_method!=='cash' && b.cost_reviewed && !(b.refunded && !bookingSupplierRefundKnown(b)) && (!locked.has(b.id) || pendingIds.has(b.id)))
     .reduce((a,b)=>a+bookingProfitNow(b),0).toFixed(2);
-  return {total, profitDue, awaiting, notRequested, depositDue, transferProfit};
+  return {total, profitDue, profitAll, profitFromBank, awaiting, notRequested, depositDue, transferProfit};
 }
 function cashSplitCards(employeeId){
   const c = employeeCashSplit(employeeId); const ar = lang==='ar';
   return `<div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:10px;">
     <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">💰 ${ar?'كاش الأرباح — يُسلَّم للإدارة':'Profit cash — hand to management'}</div><div class="kpi-value">${money(c.profitDue)}</div>
-      ${c.transferProfit>0.004?`<div style="font-size:12px;color:var(--muted,#666);margin-top:4px;">${ar?'منها ربح تذاكر تحويل/شبكة':'of which transfer/card tickets'}: ${money(c.transferProfit)}</div>`:''}
+      ${c.profitFromBank>0.004?`<div style="font-size:12px;color:#1f7a4d;margin-top:4px;">+ ${ar?'أرباح تحويلات/شبكة تُؤخذ من البنك (مو من الموظف)':'transfer/card profit taken from the bank'}: ${money(c.profitFromBank)}</div>`:''}
       ${c.awaiting?`<div style="font-size:12px;color:#A8722C;margin-top:4px;">${ar?'منها بانتظار اعتماد الإدارة':'awaiting approval'}: ${money(c.awaiting)}</div>`:''}</div>
     <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">🏦 ${ar?'كاش التذاكر — يُودَع':'Ticket cash — to deposit'}</div><div class="kpi-value" style="${c.depositDue<0?'color:var(--red)':''}">${money(c.depositDue)}</div>
-      ${c.depositDue<0?`<div style="font-size:12px;color:var(--red);margin-top:4px;">${ar?'بالسالب: أودع أو سلّم أكثر من المسجل — غالبًا تذاكر ما انسجلت أو انسجلت بطريقة دفع غلط':'Negative: more than recorded'}</div>`:''}</div>
+      ${c.depositDue<0?`<div style="font-size:12px;color:var(--red);margin-top:4px;">${ar?'بالسالب: الموظف دفع (إيداع/استرجاعات/أرباح) أكثر من الكاش المسجل عليه — الوكالة مديونة له بهذا المبلغ، أو فيه تذاكر كاش ما انسجلت':'Negative: employee paid out more than recorded'}</div>`:''}</div>
     <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${ar?'المجموع بعهدته':'Total in hand'}</div><div class="kpi-value">${money(c.total)}</div></div>
   </div>`;
 }
@@ -1062,11 +1065,15 @@ async function editApprovedRefund(bookingId, refundAmount, method, supplierRefun
   const fresh = journal.filter(j=>j.booking_id===bookingId && (j.desc_key==='jRefund' || j.desc_key==='jSupplierRefund') && j.date!==keepDate);
   if(fresh.length){ const {error} = await sb.from('journal').update({date:keepDate}).in('id', fresh.map(j=>j.id)); if(error) throw error; fresh.forEach(j=>j.date=keepDate); }
 }
-async function cancelApprovedRefund(bookingId){
+async function cancelApprovedRefund(bookingId, returnNote){
   const b = bookings.find(x=>x.id===bookingId); if(!b) throw new Error('booking not found');
   const old = journal.filter(j=>j.booking_id===bookingId && (j.desc_key==='jRefund' || j.desc_key==='jSupplierRefund'));
-  await mustUpdate('bookings', bookingId, {refunded:false, refund_status:null, refund_amount:null, supplier_refund_amount:null, refund_method:null});
-  Object.assign(b, {refunded:false, refund_status:null, refund_amount:null, supplier_refund_amount:null, refund_method:null});
+  // returnNote given → back to the employee as "returned for correction" (his amounts and receipt stay, so he only fixes what is wrong)
+  const patch = returnNote!==undefined
+    ? {refunded:false, refund_status:'rejected', refund_note:returnNote||null, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}
+    : {refunded:false, refund_status:null, refund_amount:null, supplier_refund_amount:null, refund_method:null};
+  await mustUpdate('bookings', bookingId, patch);
+  Object.assign(b, patch);
   if(old.length){ const {error} = await sb.from('journal').delete().in('id', old.map(j=>j.id)); if(error) throw error; const d = new Set(old.map(j=>j.id)); journal = journal.filter(j=>!d.has(j.id)); }
 }
 async function postRefundReversal(bookingId){
@@ -3643,8 +3650,8 @@ function openRefundRequestModal(bookingId){
       <p class="note">${t('originalAmountLabel')}: <strong>${money(b.sell)}</strong></p>
       ${b.refund_status==='rejected' && b.refund_note?`<div class="note" style="background:#FBEFE0;color:#A8722C;padding:8px;border-radius:8px;">📝 ${lang==='ar'?'ملاحظة المحاسب':'Accountant note'}: ${esc(b.refund_note)}</div>`:''}
       <div class="field"><label>${t('fieldRefundAmount')}</label><input type="number" step="0.01" name="refundAmount" value="${b.refund_amount!=null?b.refund_amount:b.sell}" max="${b.sell}" min="0.01" required></div>
-      <p class="note">${t('refundAmountHint')}</p>
-      <div class="field" style="${(isAdmin()||isAccountant())?'':'display:none'}"><label>${lang==='ar'?'المسترد من المورد (اختياري — لو معروف الحين)':'Supplier refund (optional, if known now)'}</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'اتركه فاضي لو ما تعرفه':'Leave empty if unknown'}"></div>
+      <p class="note">${lang==='ar'?'اكتب المبلغ اللي استلمه العميل بيده فعلًا. لو كاش ← ينخصم من كاشك بعد اعتماد المحاسب. لو تحويل ← من البنك.':t('refundAmountHint')}</p>
+      <div class="field" style="display:none"><label>${lang==='ar'?'المسترد من المورد (اختياري — لو معروف الحين)':'Supplier refund (optional, if known now)'}</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'اتركه فاضي لو ما تعرفه':'Leave empty if unknown'}"></div>
       <div class="field"><label>${t('fieldRefundMethod')}</label><select name="refundMethod" id="refundReqMethodSel">
         <option value="cash">${t('payCash')}</option>
         <option value="transfer">${t('payTransfer')}</option>
@@ -3692,16 +3699,23 @@ window.uiEditApprovedRefund = function(id){
       <div class="field"><label>${ar?'المبلغ المسترد للعميل':'Refunded to customer'}</label><input type="number" step="0.01" id="erAmt" value="${b.refund_amount!=null?b.refund_amount:b.sell}"></div>
       <div class="field"><label>${t('fieldRefundMethod')}</label><select id="erMethod"><option value="cash" ${b.refund_method!=='transfer'?'selected':''}>${t('payCash')} — ${ar?'ينخصم من كاش الموظف':'from employee cash'}</option><option value="transfer" ${b.refund_method==='transfer'?'selected':''}>${t('payTransfer')} — ${ar?'من البنك':'from bank'}</option></select></div>
     </div>
-    <div class="field"><label>${ar?'المسترد من المورد (اتركه فاضي لو ما وصل)':'Supplier refund (blank if unknown)'}</label><input type="number" step="0.01" id="erSup" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}"></div>
+    <div class="field" style="display:none"><label>${ar?'المسترد من المورد (اتركه فاضي لو ما وصل)':'Supplier refund (blank if unknown)'}</label><input type="number" step="0.01" id="erSup" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}"></div>
     <div id="erErr"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
       <button class="btn btn-primary" id="erSave">${t('save')}</button>
+      <button class="btn btn-gold" id="erReturn">↩ ${ar?'إرجاع للموظف للتعديل':'Return to employee'}</button>
       <button class="btn btn-danger" id="erCancel">${ar?'إلغاء الاسترجاع بالكامل':'Cancel the refund'}</button>
       <button class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>`);
   document.getElementById('erSave').onclick = async ()=>{
     const btn = document.getElementById('erSave'); btn.disabled = true;
     try{ await editApprovedRefund(id, parseAmount(document.getElementById('erAmt').value), document.getElementById('erMethod').value, document.getElementById('erSup').value===''?null:parseAmount(document.getElementById('erSup').value)); closeModal(); render(); }
     catch(e){ console.error(e); document.getElementById('erErr').innerHTML = `<div class="login-error">${errText()}</div>`; btn.disabled = false; }
+  };
+  document.getElementById('erReturn').onclick = async ()=>{
+    const note = prompt(ar?`سبب الإرجاع للموظف ${userName(b.created_by)} (يظهر له):`:'Reason (shown to the employee):');
+    if(note===null) return;
+    try{ await cancelApprovedRefund(id, note); closeModal(); render(); alert(ar?'✔ رجع للموظف — المبلغ رجع لكاشه لين يعدّل الطلب ويعتمده المحاسب من جديد.':'Returned to the employee.'); }
+    catch(e){ console.error(e); document.getElementById('erErr').innerHTML = `<div class="login-error">${errText()}</div>`; }
   };
   document.getElementById('erCancel').onclick = async ()=>{
     if(!confirm(ar?`إلغاء استرجاع التذكرة #${b.booking_no} بالكامل؟\nترجع التذكرة كأنها ما انسترجعت، وتنحذف قيود الاسترجاع (ويرجع المبلغ لكاش الموظف لو كان كاش).`:'Cancel this refund entirely?')) return;
@@ -3721,8 +3735,9 @@ window.uiApproveRefund = function(id){
         <div class="field"><label>${t('fieldRefundAmount')} (${lang==='ar'?'للعميل':'to customer'})</label><input type="number" step="0.01" min="0.01" max="${b.sell}" id="apCustAmt" value="${b.refund_amount!=null?b.refund_amount:b.sell}"></div>
         <div class="field"><label>${t('fieldRefundMethod')}</label><select id="apMethod"><option value="cash" ${isTransfer?'':'selected'}>${t('payCash')}</option><option value="transfer" ${isTransfer?'selected':''}>${t('payTransfer')}</option></select></div>
       </div>
-      <div class="field"><label>${lang==='ar'?'المسترد من المورد':'Supplier refund'} (${lang==='ar'?'التكلفة':'cost'}: ${money(b.cost)})</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" id="apSupRef" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'فاضي = ما نعرفه بعد (يُسجَّل لاحقًا)':'Empty = not known yet'}"></div>
-      <div class="note" id="apRefProfit"></div>
+      <div class="field" style="display:none"><label>${lang==='ar'?'المسترد من المورد':'Supplier refund'} (${lang==='ar'?'التكلفة':'cost'}: ${money(b.cost)})</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" id="apSupRef" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'فاضي = ما نعرفه بعد (يُسجَّل لاحقًا)':'Empty = not known yet'}"></div>
+      <div class="note" id="apRefProfit" style="display:none"></div>
+      <p class="note">${lang==='ar'?'سجّل هنا بس اللي استلمه العميل فعليًا. مسترد المورد يتسجل لحاله لاحقًا من قائمة "بانتظار تسجيل مسترد المورد".':'Only what the customer actually received. The supplier refund is recorded later, separately.'}</p>
       <div class="field" id="apProofBox" style="${isTransfer?'':'display:none'}"><label>${t('fieldRefundProof')}</label><input type="file" name="refundProof" accept="image/*,.pdf"></div>
       <div id="approveRefundErrorBox"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
