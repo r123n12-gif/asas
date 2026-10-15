@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-E2</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-E4</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -305,13 +305,13 @@ const T = {
     payInstallment:'تابي/تمارا (تقسيط)', fieldInstallmentProvider:'المزود', installmentFeeNote:'يُخصم 7% رسوم تابي/تمارا تلقائيًا من المبلغ عند اعتماد المحاسب.',
     actualAmountPrompt:'أدخل المبلغ الفعلي اللي دخل البنك (لو مختلف عن سعر التذكرة، السعر يُصحَّح تلقائيًا):',
     refundedTag:'تم الرفند', refundPendingTag:'طلب رفند قيد المراجعة', refundRejectedTag:'رفض طلب الرفند', requestRefundBtn:'طلب رفند',
-    modalRequestRefund:'طلب رفند', refundRequestNote:'أرفق نموذج/إيصال الرفند (من شركة الطيران أو المورد) ليقدَّم للمحاسب للمراجعة.',
+    modalRequestRefund:'طلب استرجاع', refundRequestNote:'أرفق إيصال الاسترجاع. الطلب يبقى معلّق لين يعتمده المحاسب — بعد الاعتماد: كاش ← ينخصم من كاشك، تحويل ← من البنك.',
     quickRefundBtn:'↩️ طلب استرجاع', quickRefundNote:'اكتب رقم التذكرة أو اسم العميل عشان تلقى التذكرة وتبدأ طلب الاسترجاع مباشرة.', quickRefundTypeHint:'ابدأ الكتابة عشان تظهر النتائج...',
     newTicketRefundBtn:'التذكرة غير موجودة بالنظام؟ سجّلها هنا مع طلب الاسترجاع', newTicketRefundTitle:'تسجيل تذكرة جديدة + طلب استرجاع لها',
     newTicketRefundNote:'عبّي بيانات التذكرة (اللي ما سجّلتها قبل بالنظام) وتفاصيل الاسترجاع بنفس الوقت — يروح الكل للمحاسب للموافقة النهائية.',
     refundDetailsSectionTitle:'تفاصيل الاسترجاع',
     fieldRefundReceipt:'نموذج/إيصال الرفند', fieldRefundNote:'ملاحظة (اختياري)', refundNotePlaceholder:'سبب الرفند...',
-    submitRefundBtn:'إرسال طلب الرفند', pendingRefundsTitle:'طلبات الرفند بانتظار المراجعة', noPendingRefunds:'لا توجد طلبات رفند معلّقة.',
+    submitRefundBtn:'إرسال للمحاسب للاعتماد', pendingRefundsTitle:'طلبات الرفند بانتظار المراجعة', noPendingRefunds:'لا توجد طلبات رفند معلّقة.',
     navRefunds:'الاسترجاعات', subRefunds:'كل طلبات الاسترجاع — بانتظار المراجعة، ومعتمدة أو مرفوضة سابقًا', refundHistoryTitle:'سجل الاسترجاعات (معتمدة/مرفوضة)',
     navProfits:'الأرباح', subProfits:'كل طلبات تسليم الربح وتفاصيل ربح كل تذكرة — للأدمن فقط', totalHandedOverProfit:'إجمالي الربح المسلَّم (كل الوقت)',
     profitHandoverHistoryTitle:'سجل تسليمات الربح', profitTicketDetailsTitle:'تفاصيل الربح لكل تذكرة (من التسليمات المعتمدة)', profitTicketDetailsNote:'قائمة كل تذكرة ضمن أي تسليم ربح معتمد، مع ربحها الفردي — مطابقة لفلاتر البحث أعلاه.',
@@ -491,13 +491,13 @@ const T = {
     payInstallment:'Tabby/Tamara (BNPL)', fieldInstallmentProvider:'Provider', installmentFeeNote:'A 7% Tabby/Tamara fee is deducted automatically once the accountant approves.',
     actualAmountPrompt:'Enter the actual amount that landed in the bank (if different from the ticket price, the price is corrected automatically):',
     refundedTag:'Refunded', refundPendingTag:'Refund request pending review', refundRejectedTag:'Refund request rejected', requestRefundBtn:'Request refund',
-    modalRequestRefund:'Request refund', refundRequestNote:'Attach the refund form/receipt (from the airline or supplier) to submit it for accountant review.',
+    modalRequestRefund:'Refund request', refundRequestNote:'Attach the refund receipt. It stays pending until the accountant approves it — then cash comes out of your cash, transfer out of the bank.',
     quickRefundBtn:'↩️ Request refund', quickRefundNote:'Type a ticket number or customer name to find the ticket and start a refund request directly.', quickRefundTypeHint:'Start typing to see results...',
     newTicketRefundBtn:"Ticket not in the system? Register it here with the refund request", newTicketRefundTitle:'Register a new ticket + request its refund',
     newTicketRefundNote:"Fill in the ticket's details (that you haven't entered before) and the refund details at the same time — both go to the accountant for final approval.",
     refundDetailsSectionTitle:'Refund details',
     fieldRefundReceipt:'Refund form/receipt', fieldRefundNote:'Note (optional)', refundNotePlaceholder:'Reason for refund...',
-    submitRefundBtn:'Submit refund request', pendingRefundsTitle:'Refund requests awaiting review', noPendingRefunds:'No pending refund requests.',
+    submitRefundBtn:'Send to accountant', pendingRefundsTitle:'Refund requests awaiting review', noPendingRefunds:'No pending refund requests.',
     navRefunds:'Refunds', subRefunds:'All refund requests — pending review, previously approved or rejected', refundHistoryTitle:'Refund history (approved/rejected)',
     navProfits:'Profits', subProfits:'All profit handover requests and per-ticket profit details — admin only', totalHandedOverProfit:'Total profit handed over (all-time)',
     profitHandoverHistoryTitle:'Profit handover history', profitTicketDetailsTitle:'Per-ticket profit details (from approved handovers)', profitTicketDetailsNote:'Every ticket within any approved profit handover, with its individual profit — matching the search filters above.',
@@ -1043,6 +1043,7 @@ async function requestRefund(bookingId, file, note, refundMethod, refundAmount, 
     refund_receipt_url:receiptUrl, refund_note:note||null, refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString() };
   await mustUpdate('bookings', bookingId, patch);
   Object.assign(b, patch);
+  // waits for the accountant: nothing leaves the employee's cash or the bank until it is approved
 }
 async function rejectRefund(bookingId, note){
   const {error} = await sb.from('bookings').update({refund_status:'rejected', refund_note:note||null, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}).eq('id', bookingId);
@@ -3650,7 +3651,7 @@ function openRefundRequestModal(bookingId){
       <p class="note">${t('originalAmountLabel')}: <strong>${money(b.sell)}</strong></p>
       ${b.refund_status==='rejected' && b.refund_note?`<div class="note" style="background:#FBEFE0;color:#A8722C;padding:8px;border-radius:8px;">📝 ${lang==='ar'?'ملاحظة المحاسب':'Accountant note'}: ${esc(b.refund_note)}</div>`:''}
       <div class="field"><label>${t('fieldRefundAmount')}</label><input type="number" step="0.01" name="refundAmount" value="${b.refund_amount!=null?b.refund_amount:b.sell}" max="${b.sell}" min="0.01" required></div>
-      <p class="note">${lang==='ar'?'اكتب المبلغ اللي استلمه العميل بيده فعلًا. لو كاش ← ينخصم من كاشك بعد اعتماد المحاسب. لو تحويل ← من البنك.':t('refundAmountHint')}</p>
+      <p class="note">${lang==='ar'?'اكتب المبلغ اللي استلمه العميل بيده فعلًا. لو كاش ← ينخصم من كاشك بعد اعتماد المحاسب. لو تحويل ← من البنك بعد الاعتماد.':t('refundAmountHint')}</p>
       <div class="field" style="display:none"><label>${lang==='ar'?'المسترد من المورد (اختياري — لو معروف الحين)':'Supplier refund (optional, if known now)'}</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'اتركه فاضي لو ما تعرفه':'Leave empty if unknown'}"></div>
       <div class="field"><label>${t('fieldRefundMethod')}</label><select name="refundMethod" id="refundReqMethodSel">
         <option value="cash">${t('payCash')}</option>
