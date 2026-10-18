@@ -1626,6 +1626,7 @@ function navItems(){
     items.push({route:'reports', label:t('navReports'), icon:'▤'});
     items.push({route:'reconcile', label:t('navReconcile'), icon:'🔍'});
     items.push({route:'refunds', label:t('navRefunds'), icon:'↩️'});
+    items.push({route:'attendance', label:(lang==='ar'?'الحضور والانصراف':'Attendance'), icon:'🕘'});
   }
   if(isAdmin()){
     items.push({route:'profits', label:t('navProfits'), icon:'💎'});
@@ -1741,9 +1742,197 @@ function render(){
   document.getElementById('myAccountBtn').onclick = openMyAccountModal;
 
   const routes = { dashboard:renderDashboard, bookings:renderBookings, ledger:renderLedger,
-    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile, mysales:renderMySales, refunds:renderRefunds, profits:renderProfits };
+    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile, attendance:renderAttendance, mysales:renderMySales, refunds:renderRefunds, profits:renderProfits };
   (routes[route]||renderDashboard)();
 }
+
+/* ===================== ATTENDANCE (accountants) ===================== */
+/* time always comes from the server (database trigger); location is checked against the branch */
+let attRows = [], attMonth = null, attUser = 'all';
+const ATT_TZ = 'Asia/Riyadh';
+function attDay(ts){ return new Date(ts).toLocaleDateString('en-CA',{timeZone:ATT_TZ}); }
+function attTime(ts){ return ts ? new Date(ts).toLocaleTimeString('en-US',{timeZone:ATT_TZ,hour:'2-digit',minute:'2-digit'}) : '—'; }
+function attHM(ts){ const p = new Date(ts).toLocaleTimeString('en-GB',{timeZone:ATT_TZ,hour:'2-digit',minute:'2-digit',hour12:false}).split(':'); return (+p[0])*60 + (+p[1]); }
+function attHours(r){ if(!r.check_out) return 0; return Math.max(0,(new Date(r.check_out)-new Date(r.check_in))/3600000); }
+function fmtHours(h){ const m = Math.round(h*60); return `${Math.floor(m/60)}:${String(m%60).padStart(2,'0')}`; }
+function attLateMin(r){
+  const b = branches.find(x=>x.id===r.branch_id); const st = String((b&&b.shift_start)||'').slice(0,5);
+  if(!/^\d{1,2}:\d{2}$/.test(st)) return 0;
+  const [h,m] = st.split(':').map(Number); const late = attHM(r.check_in) - (h*60+m);
+  return late > 15 ? late : 0;   // 15 minutes grace
+}
+function geoDistance(lat1,lng1,lat2,lng2){
+  const R = 6371000, toR = x=>x*Math.PI/180;
+  const dLat = toR(lat2-lat1), dLng = toR(lng2-lng1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toR(lat1))*Math.cos(toR(lat2))*Math.sin(dLng/2)**2;
+  return Math.round(2*R*Math.asin(Math.sqrt(a)));
+}
+function getPosition(){
+  return new Promise((res, rej)=>{
+    if(!navigator.geolocation) return rej(new Error(lang==='ar'?'جهازك ما يدعم تحديد الموقع.':'Location is not supported on this device.'));
+    navigator.geolocation.getCurrentPosition(p=>res({lat:p.coords.latitude, lng:p.coords.longitude, acc:Math.round(p.coords.accuracy||0)}),
+      e=>rej(new Error(e.code===1 ? (lang==='ar'?'لازم تسمح للمتصفح باستخدام الموقع عشان تسجل الحضور.':'Allow location access to record attendance.')
+        : (lang==='ar'?'تعذر تحديد موقعك، حاول مرة ثانية قريب من الباب أو الشباك.':'Could not get your location, try again.'))),
+      {enableHighAccuracy:true, timeout:20000, maximumAge:0});
+  });
+}
+/* which branch the person is standing in: their own branch, or (if none set) the nearest configured branch */
+function attResolveBranch(pos){
+  const u = currentUser();
+  const withLoc = branches.filter(b=> b.lat!=null && b.lng!=null);
+  const own = u.branch_id ? branches.find(b=>b.id===u.branch_id) : null;
+  if(own && (own.lat==null || own.lng==null)) throw new Error(lang==='ar'?`موقع فرع "${own.name}" غير محدد — الأدمن يحدده من الإعدادات أول.`:`Branch location not set by admin yet.`);
+  const cands = own ? [own] : withLoc;
+  if(!cands.length) throw new Error(lang==='ar'?'ما فيه فرع محدد موقعه — الأدمن يحدده من الإعدادات أول.':'No branch has a location yet.');
+  let best = null;
+  cands.forEach(b=>{ const d = geoDistance(pos.lat,pos.lng,Number(b.lat),Number(b.lng)); if(!best || d<best.d) best = {b, d}; });
+  const radius = Number(best.b.radius_m)||150;
+  if(pos.acc > 300) throw new Error(lang==='ar'?`دقة الموقع ضعيفة (${pos.acc} م). شغّل الـGPS وحاول مرة ثانية.`:`Location accuracy too low (${pos.acc} m).`);
+  if(best.d - Math.min(pos.acc,100) > radius) throw new Error(lang==='ar'?`أنت بعيد عن فرع "${best.b.name}" بحوالي ${best.d} متر. لازم تكون داخل الفرع.`:`You are ${best.d} m away from ${best.b.name}.`);
+  return best;
+}
+async function loadAttendance(){
+  const m = attMonth || todayStr().slice(0,7);
+  const from = new Date(`${m}-01T00:00:00+03:00`);
+  const to = new Date(from); to.setMonth(to.getMonth()+1);
+  let q = sb.from('attendance').select('*').gte('check_in', from.toISOString()).lt('check_in', to.toISOString()).order('check_in',{ascending:false});
+  if(!isAdmin()) q = q.eq('user_id', currentUser().id);
+  const {data, error} = await q; if(error) throw error;
+  attRows = data||[];
+}
+async function attOpenRow(){
+  const {data, error} = await sb.from('attendance').select('*').eq('user_id', currentUser().id).is('check_out', null).order('check_in',{ascending:false}).limit(1);
+  if(error) throw error; return (data||[])[0]||null;
+}
+window.uiAttendance = async function(kind){
+  const btn = document.getElementById('attActionBtn'); const msg = document.getElementById('attMsg');
+  if(btn){ btn.disabled = true; btn.textContent = lang==='ar'?'جاري تحديد موقعك…':'Getting location…'; }
+  try{
+    const pos = await getPosition();
+    const {b, d} = attResolveBranch(pos);
+    if(kind==='in'){
+      const {error} = await sb.from('attendance').insert({user_id:currentUser().id, branch_id:b.id, in_lat:pos.lat, in_lng:pos.lng, in_dist:d, in_acc:pos.acc});
+      if(error) throw error;
+    }else{
+      const open = await attOpenRow(); if(!open) throw new Error(lang==='ar'?'ما عندك حضور مفتوح.':'No open check-in.');
+      const {error} = await sb.from('attendance').update({check_out:new Date().toISOString(), out_lat:pos.lat, out_lng:pos.lng, out_dist:d, out_acc:pos.acc}).eq('id', open.id);
+      if(error) throw error;
+    }
+    renderAttendance();
+  }catch(e){
+    console.error(e);
+    if(msg) msg.innerHTML = `<div class="login-error">${e && e.code ? errText() : esc(e.message||String(e))}</div>`;
+    if(btn){ btn.disabled = false; btn.textContent = kind==='in' ? (lang==='ar'?'تسجيل حضور':'Check in') : (lang==='ar'?'تسجيل انصراف':'Check out'); }
+  }
+};
+async function renderAttendance(){
+  const ar = lang==='ar';
+  document.getElementById('pageSub').textContent = ar ? 'تسجيل الحضور والانصراف من داخل الفرع — الوقت من السيرفر والموقع يتحقق تلقائيًا' : 'Check in and out from inside the branch';
+  const box = document.getElementById('content');
+  box.innerHTML = `<div class="panel"><div class="empty">${ar?'جاري التحميل…':'Loading…'}</div></div>`;
+  let open = null;
+  try{ await loadAttendance(); if(!isAdmin()) open = await attOpenRow(); }
+  catch(e){ console.error(e); box.innerHTML = `<div class="panel"><div class="login-error">${errText()}<br>${ar?'تأكد إنك شغّلت كود SQL الخاص بالحضور في Supabase.':'Make sure the attendance SQL was run in Supabase.'}</div></div>`; return; }
+  if(route!=='attendance') return;
+  const month = attMonth || todayStr().slice(0,7);
+  const rows = isAdmin() && attUser!=='all' ? attRows.filter(r=>r.user_id===attUser) : attRows;
+  // one line per person per day
+  const days = new Map();
+  rows.forEach(r=>{ const k = r.user_id+'|'+attDay(r.check_in); const e = days.get(k) || {user_id:r.user_id, day:attDay(r.check_in), recs:[]}; e.recs.push(r); days.set(k,e); });
+  const dayList = [...days.values()].map(e=>{ e.recs.sort((a,b)=>a.check_in.localeCompare(b.check_in));
+    e.first = e.recs[0]; e.last = e.recs[e.recs.length-1]; e.hours = e.recs.reduce((s,r)=>s+attHours(r),0);
+    e.late = attLateMin(e.first); e.openIn = e.recs.some(r=>!r.check_out); e.branch = e.first.branch_id;
+    e.far = e.recs.some(r=> (r.in_dist||0) > (Number((branches.find(b=>b.id===r.branch_id)||{}).radius_m)||150) ); return e; })
+    .sort((a,b)=> b.day.localeCompare(a.day) || userName(a.user_id).localeCompare(userName(b.user_id)));
+  const todayKey = attDay(new Date().toISOString());
+  const accountants = users.filter(u=>u.role==='accountant' && u.active!==false);
+  // monthly summary per person
+  const sum = new Map();
+  dayList.forEach(e=>{ const x = sum.get(e.user_id) || {days:0, hours:0, late:0, lateMin:0, open:0}; x.days++; x.hours+=e.hours; if(e.late){ x.late++; x.lateMin+=e.late; } if(e.openIn && e.day!==todayKey) x.open++; sum.set(e.user_id,x); });
+  const myToday = dayList.find(e=>e.day===todayKey && e.user_id===currentUser().id);
+  box.innerHTML = `
+    ${!isAdmin()?`<div class="panel" style="text-align:center;">
+      <div style="font-size:14px;color:var(--muted,#667);">${new Date().toLocaleDateString(ar?'ar-SA-u-ca-gregory':'en-GB',{timeZone:ATT_TZ,weekday:'long',day:'numeric',month:'long'})}</div>
+      <div style="font-size:15px;margin:10px 0;">${open
+        ? (ar?`حاضر من الساعة <b>${attTime(open.check_in)}</b>`:`Checked in at <b>${attTime(open.check_in)}</b>`)
+        : myToday ? (ar?`آخر انصراف: <b>${attTime(myToday.last.check_out)}</b> — مجموع اليوم ${fmtHours(myToday.hours)} ساعة`:`Last check-out ${attTime(myToday.last.check_out)}`)
+        : (ar?'ما سجّلت حضور اليوم':'Not checked in today')}</div>
+      <button class="btn ${open?'btn-ghost':'btn-gold'}" id="attActionBtn" style="min-width:200px;padding:14px 20px;font-size:16px;" onclick="uiAttendance('${open?'out':'in'}')">${open?(ar?'تسجيل انصراف':'Check out'):(ar?'تسجيل حضور':'Check in')}</button>
+      <div id="attMsg" style="margin-top:10px;"></div>
+      <p class="note" style="margin-top:8px;">${ar?'لازم تكون داخل الفرع ومفعّل الموقع (GPS). الوقت يُسجَّل من السيرفر مو من جوالك.':'You must be inside the branch with location on. Time is taken from the server.'}</p>
+    </div>`:''}
+    ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'حضور اليوم':'Today'}</h3></div>
+      ${accountants.length?`<table><thead><tr><th>${ar?'المحاسب':'Accountant'}</th><th>${t('colBranch')}</th><th>${ar?'الحالة':'Status'}</th></tr></thead><tbody>
+      ${accountants.map(u=>{ const e = dayList.find(x=>x.day===todayKey && x.user_id===u.id);
+        const st = !e ? `<span class="tag rejected">${ar?'لم يحضر':'Absent'}</span>`
+          : e.openIn ? `<span class="tag collected">${ar?'حاضر من':'In since'} ${attTime(e.first.check_in)}</span>${e.late?` <span class="tag pending">${ar?'متأخر':'Late'} ${e.late} ${ar?'د':'min'}</span>`:''}`
+          : `<span class="tag">${ar?'انصرف':'Left'} ${attTime(e.last.check_out)}</span>`;
+        return `<tr><td>${esc(u.name)}</td><td>${esc(branchName(u.branch_id))}</td><td>${st}</td></tr>`; }).join('')}</tbody></table>`
+      :`<div class="empty">${ar?'ما فيه مستخدمين بدور محاسب.':'No accountants.'}</div>`}
+    </div>`:''}
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'سجل الشهر':'Monthly log'}</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <input type="month" id="attMonthInput" value="${month}">
+        ${isAdmin()?`<select id="attUserSel"><option value="all">${t('allEmployeesOpt')}</option>${users.filter(u=>u.role!=='employee'||attRows.some(r=>r.user_id===u.id)).map(u=>`<option value="${u.id}" ${attUser===u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
+        <button class="btn btn-ghost btn-sm" id="attExcelBtn">${t('exportExcelBtn')}</button>`:''}
+      </div></div>
+      ${isAdmin() && sum.size ? `<div style="overflow-x:auto;margin-bottom:12px;"><table><thead><tr><th>${ar?'الاسم':'Name'}</th><th>${ar?'أيام الحضور':'Days'}</th><th>${ar?'مجموع الساعات':'Hours'}</th><th>${ar?'مرات التأخير':'Late days'}</th><th>${ar?'دقائق التأخير':'Late min'}</th><th>${ar?'بدون انصراف':'No check-out'}</th></tr></thead><tbody>
+        ${[...sum.entries()].map(([id,x])=>`<tr><td style="font-weight:600">${esc(userName(id))}</td><td class="num">${x.days}</td><td class="num">${fmtHours(x.hours)}</td><td class="num" style="${x.late?'color:var(--red);font-weight:600':''}">${x.late}</td><td class="num">${x.lateMin}</td><td class="num" style="${x.open?'color:var(--red);font-weight:600':''}">${x.open}</td></tr>`).join('')}
+      </tbody></table></div>` : ''}
+      ${dayList.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('fieldDate')}</th>${isAdmin()?`<th>${ar?'الاسم':'Name'}</th>`:''}<th>${t('colBranch')}</th><th>${ar?'حضور':'In'}</th><th>${ar?'انصراف':'Out'}</th><th>${ar?'الساعات':'Hours'}</th><th>${ar?'ملاحظات':'Notes'}</th></tr></thead><tbody>
+        ${dayList.map(e=>`<tr><td style="white-space:nowrap">${e.day}</td>${isAdmin()?`<td style="font-weight:600">${esc(userName(e.user_id))}</td>`:''}<td>${esc(branchName(e.branch))}</td>
+          <td class="num">${attTime(e.first.check_in)}</td><td class="num">${e.openIn?(e.day===todayKey?(ar?'لسا داخل':'In'):`<span style="color:var(--red);font-weight:600">${ar?'ما سجّل':'Missing'}</span>`):attTime(e.last.check_out)}</td>
+          <td class="num">${fmtHours(e.hours)}</td>
+          <td>${e.late?`<span class="tag pending">${ar?'تأخير':'Late'} ${e.late} ${ar?'د':'min'}</span> `:''}${e.recs.length>1?`<span class="tag">${e.recs.length} ${ar?'فترات':'shifts'}</span>`:''}</td></tr>`).join('')}
+      </tbody></table></div>`}
+    </div>`;
+  document.getElementById('attMonthInput').onchange = e=>{ attMonth = e.target.value || null; renderAttendance(); };
+  if(document.getElementById('attUserSel')) document.getElementById('attUserSel').onchange = e=>{ attUser = e.target.value; renderAttendance(); };
+  if(document.getElementById('attExcelBtn')) document.getElementById('attExcelBtn').onclick = ()=>{
+    const data = dayList.map(e=>({ [ar?'التاريخ':'Date']:e.day, [ar?'الاسم':'Name']:userName(e.user_id), [ar?'الفرع':'Branch']:branchName(e.branch),
+      [ar?'حضور':'In']:attTime(e.first.check_in), [ar?'انصراف':'Out']:e.openIn?'':attTime(e.last.check_out), [ar?'الساعات':'Hours']:fmtHours(e.hours), [ar?'تأخير (دقيقة)':'Late (min)']:e.late||0 }));
+    const ws = XLSX.utils.json_to_sheet(data); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Attendance');
+    XLSX.writeFile(wb, `attendance-${month}.xlsx`);
+  };
+}
+/* admin: set a branch's location (stand inside it and tap, or paste coordinates), allowed radius and shift start */
+window.uiBranchAttendance = function(id){
+  const b = branches.find(x=>x.id===id); if(!b) return; const ar = lang==='ar';
+  showModal(`
+    <div class="modal-head"><h3>${ar?'موقع ودوام الفرع':'Branch location and shift'} — ${esc(b.name)}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="brAttForm">
+      <p class="note">${ar?'وقف داخل الفرع واضغط الزر، أو انسخ الإحداثيات من خرائط قوقل (اضغط مطولًا على مكان الفرع).':'Stand inside the branch and tap the button, or paste coordinates from Google Maps.'}</p>
+      <button type="button" class="btn btn-gold btn-sm" id="brUseMyLoc">📍 ${ar?'استخدم موقعي الحالي':'Use my current location'}</button>
+      <div class="grid-2" style="margin-top:10px;">
+        <div class="field"><label>Latitude</label><input name="lat" dir="ltr" value="${b.lat??''}" required></div>
+        <div class="field"><label>Longitude</label><input name="lng" dir="ltr" value="${b.lng??''}" required></div>
+      </div>
+      <div class="grid-2">
+        <div class="field"><label>${ar?'المسافة المسموحة (متر)':'Allowed radius (m)'}</label><input type="number" name="radius" min="30" max="1000" value="${b.radius_m||150}"></div>
+        <div class="field"><label>${ar?'بداية الدوام':'Shift start'}</label><input type="time" name="shift" value="${String(b.shift_start||'08:00').slice(0,5)}"></div>
+      </div>
+      <p class="note">${ar?'يُحسب تأخير لو الحضور بعد بداية الدوام بأكثر من 15 دقيقة.':'Late = more than 15 minutes after shift start.'}</p>
+      <div id="brAttErr"></div>
+      <div style="margin-top:14px;display:flex;gap:10px;"><button type="submit" class="btn btn-primary" id="brAttSave">${t('saveChanges')}</button><button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>
+    </form>`);
+  const f = document.getElementById('brAttForm');
+  document.getElementById('brUseMyLoc').onclick = async (ev)=>{
+    const bt = ev.target; bt.disabled = true;
+    try{ const p = await getPosition(); f.lat.value = p.lat.toFixed(6); f.lng.value = p.lng.toFixed(6);
+      document.getElementById('brAttErr').innerHTML = `<div class="note">${ar?`تم — دقة الموقع ${p.acc} متر`:`Done — accuracy ${p.acc} m`}</div>`; }
+    catch(e){ document.getElementById('brAttErr').innerHTML = `<div class="login-error">${esc(e.message)}</div>`; }
+    bt.disabled = false;
+  };
+  f.lat.addEventListener('paste', e=>{ const t0 = (e.clipboardData||window.clipboardData).getData('text'); const m = t0.match(/(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)/); if(m){ e.preventDefault(); f.lat.value = m[1]; f.lng.value = m[2]; } });
+  f.onsubmit = async (e)=>{
+    e.preventDefault(); const bt = document.getElementById('brAttSave'); bt.disabled = true;
+    const lat = parseFloat(f.lat.value), lng = parseFloat(f.lng.value);
+    if(!(Math.abs(lat)<=90 && Math.abs(lng)<=180)){ document.getElementById('brAttErr').innerHTML = `<div class="login-error">${ar?'الإحداثيات غير صحيحة.':'Invalid coordinates.'}</div>`; bt.disabled=false; return; }
+    const upd = {lat, lng, radius_m: Math.max(30, Number(f.radius.value)||150), shift_start: f.shift.value||null};
+    try{ const {error} = await sb.from('branches').update(upd).eq('id', id); if(error) throw error; Object.assign(b, upd); closeModal(); render(); }
+    catch(err){ console.error(err); document.getElementById('brAttErr').innerHTML = `<div class="login-error">${errText()}</div>`; bt.disabled=false; }
+  };
+};
 
 /* ===================== LOGIN ===================== */
 function renderLogin(app){
@@ -4390,7 +4579,7 @@ function renderSettings(){
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('branchesTitle')}</h3><button class="btn btn-primary btn-sm" id="addBranchBtn">${t('addBranch')}</button></div>
       <table><thead><tr><th>${t('colBranchOnly')}</th><th></th></tr></thead>
-        <tbody>${branches.map(b=>`<tr><td>${esc(b.name)}</td><td><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
+        <tbody>${branches.map(b=>`<tr><td>${esc(b.name)}${b.lat!=null?` <span class="tag collected">📍 ${lang==='ar'?'الموقع محدد':'Located'}</span>`:''}</td><td style="display:flex;gap:6px;"><button class="btn btn-ghost btn-sm" onclick="uiBranchAttendance('${b.id}')">📍 ${lang==='ar'?'الموقع والدوام':'Location and shift'}</button><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
       <div class="note">${t('branchDeleteNote')}</div>
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('backupTitle')}</h3></div>
