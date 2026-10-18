@@ -1323,6 +1323,7 @@ async function addBooking(data){
   const row = {
     date: data.date||todayStr(), customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
+    ...(('pnr' in data && data.pnr!==null && data.pnr!==undefined) ? {pnr: String(data.pnr).trim().toUpperCase()||null} : {}),
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, commission_rate: 0, commission: 0, profit_amount: profit,
     margin: profit, net_profit: profit,
@@ -1379,6 +1380,7 @@ async function updateBooking(id, data){
   const row = {
     date: data.date, customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
+    ...(('pnr' in data && data.pnr!==null && data.pnr!==undefined) ? {pnr: String(data.pnr).trim().toUpperCase()||null} : {}),
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, profit_amount: profit, margin: profit, net_profit: profit, cost_reviewed: true,
     payment_method: method, payment_status: isSplit ? (allSettled?'paid':'pending') : ((method==='cash' || alreadyConfirmed) ? 'paid' : 'pending'),
@@ -2715,6 +2717,7 @@ function openBookingModal(existing){
         <div class="field"><label>${t('fieldTicketNo')}</label><input name="ticketNo" value="${v.ticket_no||''}"></div>
         <div class="field"><label>${t('fieldInvoiceNo')}</label><input name="invoiceNo" value="${v.invoice_no||''}"></div>
       </div>
+      <div class="field"><label>PNR ${lang==='ar'?'(رقم الحجز — مهم للمطابقة مع طيران الخليج NDC وأكبر)':'(booking reference — needed to match Gulf Air NDC and Akbar)'}</label><input name="pnr" dir="ltr" autocomplete="off" style="text-transform:uppercase" placeholder="ESRAVR" value="${esc(v.pnr||'')}"></div>
       <div class="grid-2">
         <div class="field"><label>${t('fieldFlightRoute')}</label><input name="flightRoute" placeholder="${t('flightRoutePlaceholder')}" value="${v.flight_route||''}"></div>
         <div class="field"><label>${t('fieldSupplier')}</label><select name="source">${SOURCE_PRESETS.map(s=>`<option ${v.supplier===s?'selected':''}>${s}</option>`).join('')}</select></div>
@@ -2822,7 +2825,7 @@ function openBookingModal(existing){
     const f = new FormData(e.target);
     const isSplit = document.getElementById('splitPaymentToggle').checked;
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
-      ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
+      ticketNo:f.get('ticketNo'), pnr:f.get('pnr'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
       sell:f.get('sell'), cost:f.get('cost'), isOpenTicket: f.get('isOpenTicket')==='on',
       paymentMethod:isSplit?'split':f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider'), note:f.get('note') };
     if(isSplit){
@@ -4455,6 +4458,23 @@ async function exportFullBackup(){
 
 /* ===================== RECONCILIATION ===================== */
 /* ---- robust parsing for statements coming from GDS / suppliers / banks ---- */
+/* ======= supplier report recognition (Galileo, Amadeus/IATA, Air Arabia, Akbar B2B, Gulf Air NDC) ======= */
+function detectReportSource(headers){
+  const h = headers.map(x=>String(x).trim().toLowerCase());
+  const has = n=> h.some(x=>x===n);
+  if(has('pcc') && has('record locator')) return {key:'galileo', label:'Galileo / Travelport', amt:['total fare'], sup:/galileo|travelport/i};
+  if(has('doc number') && has('trnc')) return {key:'amadeus', label:'Amadeus / IATA', amt:[], sup:/amadeus|iata|bsp/i};
+  if(has('e-ticket') && has('routing') && has('payment')) return {key:'g9', label:'Air Arabia', amt:['payment'], sup:/arabia|g9|portal/i};
+  if(has('ticketnumber') && has('invoice no') && h.some(x=>x.includes('ledger'))) return {key:'akbar', label:'Akbar B2B', amt:['net amount'], sup:/akbar/i};
+  if(has('order reference') && has('ndc id')) return {key:'ndc', label:'Gulf Air NDC', amt:['amount'], sup:/ndc|gulf/i};
+  return null;
+}
+/* status values that mean the ticket was voided / cancelled before it counted */
+const RECON_VOID = new Set(['VA','VOID','VOIDED','CANX','CANN']);
+function isVoidRow(row){ return Object.values(row).some(v=> RECON_VOID.has(String(v??'').trim().toUpperCase())); }
+/* statement lines that are money movements, not new tickets (refunds, credit notes, extra services, reissue fees, deposits) */
+const RECON_NON_TICKET = new Set(['flight refund','refund','rfnd','credit-other','debit-other','post ssr','other-sale','reissued','deposit','receipt','credit note','debit note','adm','acm']);
+function isNonTicketRow(row){ return Object.values(row).some(v=> RECON_NON_TICKET.has(String(v??'').trim().toLowerCase())); }
 function parseAmount(v){
   if(v===null || v===undefined) return NaN;
   if(typeof v==='number') return v;
@@ -4892,9 +4912,21 @@ function renderReconcile(){
         document.getElementById('reconcileBankAmountColSel').innerHTML = opts;
         document.getElementById('reconcileColumnBox').style.display = '';
         if(isPosReport(reconcileHeaders)){ const ms = document.getElementById('reconcileModeSel'); ms.value = 'pos'; ms.onchange({target:ms}); }
+        const src = detectReportSource(reconcileHeaders);
+        let srcNote = '';
+        if(src){
+          const amtH = reconcileHeaders.find(h=> src.amt.includes(String(h).trim().toLowerCase()));
+          if(amtH) document.getElementById('reconcileTicketAmountColSel').value = amtH;
+          const supSel = document.getElementById('rfSupplier');
+          const supOpt = supSel ? [...supSel.options].find(o=> o.value!=='all' && src.sup.test(o.value)) : null;
+          if(supOpt){ supSel.value = supOpt.value; updateReconcileCount(); }
+          srcNote = `<div class="note" style="background:#EAF3DE;padding:10px;border-radius:8px;margin-bottom:6px;">✅ ${lang==='ar'
+            ? `تم التعرف على التقرير: <b>${src.label}</b>${amtH?` — عمود المبلغ: <b>${esc(amtH)}</b>`:''}${supOpt?` — المورد: <b>${esc(supOpt.value)}</b>`:''}. تأكد من الفترة (من/إلى) تطابق فترة التقرير.`
+            : `Report recognised: <b>${src.label}</b>${amtH?` — amount column: <b>${esc(amtH)}</b>`:''}${supOpt?` — supplier: <b>${esc(supOpt.value)}</b>`:''}. Make sure the date range matches the report.`}</div>`;
+        }
         // show what was read, so a wrong sheet / header is visible immediately
         const prevCols = reconcileHeaders.slice(0,8);
-        document.getElementById('reconcileResultBox').innerHTML = `<div class="note" style="background:#EEF5F4;padding:10px;border-radius:8px;">📄 ${lang==='ar'?`تمت قراءة <b>${reconcileRows.length}</b> سطر من <b>${sheetsUsed}</b> ورقة. أول 3 سطور:`:`Read <b>${reconcileRows.length}</b> rows from <b>${sheetsUsed}</b> sheet(s). First 3 rows:`}</div>
+        document.getElementById('reconcileResultBox').innerHTML = srcNote + `<div class="note" style="background:#EEF5F4;padding:10px;border-radius:8px;">📄 ${lang==='ar'?`تمت قراءة <b>${reconcileRows.length}</b> سطر من <b>${sheetsUsed}</b> ورقة. أول 3 سطور:`:`Read <b>${reconcileRows.length}</b> rows from <b>${sheetsUsed}</b> sheet(s). First 3 rows:`}</div>
           <div style="overflow-x:auto;margin-top:6px;"><table><thead><tr>${prevCols.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead>
           <tbody>${reconcileRows.slice(0,3).map(r=>`<tr>${prevCols.map(h=>`<td>${esc(String(r[h]??''))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
       }catch(err){ console.error(err); alert(t('reconcileParseError')); }
@@ -4933,6 +4965,9 @@ function renderReconcile(){
       const compareTo = document.getElementById('reconcileCompareSel')?.value || 'cost';
       const index = new Map();
       scoped.filter(b=>b.ticket_no).forEach(b=>{ ticketKeys(b.ticket_no).forEach(k=>{ if(!index.has(k)) index.set(k, b); }); });
+      // PNR -> every booking on that reservation (one PNR can hold several passengers)
+      const pnrIndex = new Map();
+      scoped.filter(b=>b.pnr).forEach(b=>{ const k = normTicket(b.pnr); if(k.length>=5){ const a = pnrIndex.get(k); if(a){ if(!a.includes(b)) a.push(b); } else pnrIndex.set(k,[b]); } });
       const sameText = (a,b)=> !a || !b || String(a).trim().toUpperCase()===String(b).trim().toUpperCase();
       let fuzzyMatches = 0;
       let emptyValCount = 0;
@@ -4948,10 +4983,17 @@ function renderReconcile(){
         const keys = [...ticketKeys(raw)];
         if(pass===1){
           for(const pref of ['T:','D:','L:']){
+            const found = new Map();
             for(const k of keys.filter(k=>k.startsWith(pref))){
               const b = index.get(k);
-              if(b && okExtra(b)) return {hit:b, fuzzy: pref!=='T:'};
+              if(b && okExtra(b)) found.set(b.id, b);
             }
+            if(found.size){ const g = [...found.values()]; return {hit:g[0], group: g.length>1 ? g : null, fuzzy: pref!=='T:'}; }
+          }
+          // no ticket number matched: try it as a PNR (Gulf Air NDC, FlyDubai / Jazeera via B2B)
+          for(const k of keys.filter(k=>k.startsWith('T:'))){
+            const g = (pnrIndex.get(k.slice(2))||[]).filter(okExtra);
+            if(g.length) return {hit:g[0], group: g.length>1 ? g : null, fuzzy:false, byPnr:true};
           }
           return null;
         }
@@ -4974,10 +5016,14 @@ function renderReconcile(){
         reconcileRows.forEach(r=>{ const n = parseAmount(r[amtCol]); if(!isNaN(n) && n!==0){ if(n<0) neg++; else pos++; } });
         if(neg>pos) flip = -1;
       }
-      const agg = new Map();   // booking id -> {b, sale, refund, tickets:[]}
-      let skipped = 0;
+      const agg = new Map();   // booking id (or PNR group) -> {b, group, sale, refund, tickets:[]}
+      let skipped = 0, voided = 0, nonTicket = 0;
+      const crdrCol = reconcileHeaders.find(h=>/^(cr\s*\/\s*dr|dr\s*\/\s*cr)$/i.test(String(h).trim()));
+      const rowAmt = row=>{ const n = parseAmount(row[amtCol]); if(isNaN(n)) return NaN; return (crdrCol && String(row[crdrCol]??'').trim().toUpperCase()==='CR') ? -Math.abs(n)*flip : n; };
+      const missingByKey = new Map();
       reconcileRows.forEach(row=>{
         if(isSkipRow(row)){ skipped++; return; }
+        if(isVoidRow(row)){ voided++; return; }
         const airlineVal = airlineCol ? row[airlineCol] : '';
         const routeVal = routeCol ? row[routeCol] : '';
         let result = null, matchedCol = null, anyValPresent = false;
@@ -4994,37 +5040,45 @@ function renderReconcile(){
         if(!result){
           // a row with nothing in the ticket / PNR / reference columns is a balance or narration line, not a ticket
           if(likelyCols.length && likelyCols.every(c=>String(row[c]??'').trim()==='')){ skipped++; return; }
-          missing.push(row); return;
+          if(isNonTicketRow(row)){ nonTicket++; return; }
+          // the same ticket split over several lines (one per flight segment) is ONE missing ticket
+          const dk = likelyCols.map(c=>normTicket(row[c])).join('|');
+          const prev = dk.replace(/\|/g,'') ? missingByKey.get(dk) : null;
+          if(prev){ if(amtCol){ const a = parseAmount(prev[amtCol]), n = parseAmount(row[amtCol]); if(!isNaN(n)) prev[amtCol] = +(((isNaN(a)?0:a)+n).toFixed(2)); } return; }
+          const copy = {...row}; if(dk.replace(/\|/g,'')) missingByKey.set(dk, copy);
+          missing.push(copy); return;
         }
         if(result.fuzzy) fuzzyMatches++;
         const hit = result.hit;
-        const e = agg.get(hit.id) || {b:hit, sale:0, refund:0, hasAmt:false, tickets:[]};
-        e.tickets.push(row[matchedCol]);
+        const group = result.group || [hit];
+        const aggKey = group.map(b=>b.id).sort().join('+');
+        const e = agg.get(aggKey) || {b:hit, group, sale:0, refund:0, hasAmt:false, tickets:[]};
+        if(!e.tickets.includes(row[matchedCol])) e.tickets.push(row[matchedCol]);
         if(amtCol){
-          const n = parseAmount(row[amtCol]);
+          const n = rowAmt(row);
           if(!isNaN(n)){ const v = n*flip; e.hasAmt = true; if(v>=0) e.sale += v; else e.refund += -v; }
         }
-        agg.set(hit.id, e);
+        agg.set(aggKey, e);
       });
       agg.forEach(e=>{
         const hit = e.b;
+        const G = e.group || [hit];
         if(amtCol && e.hasAmt){
-          const base = compareTo==='cost' ? (Number(hit.cost)||0) : (Number(hit.sell)||0);
-          const refBase = compareTo==='cost' ? bookingSupplierRefund(hit) : bookingRefundAmount(hit);
+          const base = G.reduce((s,b)=> s + (compareTo==='cost' ? (Number(b.cost)||0) : (Number(b.sell)||0)), 0);
+          const refBase = G.reduce((s,b)=> s + (compareTo==='cost' ? bookingSupplierRefund(b) : bookingRefundAmount(b)), 0);
           const saleOk = e.sale<0.005 || Math.abs(e.sale-base)<0.05;
           const refOk = e.refund<0.005 || Math.abs(e.refund-refBase)<0.05;
           if(!saleOk || !refOk){
             const fileAmt = +(e.sale - e.refund).toFixed(2), sysAmt = +((e.sale>0.005?base:0) - (e.refund>0.005?refBase:0)).toFixed(2);
-            amountMismatches.push({row:null, sysAmt, fileAmt, ticket:e.tickets.join(' + '), b:hit});
+            amountMismatches.push({row:null, sysAmt, fileAmt, ticket:e.tickets.join(' + ') + (G.length>1?` (${G.length} ${lang==='ar'?'تذاكر':'tickets'})`:''), b:hit});
+            G.forEach(b=>seen.set(b.id, true));
             return;
           }
         }
-        matched++;
-        matchedList.push(hit);
-        seen.set(hit.id, true);
+        G.forEach(b=>{ matched++; matchedList.push(b); seen.set(b.id, true); });
       });
       amountMismatches.forEach(m=>seen.set(m.b.id, true));
-      missing._skipped = skipped;
+      missing._skipped = skipped; missing._voided = voided; missing._nonTicket = nonTicket;
       // the "who issued it" column: the one whose values match employees' supplier usernames most often
       let userCol = document.getElementById('reconcileUserColSel')?.value || null, bestHits = userCol ? 1e9 : 0;
       const sample = reconcileRows.slice(0, 400);
@@ -5147,6 +5201,8 @@ function renderReconcile(){
     box.innerHTML = `
       ${missing._emptyColWarning?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">⚠️ ${missing._emptyColWarning}</div>`:''}
       ${missing._diagnostic?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;margin-bottom:10px;">🔎 ${missing._diagnostic}</div>`:''}
+      ${missing._voided?`<div class="note" style="margin-bottom:8px;">🚫 ${lang==='ar'?`تم استبعاد ${missing._voided} تذكرة ملغاة (Void) — ما تُحسب ناقصة`:`${missing._voided} voided tickets excluded`}</div>`:''}
+      ${missing._nonTicket?`<div class="note" style="margin-bottom:8px;">↩️ ${lang==='ar'?`${missing._nonTicket} حركة مو تذاكر جديدة (استرجاع، إشعار دائن، خدمات إضافية، رسوم إعادة إصدار) وما لقينا لها تذكرة بالنظام — راجعها من صفحة الاسترجاعات`:`${missing._nonTicket} non-ticket movements (refunds, credit notes, SSR, reissue fees) not linked to a system ticket`}</div>`:''}
       ${missing._skipped?`<div class="note" style="margin-bottom:8px;">ℹ️ ${lang==='ar'?`تم تجاهل ${missing._skipped} سطر ليست تذاكر (دفعات، أرصدة، مجاميع، نهاية التقرير)`:`${missing._skipped} non-ticket rows ignored (receipts, balances, totals)`}</div>`:''}
       <div class="kpi-row" style="grid-template-columns:repeat(${amountMismatches.length>0?4:3},1fr);margin-bottom:14px;">
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('reconcileTotalRows')}</div><div class="kpi-value">${reconcileRows.length}</div></div>
