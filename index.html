@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-E5</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-E6</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1035,7 +1035,7 @@ async function rejectProfitHandover(id, note){
   if(error) throw error;
   const h = profitHandovers.find(x=>x.id===id); if(h){ h.status='rejected'; h.notes=note||null; }
 }
-async function requestRefund(bookingId, file, note, refundMethod, refundAmount, supplierRefund){
+async function requestRefund(bookingId, file, note, refundMethod, refundAmount, supplierRefund, exchangeData){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) throw new Error('booking not found');
   if(b.refunded) throw new Error(lang==='ar'?'هذي التذكرة مسترجعة ومعتمدة — ما يتعدل طلبها.':'Refund already approved.');
@@ -1044,6 +1044,7 @@ async function requestRefund(bookingId, file, note, refundMethod, refundAmount, 
   const patch = { refund_status:'pending', refund_method:refundMethod||'cash', refund_amount:refundAmount!=null?+Number(refundAmount).toFixed(2):null,
     supplier_refund_amount:(supplierRefund!==undefined && supplierRefund!==null && supplierRefund!=='')?+Number(supplierRefund).toFixed(2):null,
     refund_receipt_url:receiptUrl, refund_note:note||null, refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString() };
+  if(exchangeData!==undefined) patch.exchange_data = exchangeData;   // replacement ticket, created when the accountant approves
   await mustUpdate('bookings', bookingId, patch);
   Object.assign(b, patch);
   // waits for the accountant: nothing leaves the employee's cash or the bank until it is approved
@@ -1072,6 +1073,11 @@ async function editApprovedRefund(bookingId, refundAmount, method, supplierRefun
 async function cancelApprovedRefund(bookingId, returnNote){
   const b = bookings.find(x=>x.id===bookingId); if(!b) throw new Error('booking not found');
   const old = journal.filter(j=>j.booking_id===bookingId && (j.desc_key==='jRefund' || j.desc_key==='jSupplierRefund'));
+  if(b.exchange_data && b.exchange_data.new_id){
+    if(bookings.some(x=>x.id===b.exchange_data.new_id)) await deleteBooking(b.exchange_data.new_id);
+    const nx = {...b.exchange_data}; delete nx.new_id; delete nx.new_no;
+    await mustUpdate('bookings', bookingId, {exchange_data:nx}); b.exchange_data = nx;
+  }
   // returnNote given → back to the employee as "returned for correction" (his amounts and receipt stay, so he only fixes what is wrong)
   const patch = returnNote!==undefined
     ? {refunded:false, refund_status:'rejected', refund_note:returnNote||null, refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString()}
@@ -1130,6 +1136,22 @@ async function approveRefund(bookingId, refundMethod, refundProofUrl){
   if(error) throw error;
   b.refund_status='approved'; b.refunded=true; b.refund_method=refundMethod||b.refund_method||null; b.refund_proof_url=refundProofUrl||null;
   await postRefundReversal(bookingId);
+  await createExchangeTicket(b);
+}
+// refund + replacement ticket: the old ticket's value pays for the new one, only the difference moves in cash
+async function createExchangeTicket(b){
+  const x = b.exchange_data; if(!x || x.new_id) return;
+  const sell = +Number(x.sell).toFixed(2), extra = +Math.max(0, sell - (Number(b.refund_amount)||0)).toFixed(2);
+  const data = {date:todayStr(), customer:b.customer, branchId:b.branch_id, airline:x.airline||b.airline||'-', ticketNo:x.ticketNo, source:x.supplier||b.supplier,
+    sell, cost:+Number(x.cost).toFixed(2), createdBy:b.created_by, note:(lang==='ar'?`تذكرة بديلة عن #${b.booking_no}`:`Replacement for #${b.booking_no}`)};
+  if(extra>0.004 && x.extraMethod && x.extraMethod!=='cash'){
+    data.paymentMethod = 'split';
+    data.paymentSplits = [{method:'cash', amount:+(sell-extra).toFixed(2)}, {method:x.extraMethod, amount:extra, bankName:x.bankName||null}];
+  }else data.paymentMethod = 'cash';
+  await addBooking(data);
+  const nb = bookings[0];
+  const nx = {...x, new_id:nb.id, new_no:nb.booking_no};
+  await mustUpdate('bookings', b.id, {exchange_data:nx}); b.exchange_data = nx;
 }
 async function settleSupplierPayment(bookingId){
   const b = bookings.find(x=>x.id===bookingId);
@@ -1284,7 +1306,7 @@ async function addBooking(data){
     payment_method: method, bank_name: method==='transfer' ? (data.bankName||null) : method==='installment' ? (data.installmentProvider||null) : null,
     payment_splits: isSplit ? data.paymentSplits.map(s=>({...s, verified: s.method==='cash'?true:false})) : null,
     transfer_verified: isSplit ? allCash : false,
-    commission_status:'pending', created_by: currentUser()?.id||null, note: data.note||null
+    commission_status:'pending', created_by: data.createdBy || currentUser()?.id||null, note: data.note||null
   };
   const {data:inserted, error} = await sb.from('bookings').insert(row).select().single();
   if(error) throw error;
@@ -3590,6 +3612,22 @@ function openUnifiedRefundModal(prefillId){
       <div class="field"><label>${ar?'طريقة الاسترجاع للعميل':'Refund method'}</label><select name="refundMethod" id="urMethod">
         <option value="cash" ${L.refund_method!=='transfer'?'selected':''}>${ar?'كاش — ينخصم من كاشك بعد اعتماد المحاسب':'Cash — from your cash after approval'}</option>
         <option value="transfer" ${L.refund_method==='transfer'?'selected':''}>${ar?'تحويل — من البنك بعد اعتماد المحاسب':'Transfer — from the bank after approval'}</option></select></div>
+      <label style="display:flex;gap:8px;align-items:center;margin:6px 0;font-weight:600;"><input type="checkbox" id="urExch" ${L.exchange_data?'checked':''}> 🔁 ${ar?'سوّى للعميل تذكرة بديلة (تغيير تذكرة)':'Customer took a replacement ticket'}</label>
+      <div id="urExchBox" style="display:none;border:1px dashed var(--line,#ddd);border-radius:10px;padding:10px;margin-bottom:8px;">
+        <div class="note">${ar?'قيمة التذكرة القديمة (المسترد للعميل فوق) تدفع ثمن الجديدة، والفرق بس يتحرك كاش. التذكرة الجديدة تنسجل تلقائيًا لما يعتمد المحاسب.':'The old ticket value pays for the new one; only the difference moves in cash.'}</div>
+        <div class="grid-2">
+          <div class="field"><label>${ar?'رقم التذكرة الجديدة':'New ticket no.'}</label><input id="urNTicket" value="${esc((L.exchange_data||{}).ticketNo||'')}"></div>
+          <div class="field"><label>${ar?'شركة الطيران':'Airline'}</label><input id="urNAirline" value="${esc((L.exchange_data||{}).airline||'')}"></div>
+        </div>
+        <div class="grid-2">
+          <div class="field"><label>${ar?'سعر بيع الجديدة':'New ticket price'}</label><input type="number" step="0.01" id="urNSell" value="${(L.exchange_data||{}).sell??''}"></div>
+          <div class="field"><label>${ar?'سستم فير الجديدة':'New ticket system fare'}</label><input type="number" step="0.01" id="urNCost" value="${(L.exchange_data||{}).cost??''}"></div>
+        </div>
+        <div class="field"><label>${ar?'مورد الجديدة':'Supplier'}</label><select id="urNSupplier">${SOURCE_PRESETS.map(x=>`<option ${((L.exchange_data||{}).supplier||L.supplier)===x?'selected':''}>${x}</option>`).join('')}</select></div>
+        <div id="urExchDiff" class="note" style="font-weight:700;"></div>
+        <div class="field" id="urExtraBox" style="display:none"><label>${ar?'العميل دفع الزيادة بـ':'Customer paid the extra by'}</label><select id="urExtraMethod">
+          <option value="cash">${t('payCash')}</option><option value="transfer">${t('payTransfer')}</option><option value="span">${ar?'شبكة':'Card'}</option></select></div>
+      </div>
       <div class="field"><label>${ar?'نموذج / إيصال الرفند':'Refund form / receipt'}${L.refund_receipt_url?` (${ar?'مرفق سابقًا — ارفع جديد بس لو تبي تغيّره':'already attached'})`:''}</label><input type="file" name="receipt" accept="image/*,.pdf" ${L.refund_receipt_url?'':'required'}></div>
       <div class="field"><label>${t('fieldRefundNote')}</label><input name="note" value="${esc(L.refund_status==='rejected'?'':(L.refund_note||''))}"></div>
       <p class="note">${ar?'الطلب يبقى معلّق لين يعتمده المحاسب — ما ينخصم شي قبل الاعتماد.':'Stays pending until the accountant approves it.'}</p>
@@ -3619,7 +3657,20 @@ function openUnifiedRefundModal(prefillId){
     pb.innerHTML = `${ar?'ربح الاسترجاع':'Refund profit'} (${money(parseAmount(sup))} − ${money(cust)}): <b style="color:${refundProfit<0?'var(--red)':'#1f7a4d'}">${money(refundProfit)}</b>`
       + (linked ? ` — ${ar?'ربح التذكرة النهائي':'final ticket profit'}: <b style="color:${total<0?'var(--red)':'#1f7a4d'}">${money(total)}</b>` : '');
   };
-  ['urTicket','urSup','urCust'].forEach(id=>document.getElementById(id).oninput = draw); draw();
+  const drawExch = ()=>{
+    const on = document.getElementById('urExch').checked;
+    document.getElementById('urExchBox').style.display = on ? '' : 'none';
+    const ms = document.getElementById('urMethod'); if(on){ ms.value = 'cash'; ms.disabled = true; } else ms.disabled = false;
+    if(!on) return;
+    const v = parseAmount(document.getElementById('urCust').value)||0, n = parseAmount(document.getElementById('urNSell').value)||0, d = +(v-n).toFixed(2);
+    const box = document.getElementById('urExchDiff');
+    document.getElementById('urExtraBox').style.display = d < -0.004 ? '' : 'none';
+    box.innerHTML = !n ? '' : d>0.004 ? `💵 ${ar?'يرجع للعميل كاش':'Give back in cash'}: ${money(d)} ${ar?'— وهذا بس اللي ينخصم من كاشك':''}`
+      : d<-0.004 ? `💰 ${ar?'العميل يدفع زيادة':'Customer pays extra'}: ${money(-d)}` : `✔ ${ar?'نفس القيمة — ما في فرق كاش':'No difference'}`;
+  };
+  ['urTicket','urSup','urCust'].forEach(id=>document.getElementById(id).oninput = ()=>{ draw(); drawExch(); }); draw();
+  ['urNSell','urNCost'].forEach(id=>document.getElementById(id).oninput = drawExch);
+  document.getElementById('urExch').onchange = drawExch; drawExch();
   document.getElementById('refundRequestForm').onsubmit = async (e)=>{
     e.preventDefault();
     const btn = document.getElementById('refundSaveBtn'); const err = m=>{ document.getElementById('refundErrorBox').innerHTML = `<div class="login-error">${m}</div>`; };
@@ -3633,6 +3684,15 @@ function openUnifiedRefundModal(prefillId){
     if(linked && sup!=null && sup>(Number(linked.cost)||0)+0.01) return err(ar?`المسترد من الطيران أكبر من التكلفة (${money(linked.cost)}).`:'More than the cost.');
     if((!file || !file.size) && !(linked && linked.refund_receipt_url)) return err(t('receiptRequired'));
     if(!String(f.get('customer')||'').trim() || !String(f.get('ticketNo')||'').trim()) return err(ar?'اكتب اسم العميل ورقم التذكرة.':'Customer and ticket no. are required.');
+    const exch = document.getElementById('urExch').checked;
+    let exchangeData;
+    if(exch){
+      const nSell = parseAmount(document.getElementById('urNSell').value), nCost = parseAmount(document.getElementById('urNCost').value);
+      if(!(nSell>0) || !(nCost>=0) || !String(document.getElementById('urNTicket').value).trim()) return err(ar?'عبّ بيانات التذكرة البديلة (الرقم، السعر، السستم فير).':'Fill the replacement ticket.');
+      if(nCost>nSell+0.004 && !(isAdmin()||isAccountant())) return err(ar?'التذكرة البديلة بخسارة — تأكد من السعر والسستم فير.':'Replacement ticket at a loss.');
+      exchangeData = {ticketNo:String(document.getElementById('urNTicket').value).trim(), airline:String(document.getElementById('urNAirline').value).trim()||null,
+        sell:+nSell.toFixed(2), cost:+nCost.toFixed(2), supplier:document.getElementById('urNSupplier').value, extraMethod:document.getElementById('urExtraMethod').value};
+    }else if(linked && linked.exchange_data) exchangeData = null;
     btn.disabled = true; btn.textContent = t('uploading');
     try{
       let id = linked && linked.id;
@@ -3643,7 +3703,7 @@ function openUnifiedRefundModal(prefillId){
         const {data:ins, error} = await sb.from('bookings').insert(row).select().single(); if(error) throw error;
         bookings.unshift(ins); id = ins.id;
       }
-      await requestRefund(id, file, f.get('note'), f.get('refundMethod'), cust, sup);
+      await requestRefund(id, file, f.get('note'), exch ? 'cash' : f.get('refundMethod'), cust, sup, exchangeData);
       closeModal(); render();
     }catch(ex){ console.error(ex); err(errText()); btn.disabled=false; btn.textContent=ar?'إرسال للمحاسب للاعتماد':'Send for approval'; }
   };
@@ -3687,6 +3747,8 @@ window.uiApproveRefund = function(id){
   showModal(`
     <div class="modal-head"><h3>${t('modalApproveRefund')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <p class="note">${t('colNo')}: ${b.booking_no} — ${esc(b.customer)}</p>
+    ${b.exchange_data && !b.exchange_data.new_id?`<div class="note" style="background:#EEF3F8;padding:8px;border-radius:8px;">🔁 ${lang==='ar'?'تغيير تذكرة — بتنسجل تذكرة بديلة عند الاعتماد':'Exchange — a replacement ticket is created on approval'}: <b>${esc(b.exchange_data.ticketNo)}</b> — ${lang==='ar'?'بيع':'sale'} ${money(b.exchange_data.sell)} / ${lang==='ar'?'سستم فير':'fare'} ${money(b.exchange_data.cost)} (${esc(b.exchange_data.supplier||'')})
+      <br>${(()=>{ const d=+((Number(b.refund_amount)||0)-b.exchange_data.sell).toFixed(2); return d>0.004?(lang==='ar'?`يرجع للعميل كاش: ${money(d)}`:`Cash back ${money(d)}`):d<-0.004?(lang==='ar'?`العميل دفع زيادة: ${money(-d)} (${b.exchange_data.extraMethod==='cash'?'كاش':b.exchange_data.extraMethod==='span'?'شبكة':'تحويل'})`:`Customer paid extra ${money(-d)}`):(lang==='ar'?'بدون فرق':'No difference'); })()}</div>`:''}
     ${canSeeSalesTotals()?`<p class="note">${t('originalAmountLabel')}: ${money(b.sell)} — ${t('fieldRefundAmount')}: <strong>${money(b.refund_amount!=null?b.refund_amount:b.sell)}</strong></p>`:''}
     <form id="approveRefundForm">
       <div class="grid-2">
@@ -3712,6 +3774,7 @@ window.uiApproveRefund = function(id){
   };
   document.getElementById('apSupRef').oninput = _apCalc; document.getElementById('apCustAmt').oninput = _apCalc; _apCalc();
   document.getElementById('apMethod').onchange = (e)=>{ document.getElementById('apProofBox').style.display = e.target.value==='transfer' ? '' : 'none'; };
+  if(b.exchange_data && !b.exchange_data.new_id){ document.getElementById('apMethod').value = 'cash'; document.getElementById('apMethod').disabled = true; }
   document.getElementById('approveRefundForm').onsubmit = async (e)=>{
     e.preventDefault();
     const btn = document.getElementById('approveRefundBtn');
@@ -4624,7 +4687,7 @@ function renderRefunds(){
   }
   if(refundsDateFrom) history = history.filter(b=> (b.refund_reviewed_at||'').slice(0,10) >= refundsDateFrom);
   if(refundsDateTo) history = history.filter(b=> (b.refund_reviewed_at||'').slice(0,10) <= refundsDateTo);
-  const rowHTML = (b, showActions)=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(b.created_by))}</td><td>${branchName(b.branch_id)}</td>
+  const rowHTML = (b, showActions)=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}${b.exchange_data?` <span class="tag pending" title="${lang==='ar'?'تغيير تذكرة':'Exchange'}">🔁 ${b.exchange_data.new_no?'#'+b.exchange_data.new_no:esc(b.exchange_data.ticketNo||'')}</span>`:''}</td><td>${esc(userName(b.created_by))}</td><td>${branchName(b.branch_id)}</td>
       <td class="num">${canSeeSalesTotals()?money(b.sell):moneyOrHidden(0)}</td>
       <td class="num" style="font-weight:600">${canSeeSalesTotals()?money(b.refund_amount!=null?b.refund_amount:b.sell):moneyOrHidden(0)}</td>
       <td>${b.refund_method==='transfer'?t('payTransfer'):t('payCash')}</td>
