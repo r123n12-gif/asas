@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-E7</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-E8</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -973,7 +973,12 @@ function bulkHandoverPreview(dateTo){
 }
 async function bulkHandoverUntil(dateTo){
   const out = [];
-  for(const x of bulkHandoverPreview(dateTo)){
+  const taken = await freshLockedIds();          // tickets already in any handover, from the database (other devices included)
+  for(const x0 of bulkHandoverPreview(dateTo)){
+    const list = x0.list.filter(b=>!taken.has(b.id));
+    if(!list.length) continue;
+    const x = {u:x0.u, list, total:+list.reduce((a,b)=>a+bookingProfitNow(b),0).toFixed(2)};
+    list.forEach(b=>taken.add(b.id));
     const {data:ins, error} = await sb.from('profit_handovers').insert({
       branch_id:x.u.branch_id||null, employee_id:x.u.id, date_from:null, date_to:dateTo,
       total_profit:x.total, booking_ids:x.list.map(b=>b.id), status:'pending'
