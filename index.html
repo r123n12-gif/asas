@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G2</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G3</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -138,7 +138,12 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 let sb = null;
 const isConfigured = !SUPABASE_URL.includes('YOUR_SUPABASE_URL') && !SUPABASE_ANON_KEY.includes('YOUR_SUPABASE_ANON_KEY');
-if(isConfigured){ sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY); }
+if(isConfigured){
+  sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  // every write bumps a counter, so a background download never overwrites a newer save
+  const _from = sb.from.bind(sb);
+  sb.from = (tbl)=>{ const q = _from(tbl); ['insert','update','delete','upsert'].forEach(m=>{ if(typeof q[m]==='function'){ const f = q[m].bind(q); q[m] = (...a)=>{ window.__mutations = (window.__mutations||0)+1; return f(...a); }; } }); return q; };
+}
 
 /* ===================== I18N ===================== */
 const T = {
@@ -588,7 +593,11 @@ function dataSignature(){
 }
 async function fetchAll(){
   if(__fetching) return __fetching;
-  __fetching = fetchAllNow().finally(()=>{ __fetching = null; });
+  __fetching = (async ()=>{
+    // a save that happens while we download would be overwritten by the older copy → download again
+    for(let i=0;i<3;i++){ const m0 = __mutations; const snap = await fetchAllNow(); if(m0===__mutations && !__busy.size){ applyFetched(snap); return; } }
+    const snap = await fetchAllNow(); applyFetched(snap);
+  })().finally(()=>{ __fetching = null; });
   return __fetching;
 }
 async function fetchAllNow(){
@@ -604,9 +613,12 @@ async function fetchAllNow(){
     fetchAllRows('misc_receipts','*')
   ]);
   if(b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error||mr.error) throw (b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error||mr.error);
+  const rf = await fetchAllRows('refunds','*');
+  return {b, u, bk, jr, ex, dp, ph, ec, mr, rf};
+}
+function applyFetched({b, u, bk, jr, ex, dp, ph, ec, mr, rf}){
   branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[]; deposits = dp.data||[]; profitHandovers = ph.data||[]; employeeCharges = ec.data||[]; miscReceipts = mr.data||[];
   bookings.sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.created_at||'').localeCompare(a.created_at||''));
-  const rf = await fetchAllRows('refunds','*');
   refundsReady = !rf.error; refundRows = rf.error ? [] : (rf.data||[]);
   refundRows.sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
 }
@@ -1473,6 +1485,7 @@ function requirePositive(v){
 }
 const __busy = new Set();
 let __syncTimer = null;
+var __mutations = window.__mutations || 0;
 const __processing = new Set();
 function busyBadge(on){
   let el = document.getElementById('busyBadge');
@@ -1485,10 +1498,10 @@ function lockify(fn, name){
   return async function(...args){
     const key = name + ':' + JSON.stringify(args[0]);
     if(__busy.has(key)) return;
-    __busy.add(key); busyBadge(true);
+    __busy.add(key); busyBadge(true); __mutations++;
     try{ return await fn.apply(this, args); }
     finally {
-      __busy.delete(key);
+      __busy.delete(key); __mutations++;
       if(!__busy.size){
         busyBadge(false);
         // pull the latest data once everything is saved, so the screen never shows a half-updated state
