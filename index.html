@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-E9</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-F1</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -3797,10 +3797,10 @@ window.uiApproveRefund = function(id){
     ${canSeeSalesTotals()?`<p class="note">${t('originalAmountLabel')}: ${money(b.sell)} — ${t('fieldRefundAmount')}: <strong>${money(b.refund_amount!=null?b.refund_amount:b.sell)}</strong></p>`:''}
     <form id="approveRefundForm">
       <div class="grid-2">
-        <div class="field"><label>${t('fieldRefundAmount')} (${lang==='ar'?'للعميل':'to customer'})</label><input type="number" step="0.01" min="0.01" max="${b.sell}" id="apCustAmt" value="${b.refund_amount!=null?b.refund_amount:b.sell}"></div>
+        <div class="field"><label>${t('fieldRefundAmount')} (${lang==='ar'?'للعميل':'to customer'})</label><input type="number" step="0.01" min="0.01" ${isRefundOnly(b)?'':`max="${b.sell}"`} id="apCustAmt" value="${b.refund_amount!=null?b.refund_amount:b.sell}"></div>
         <div class="field"><label>${t('fieldRefundMethod')}</label><select id="apMethod"><option value="cash" ${isTransfer?'':'selected'}>${t('payCash')}</option><option value="transfer" ${isTransfer?'selected':''}>${t('payTransfer')}</option></select></div>
       </div>
-      <div class="field"><label>${lang==='ar'?'المبلغ المسترد من الطيران':'Airline refund'} (${lang==='ar'?'التكلفة':'cost'}: ${money(b.cost)})</label><input type="number" step="0.01" min="0" max="${b.cost}" name="supplierRefund" id="apSupRef" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'فاضي = ما نعرفه بعد (يُسجَّل لاحقًا)':'Empty = not known yet'}"></div>
+      <div class="field"><label>${lang==='ar'?'المبلغ المسترد من الطيران':'Airline refund'} ${isRefundOnly(b)?'':` (${lang==='ar'?'التكلفة':'cost'}: ${money(b.cost)})`}</label><input type="number" step="0.01" min="0" ${isRefundOnly(b)?'':`max="${b.cost}"`} name="supplierRefund" id="apSupRef" value="${b.supplier_refund_amount!=null?b.supplier_refund_amount:''}" placeholder="${lang==='ar'?'فاضي = ما نعرفه بعد (يُسجَّل لاحقًا)':'Empty = not known yet'}"></div>
       <div class="note" id="apRefProfit" style="font-weight:600"></div>
 
       <div class="field" id="apProofBox" style="${isTransfer?'':'display:none'}"><label>${t('fieldRefundProof')}</label><input type="file" name="refundProof" accept="image/*,.pdf"></div>
@@ -3815,7 +3815,9 @@ window.uiApproveRefund = function(id){
     const cust = parseAmount(document.getElementById('apCustAmt').value)||0;
     if(v===''){ box.innerHTML = lang==='ar'?'⏳ مسترد المورد غير معروف — التذكرة بتظهر في "بانتظار تسجيل مسترد المورد" لين تسجله.':'Supplier refund unknown — record it later.'; return; }
     const p = +(((Number(b.sell)||0)-cust) - ((Number(b.cost)||0)-Number(v))).toFixed(2);  // = original profit + (airline refund − customer refund)
-    box.innerHTML = `${lang==='ar'?'ربح التذكرة بعد الاسترجاع':'Ticket profit after refund'}: <b style="color:${p<0?'var(--red)':'#1f7a4d'}">${money(p)}</b>`;
+    const x = b.exchange_data && !b.exchange_data.new_id ? +((Number(b.exchange_data.sell)||0)-(Number(b.exchange_data.cost)||0)).toFixed(2) : null;
+    box.innerHTML = `${lang==='ar'?'ربح الاسترجاع':'Refund profit'}: <b style="color:${p<0?'var(--red)':'#1f7a4d'}">${money(p)}</b>`
+      + (x!==null ? ` + ${lang==='ar'?'ربح التذكرة البديلة':'replacement profit'} ${money(x)} = <b style="color:${p+x<0?'var(--red)':'#1f7a4d'}">${money(+(p+x).toFixed(2))}</b>` : '');
   };
   document.getElementById('apSupRef').oninput = _apCalc; document.getElementById('apCustAmt').oninput = _apCalc; _apCalc();
   document.getElementById('apMethod').onchange = (e)=>{ document.getElementById('apProofBox').style.display = e.target.value==='transfer' ? '' : 'none'; };
