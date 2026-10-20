@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-F7</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G2</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -576,12 +576,14 @@ async function fetchAllRows(table, cols, asc){
   return {data:out, error:null};
 }
 let __fetching = null, __lastSig = '';
+var refundRows = [], refundsReady = false;
 function dataSignature(){
   let x = 0;
   for(const b of bookings) x += (Number(b.sell)||0)*3 + (Number(b.cost)||0) + (b.transfer_verified?7:0) + (b.refunded?11:0) + (b.refund_status?13:0) + (b.cost_reviewed?17:0) + (b.edit_requested?19:0) + (b.supplier_settled?23:0) + (Number(b.refund_amount)||0);
   for(const j of journal) x += Number(j.amount)||0;
   const st = a=> a.map(r=>r.status||'').join('');
-  return [bookings.length, journal.length, deposits.length, profitHandovers.length, employeeCharges.length, miscReceipts.length, manualExpenses.length, users.length,
+  for(const r of refundRows) x += (Number(r.customer_amount)||0) + (Number(r.airline_amount)||0)*2 + (r.status==='approved'?5:r.status==='rejected'?3:r.status==='cancelled'?9:1);
+  return [bookings.length, journal.length, deposits.length, refundRows.length, profitHandovers.length, employeeCharges.length, miscReceipts.length, manualExpenses.length, users.length,
     x.toFixed(2), st(deposits), st(profitHandovers), st(miscReceipts), employeeCharges.map(c=>(c.settled?1:0)+(c.payment_claimed?2:0)).join('')].join('|');
 }
 async function fetchAll(){
@@ -604,6 +606,9 @@ async function fetchAllNow(){
   if(b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error||mr.error) throw (b.error||u.error||bk.error||jr.error||ex.error||dp.error||ph.error||ec.error||mr.error);
   branches = b.data||[]; users = u.data||[]; bookings = bk.data||[]; journal = jr.data||[]; manualExpenses = ex.data||[]; deposits = dp.data||[]; profitHandovers = ph.data||[]; employeeCharges = ec.data||[]; miscReceipts = mr.data||[];
   bookings.sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.created_at||'').localeCompare(a.created_at||''));
+  const rf = await fetchAllRows('refunds','*');
+  refundsReady = !rf.error; refundRows = rf.error ? [] : (rf.data||[]);
+  refundRows.sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
 }
 /* ===================== CASH DEPOSITS ===================== */
 /* ===================== MISC RECEIPTS (payment without a ticket) ===================== */
@@ -1137,6 +1142,217 @@ async function postRefundReversal(bookingId){
     journal.unshift(...jIns.reverse());
   }
 }
+/* ===================== REFUNDS v2 — one row per refund, like deposits =====================
+   A refund is ONE row in "refunds". Nothing moves until the accountant approves it.
+   Approval is idempotent: every journal line carries refund_id (unique in the database), and the
+   placeholder / replacement tickets carry refund_link (unique) — repeating an approval can never
+   post or create anything twice. */
+const isDup = e => e && (e.code==='23505' || /duplicate key|unique/i.test(String(e.message||'')));
+function refundById(id){ return refundRows.find(r=>r.id===id); }
+function openRefundFor(bookingId){ return refundRows.find(r=>r.booking_id===bookingId && (r.status==='pending'||r.status==='approved')); }
+function lastRefundFor(bookingId){ return refundRows.find(r=>r.booking_id===bookingId); }
+function refundLabel(r){ return r && r.refund_no ? `R${r.refund_no}` : 'R'; }
+async function freshRefund(id){
+  const {data, error} = await sb.from('refunds').select('*').eq('id', id).maybeSingle();
+  if(error) throw error; if(!data) throw new Error(lang==='ar'?'طلب الاسترجاع غير موجود.':'Refund not found.');
+  const i = refundRows.findIndex(r=>r.id===id); if(i>=0) refundRows[i] = data; else refundRows.unshift(data);
+  return data;
+}
+async function findBookingByLink(link){
+  let b = bookings.find(x=>x.refund_link===link); if(b) return b;
+  const {data, error} = await sb.from('bookings').select('*').eq('refund_link', link).maybeSingle();
+  if(error) throw error; if(data){ bookings.unshift(data); return data; } return null;
+}
+async function insertOnce(table, row){   // insert; if the database says "already exists", that is fine
+  const {data, error} = await sb.from(table).insert(row).select().single();
+  if(error){ if(isDup(error)) return null; throw error; }
+  return data;
+}
+async function submitRefund(d){
+  // d: {id?, bookingId?, ticketNo, customer, supplier, customerAmount, airlineAmount, method, newTicket, file, note}
+  const u = currentUser();
+  const prev = d.id ? refundById(d.id) : null;
+  if(prev && prev.status==='approved') throw new Error(lang==='ar'?'هذا الاسترجاع معتمد — التعديل من المحاسب.':'Already approved.');
+  const b = d.bookingId ? bookings.find(x=>x.id===d.bookingId) : null;
+  if(b && !prev){ const open = openRefundFor(b.id); if(open) throw new Error(lang==='ar'?`على هذي التذكرة طلب استرجاع ${refundLabel(open)} — عدّله بدل ما تسوي طلب جديد.`:'This ticket already has a refund request.'); }
+  const R = +Number(d.customerAmount).toFixed(2);
+  if(!(R>0)) throw new Error(t('invalidRefundAmount'));
+  const S = (d.airlineAmount===null||d.airlineAmount===undefined||d.airlineAmount==='') ? null : +Number(d.airlineAmount).toFixed(2);
+  if(S!==null && S<0) throw new Error(t('invalidRefundAmount'));
+  if(b && !isRefundOnly(b)){
+    if(R > (Number(b.sell)||0)+0.01) throw new Error(lang==='ar'?`المسترد للعميل أكبر من سعر البيع (${money(b.sell)}).`:'More than the sale price.');
+    if(S!==null && S > (Number(b.cost)||0)+0.01) throw new Error(lang==='ar'?`المسترد من الطيران أكبر من التكلفة (${money(b.cost)}).`:'More than the cost.');
+  }
+  const method = ['cash','transfer','exchange'].includes(d.method) ? d.method : 'cash';
+  if(method==='exchange'){ const n = d.newTicket||{};
+    if(!(Number(n.sell)>0) || !(Number(n.cost)>=0) || !String(n.ticketNo||'').trim()) throw new Error(lang==='ar'?'عبّ بيانات التذكرة البديلة (الرقم، السعر، السستم فير).':'Fill the replacement ticket.'); }
+  const receiptUrl = (d.file && d.file.size) ? await uploadReceiptFile(d.file) : (prev ? prev.receipt_url : null);
+  if(!receiptUrl) throw new Error(t('receiptRequired'));
+  const row = { booking_id: b ? b.id : (prev ? prev.booking_id : null), ticket_no: String(d.ticketNo||(b&&b.ticket_no)||'').trim(), customer: String(d.customer||(b&&b.customer)||'').trim(),
+    supplier: d.supplier || (b&&b.supplier) || null, employee_id: prev ? prev.employee_id : (b ? b.created_by : u.id), branch_id: prev ? prev.branch_id : (b ? b.branch_id : (u.branch_id||(branches[0]&&branches[0].id)||null)),
+    customer_amount:R, airline_amount:S, method, new_ticket: method==='exchange' ? {ticketNo:String(d.newTicket.ticketNo).trim(), airline:d.newTicket.airline||null, sell:+Number(d.newTicket.sell).toFixed(2), cost:+Number(d.newTicket.cost).toFixed(2), supplier:d.newTicket.supplier||null, extraMethod:d.newTicket.extraMethod||'cash'} : null,
+    receipt_url:receiptUrl, note:d.note||null, status:'pending', review_note:null };
+  let saved;
+  if(prev){ await mustUpdate('refunds', prev.id, row); saved = await freshRefund(prev.id); }
+  else{
+    const {data, error} = await sb.from('refunds').insert({...row, created_by:u.id}).select().single();
+    if(error){ if(isDup(error)) throw new Error(lang==='ar'?'على هذي التذكرة طلب استرجاع مفتوح.':'Open refund exists.'); throw error; }
+    saved = data; refundRows.unshift(saved);
+  }
+  if(b){ await mustUpdate('bookings', b.id, {refund_status:'pending', refund_note:d.note||null}); b.refund_status='pending'; b.refund_note=d.note||null; }
+  return saved;
+}
+function refundJournalRows(r, b){
+  const R = +Number(r.customer_amount).toFixed(2), payWith = r.method==='transfer' ? 'transfer' : 'cash';
+  const hasBankReceipt = journal.some(j=>j.booking_id===b.id && j.desc_key==='jBankReceipt');
+  let unconfirmed = 0;   // customer money never confirmed in the bank: refunding it only cancels the receivable
+  if(b.payment_method==='split' && Array.isArray(b.payment_splits)) unconfirmed = b.payment_splits.filter(x=>x.method!=='cash' && !x.verified).reduce((a,x)=>a+Number(x.amount||0),0);
+  else if(b.payment_method!=='cash' && (Number(b.sell)||0)>0 && !hasBankReceipt) unconfirmed = Number(b.sell)||0;
+  const fromReceivable = payWith==='cash' ? 0 : +Math.min(R, unconfirmed).toFixed(2);
+  const paidOut = +(R - fromReceivable).toFixed(2);
+  const base = { date:todayStr(), branch_id:b.branch_id, booking_id:b.id, refund_id:r.id, desc_args:[b.booking_no, refundLabel(r)] };
+  const rows = [];
+  if(fromReceivable>0) rows.push({...base, desc_key:'jRefund', debit_key:'accSalesRev', credit_key:'accCustomers', amount:fromReceivable});
+  if(paidOut>0) rows.push({...base, desc_key:'jRefund', debit_key:'accSalesRev', credit_key: payWith==='cash' ? 'accCashOnHand' : 'accBank', amount:paidOut});
+  if(r.airline_amount!==null && r.airline_amount!==undefined && Number(r.airline_amount)>0)
+    rows.push({...base, desc_key:'jSupplierRefund', debit_key:'accSuppliers', credit_key:'accCogs', amount:+Number(r.airline_amount).toFixed(2)});
+  return rows;
+}
+async function syncRefundJournal(refundId){
+  const {data, error} = await sb.from('journal').select('*').eq('refund_id', refundId);
+  if(error) throw error;
+  journal = journal.filter(j=>j.refund_id!==refundId); journal.unshift(...(data||[]));
+  return data||[];
+}
+async function approveRefundV2(id, edits){
+  let r = await freshRefund(id);
+  if(r.status==='rejected' || r.status==='cancelled') throw new Error(lang==='ar'?'هذا الطلب مرفوض أو ملغي.':'Refund is rejected/cancelled.');
+  if(edits && r.status==='pending'){
+    const patch = {};
+    if(edits.customerAmount!=null) patch.customer_amount = +Number(edits.customerAmount).toFixed(2);
+    if(edits.airlineAmount!==undefined) patch.airline_amount = (edits.airlineAmount===null||edits.airlineAmount==='') ? null : +Number(edits.airlineAmount).toFixed(2);
+    if(edits.method && r.method!=='exchange') patch.method = edits.method;
+    if(edits.proofUrl) patch.proof_url = edits.proofUrl;
+    if(Object.keys(patch).length){ await mustUpdate('refunds', id, patch); r = await freshRefund(id); }
+  }
+  // 1) the ticket being refunded (a ticket sold outside the system gets a "refund only" ticket — once)
+  let b = r.booking_id ? bookings.find(x=>x.id===r.booking_id) : null;
+  if(!b){
+    b = await findBookingByLink('P:'+id);
+    if(!b){
+      const ins = await insertOnce('bookings', { date:todayStr(), customer:r.customer, branch_id:r.branch_id, airline:'-', ticket_no:r.ticket_no, supplier:r.supplier||null,
+        sell:0, cost:0, commission_rate:0, commission:0, profit_amount:0, margin:0, net_profit:0, payment_status:'paid', cost_reviewed:true, payment_method:'cash',
+        transfer_verified:false, commission_status:'pending', created_by:r.employee_id, refund_link:'P:'+id, refund_status:'pending',
+        note:(lang==='ar'?'استرجاع لتذكرة غير مسجلة بالنظام':'Refund for a ticket outside the system') });
+      b = ins || await findBookingByLink('P:'+id);
+      if(ins) bookings.unshift(ins);
+    }
+    await mustUpdate('refunds', id, {booking_id:b.id}); r.booking_id = b.id;
+  }
+  if(!(Number(b.sell)>0) && !(Number(b.cost)>0)) b.refund_status = b.refund_status || 'approved';   // refund-only ticket
+  // 2) the ticket shows it is refunded (the numbers the rest of the system reads)
+  const mirror = { refunded:true, refund_status:'approved', refund_amount:+Number(r.customer_amount).toFixed(2), refund_method: r.method==='transfer'?'transfer':'cash',
+    supplier_refund_amount: r.airline_amount===null||r.airline_amount===undefined ? null : +Number(r.airline_amount).toFixed(2),
+    refund_receipt_url:r.receipt_url||null, refund_proof_url:r.proof_url||null, refund_note:r.note||null,
+    refund_reviewed_by:currentUser()?.id||null, refund_reviewed_at:new Date().toISOString() };
+  if(r.method==='exchange') mirror.exchange_data = {...(r.new_ticket||{}), key:id};
+  await mustUpdate('bookings', b.id, mirror); Object.assign(b, mirror);
+  // 3) journal — each line at most once (database-enforced)
+  for(const row of refundJournalRows(r, b)) await insertOnce('journal', row);
+  await syncRefundJournal(id);
+  // 4) replacement ticket — at most once (database-enforced)
+  if(r.method==='exchange'){
+    let nb = await findBookingByLink('R:'+id);
+    if(!nb){
+      const x = r.new_ticket||{}; const sell = +Number(x.sell).toFixed(2), extra = +Math.max(0, sell - Number(r.customer_amount)).toFixed(2);
+      const data = {date:todayStr(), customer:r.customer, branchId:b.branch_id, airline:x.airline||b.airline||'-', ticketNo:x.ticketNo, source:x.supplier||b.supplier,
+        sell, cost:+Number(x.cost).toFixed(2), createdBy:r.employee_id, refundLink:'R:'+id,
+        note:(lang==='ar'?`تذكرة بديلة عن #${b.booking_no}`:`Replacement for #${b.booking_no}`)+` [EX:${id}]`};
+      if(extra>0.004 && x.extraMethod && x.extraMethod!=='cash'){ data.paymentMethod='split'; data.paymentSplits=[{method:'cash', amount:+(sell-extra).toFixed(2)}, {method:x.extraMethod, amount:extra}]; }
+      else data.paymentMethod = 'cash';
+      try{ await addBooking(data); nb = bookings[0]; }
+      catch(e){ if(!isDup(e)) throw e; nb = await findBookingByLink('R:'+id); }
+    }
+    const nx = {...(b.exchange_data||{}), new_id:nb.id, new_no:nb.booking_no};
+    await mustUpdate('bookings', b.id, {exchange_data:nx}); b.exchange_data = nx;
+  }
+  // 5) done
+  if(r.status!=='approved') await mustUpdate('refunds', id, {status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()});
+  return await freshRefund(id);
+}
+async function undoRefundV2(id, mode, note){   // mode: 'return' (back to employee) | 'cancel' | 'reopen' (internal, for edits)
+  const r = await freshRefund(id);
+  const b = r.booking_id ? bookings.find(x=>x.id===r.booking_id) : null;
+  if(r.status==='approved' && b){
+    // replacement ticket out (only if nothing confirmed on it)
+    const nb = await findBookingByLink('R:'+id) || (b.exchange_data && b.exchange_data.new_id ? bookings.find(x=>x.id===b.exchange_data.new_id) : null);
+    if(nb){
+      if(bookingIsLocked(nb)) throw new Error(lang==='ar'?`التذكرة البديلة #${nb.booking_no} عليها حركة مؤكدة (تحويل/أرباح/مورد) — ما تنحذف.`:'Replacement ticket has confirmed money.');
+      const {error:e1} = await sb.from('journal').delete().eq('booking_id', nb.id); if(e1) throw e1;
+      const {error:e2} = await sb.from('bookings').delete().eq('id', nb.id); if(e2) throw e2;
+      journal = journal.filter(j=>j.booking_id!==nb.id); bookings = bookings.filter(x=>x.id!==nb.id);
+    }
+    // its journal lines out (new lines carry refund_id; lines from the old system are found by ticket)
+    const {error:e3} = await sb.from('journal').delete().eq('refund_id', id); if(e3) throw e3;
+    journal = journal.filter(j=>j.refund_id!==id);
+    const legacy = journal.filter(j=>j.booking_id===b.id && !j.refund_id && (j.desc_key==='jRefund' || j.desc_key==='jSupplierRefund'));
+    if(legacy.length){ const {error:e4} = await sb.from('journal').delete().in('id', legacy.map(j=>j.id)); if(e4) throw e4; const d = new Set(legacy.map(j=>j.id)); journal = journal.filter(j=>!d.has(j.id)); }
+  }
+  if(b){
+    if(b.refund_link==='P:'+id){   // the refund-only ticket goes with it
+      const {error:e5} = await sb.from('journal').delete().eq('booking_id', b.id); if(e5) throw e5;
+      const {error:e6} = await sb.from('bookings').delete().eq('id', b.id); if(e6) throw e6;
+      journal = journal.filter(j=>j.booking_id!==b.id); bookings = bookings.filter(x=>x.id!==b.id);
+      await mustUpdate('refunds', id, {booking_id:null});
+    }else{
+      const reset = { refunded:false, refund_amount:null, supplier_refund_amount:null, refund_method:null, exchange_data:null,
+        refund_status: mode==='cancel' ? null : (mode==='reopen' ? 'pending' : 'rejected'), refund_note: mode==='return' ? (note||null) : b.refund_note };
+      await mustUpdate('bookings', b.id, reset); Object.assign(b, reset);
+    }
+  }
+  const status = mode==='cancel' ? 'cancelled' : mode==='reopen' ? 'pending' : 'rejected';
+  await mustUpdate('refunds', id, {status, review_note: mode==='reopen' ? r.review_note : (note||null), reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()});
+  return await freshRefund(id);
+}
+async function editApprovedRefundV2(id, edits){
+  await undoRefundV2(id, 'reopen');
+  return await approveRefundV2(id, edits);
+}
+async function setAirlineAmountV2(id, amount){
+  const r = await freshRefund(id);
+  const S = +Number(amount).toFixed(2); if(!(S>=0)) throw new Error(t('invalidRefundAmount'));
+  await mustUpdate('refunds', id, {airline_amount:S});
+  if(r.status==='approved') return await approveRefundV2(id);   // posts the missing supplier line (once)
+  return await freshRefund(id);
+}
+// one-time move of refunds made with the old system into the refunds table (safe to run again)
+async function migrateLegacyRefunds(){
+  if(!refundsReady) return 0;
+  let n = 0;
+  const has = new Set(refundRows.filter(r=>r.booking_id).map(r=>r.booking_id));
+  for(const b of bookings.filter(x=>x.refund_status && !has.has(x.id) && !isReplacementTicket(x))){
+    const st = b.refunded ? 'approved' : (b.refund_status==='pending' ? 'pending' : 'rejected');
+    const ex = b.exchange_data && b.exchange_data.ticketNo ? b.exchange_data : null;
+    const row = { booking_id:b.id, ticket_no:b.ticket_no||'', customer:b.customer||'', supplier:b.supplier||null, employee_id:b.created_by, branch_id:b.branch_id,
+      customer_amount: +Number(b.refund_amount!=null ? b.refund_amount : b.sell||0).toFixed(2) || 0.01, airline_amount: b.supplier_refund_amount!=null ? +Number(b.supplier_refund_amount).toFixed(2) : (bookingSupplierRefund(b)>0.004 ? bookingSupplierRefund(b) : null),
+      method: ex ? 'exchange' : (b.refund_method==='transfer'?'transfer':'cash'), new_ticket: ex ? {ticketNo:ex.ticketNo, airline:ex.airline||null, sell:ex.sell, cost:ex.cost, supplier:ex.supplier||null, extraMethod:ex.extraMethod||'cash'} : null,
+      receipt_url:b.refund_receipt_url||null, proof_url:b.refund_proof_url||null, note:b.refund_note||null, status:st, created_by:b.refund_requested_by||b.created_by,
+      created_at:b.refund_requested_at||b.created_at, reviewed_at:b.refund_reviewed_at||null, migrated:true };
+    const {data, error} = await sb.from('refunds').insert(row).select().single();
+    if(error){ if(isDup(error)) continue; throw error; }
+    refundRows.unshift(data); n++;
+    if(st==='approved'){
+      // link one line per kind (a duplicated old line stays unlinked → the check shows it and 🔧 rebuilds it)
+      const seenPair = new Set(), ids = [];
+      journal.filter(j=>j.booking_id===b.id && !j.refund_id && (j.desc_key==='jRefund' || j.desc_key==='jSupplierRefund')).forEach(j=>{ const k = j.debit_key+'|'+j.credit_key; if(!seenPair.has(k)){ seenPair.add(k); ids.push(j.id); } });
+      if(ids.length){ const {error:e1} = await sb.from('journal').update({refund_id:data.id}).in('id', ids); if(e1) throw e1; journal.forEach(j=>{ if(ids.includes(j.id)) j.refund_id = data.id; }); }
+      if(isRefundOnly(b) && !b.refund_link){ await mustUpdate('bookings', b.id, {refund_link:'P:'+data.id}); b.refund_link = 'P:'+data.id; }
+      const nb = ex && ex.new_id ? bookings.find(x=>x.id===ex.new_id) : null;
+      if(nb && !nb.refund_link){ try{ await mustUpdate('bookings', nb.id, {refund_link:'R:'+data.id}); nb.refund_link = 'R:'+data.id; }catch(e){ if(!isDup(e)) throw e; } }
+    }
+  }
+  return n;
+}
 async function recordSupplierRefund(bookingId, amount){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) throw new Error('booking not found');
@@ -1333,6 +1549,7 @@ async function addBooking(data){
   const row = {
     date: data.date||todayStr(), customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
+    ...(('pnr' in data && data.pnr!==null && data.pnr!==undefined) ? {pnr: String(data.pnr).trim().toUpperCase()||null} : {}),
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, commission_rate: 0, commission: 0, profit_amount: profit,
     margin: profit, net_profit: profit,
@@ -1342,6 +1559,7 @@ async function addBooking(data){
     transfer_verified: isSplit ? allCash : false,
     commission_status:'pending', created_by: data.createdBy || currentUser()?.id||null, note: data.note||null
   };
+  if(data.refundLink) row.refund_link = data.refundLink;
   const {data:inserted, error} = await sb.from('bookings').insert(row).select().single();
   if(error) throw error;
   bookings.unshift(inserted);
@@ -1392,6 +1610,7 @@ async function updateBooking(id, data){
   const row = {
     date: data.date, customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
+    ...(('pnr' in data && data.pnr!==null && data.pnr!==undefined) ? {pnr: String(data.pnr).trim().toUpperCase()||null} : {}),
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, profit_amount: profit, margin: profit, net_profit: profit, cost_reviewed: true,
     payment_method: method, payment_status: isSplit ? (allSettled?'paid':'pending') : ((method==='cash' || alreadyConfirmed) ? 'paid' : 'pending'),
@@ -1649,6 +1868,7 @@ function navItems(){
     items.push({route:'reports', label:t('navReports'), icon:'▤'});
     items.push({route:'reconcile', label:t('navReconcile'), icon:'🔍'});
     items.push({route:'refunds', label:t('navRefunds'), icon:'↩️'});
+    items.push({route:'attendance', label:(lang==='ar'?'الحضور والانصراف':'Attendance'), icon:'🕘'});
   }
   if(isAdmin()){
     items.push({route:'profits', label:t('navProfits'), icon:'💎'});
@@ -1764,9 +1984,146 @@ function render(){
   document.getElementById('myAccountBtn').onclick = openMyAccountModal;
 
   const routes = { dashboard:renderDashboard, bookings:renderBookings, ledger:renderLedger,
-    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile, mysales:renderMySales, refunds:renderRefunds, profits:renderProfits };
+    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile, attendance:renderAttendance, mysales:renderMySales, refunds:renderRefunds, profits:renderProfits };
   (routes[route]||renderDashboard)();
 }
+
+/* ===================== ATTENDANCE (accountants) ===================== */
+/* time always comes from the server (database trigger); location is checked against the branch */
+let attRows = [], attMonth = null, attUser = 'all';
+const ATT_TZ = 'Asia/Riyadh';
+function attDay(ts){ return new Date(ts).toLocaleDateString('en-CA',{timeZone:ATT_TZ}); }
+function attTime(ts){ return ts ? new Date(ts).toLocaleTimeString('en-US',{timeZone:ATT_TZ,hour:'2-digit',minute:'2-digit'}) : '—'; }
+function attHM(ts){ const p = new Date(ts).toLocaleTimeString('en-GB',{timeZone:ATT_TZ,hour:'2-digit',minute:'2-digit',hour12:false}).split(':'); return (+p[0])*60 + (+p[1]); }
+function attHours(r){ if(!r.check_out) return 0; return Math.max(0,(new Date(r.check_out)-new Date(r.check_in))/3600000); }
+function fmtHours(h){ const m = Math.round(h*60); return `${Math.floor(m/60)}:${String(m%60).padStart(2,'0')}`; }
+function attLateMin(r){
+  const b = branches.find(x=>x.id===r.branch_id); const st = String((b&&b.shift_start)||'').slice(0,5);
+  if(!/^\d{1,2}:\d{2}$/.test(st)) return 0;
+  const [h,m] = st.split(':').map(Number); const late = attHM(r.check_in) - (h*60+m);
+  return late > 15 ? late : 0;   // 15 minutes grace
+}
+async function loadAttendance(){
+  const m = attMonth || todayStr().slice(0,7);
+  const from = new Date(`${m}-01T00:00:00+03:00`);
+  const to = new Date(from); to.setMonth(to.getMonth()+1);
+  let q = sb.from('attendance').select('*').gte('check_in', from.toISOString()).lt('check_in', to.toISOString()).order('check_in',{ascending:false});
+  if(!isAdmin()) q = q.eq('user_id', currentUser().id);
+  const {data, error} = await q; if(error) throw error;
+  attRows = data||[];
+}
+async function attOpenRow(){
+  const {data, error} = await sb.from('attendance').select('*').eq('user_id', currentUser().id).is('check_out', null).order('check_in',{ascending:false}).limit(1);
+  if(error) throw error; return (data||[])[0]||null;
+}
+window.uiAttendance = async function(kind){
+  const btn = document.getElementById('attActionBtn'); const msg = document.getElementById('attMsg');
+  if(btn){ btn.disabled = true; btn.textContent = lang==='ar'?'جاري التسجيل…':'Saving…'; }
+  try{
+    if(kind==='in'){
+      if(await attOpenRow()) throw new Error(lang==='ar'?'عندك حضور مسجّل من قبل — سجّل انصراف أول.':'Already checked in.');
+      const {error} = await sb.from('attendance').insert({user_id:currentUser().id, branch_id:currentUser().branch_id||null});
+      if(error) throw error;
+    }else{
+      const open = await attOpenRow(); if(!open) throw new Error(lang==='ar'?'ما عندك حضور مفتوح.':'No open check-in.');
+      const {error} = await sb.from('attendance').update({check_out:new Date().toISOString()}).eq('id', open.id);
+      if(error) throw error;
+    }
+    renderAttendance();
+  }catch(e){
+    console.error(e);
+    if(msg) msg.innerHTML = `<div class="login-error">${e && e.code ? errText() : esc(e.message||String(e))}</div>`;
+    if(btn){ btn.disabled = false; btn.textContent = kind==='in' ? (lang==='ar'?'تسجيل حضور':'Check in') : (lang==='ar'?'تسجيل انصراف':'Check out'); }
+  }
+};
+async function renderAttendance(){
+  const ar = lang==='ar';
+  document.getElementById('pageSub').textContent = ar ? 'تسجيل الحضور والانصراف — الوقت يُسجَّل من السيرفر' : 'Check in and out — time is taken from the server';
+  const box = document.getElementById('content');
+  box.innerHTML = `<div class="panel"><div class="empty">${ar?'جاري التحميل…':'Loading…'}</div></div>`;
+  let open = null;
+  try{ await loadAttendance(); if(!isAdmin()) open = await attOpenRow(); }
+  catch(e){ console.error(e); box.innerHTML = `<div class="panel"><div class="login-error">${errText()}<br>${ar?'تأكد إنك شغّلت كود SQL الخاص بالحضور في Supabase.':'Make sure the attendance SQL was run in Supabase.'}</div></div>`; return; }
+  if(route!=='attendance') return;
+  const month = attMonth || todayStr().slice(0,7);
+  const rows = isAdmin() && attUser!=='all' ? attRows.filter(r=>r.user_id===attUser) : attRows;
+  // one line per person per day
+  const days = new Map();
+  rows.forEach(r=>{ const k = r.user_id+'|'+attDay(r.check_in); const e = days.get(k) || {user_id:r.user_id, day:attDay(r.check_in), recs:[]}; e.recs.push(r); days.set(k,e); });
+  const dayList = [...days.values()].map(e=>{ e.recs.sort((a,b)=>a.check_in.localeCompare(b.check_in));
+    e.first = e.recs[0]; e.last = e.recs[e.recs.length-1]; e.hours = e.recs.reduce((s,r)=>s+attHours(r),0);
+    e.late = attLateMin(e.first); e.openIn = e.recs.some(r=>!r.check_out); e.branch = e.first.branch_id; return e; })
+    .sort((a,b)=> b.day.localeCompare(a.day) || userName(a.user_id).localeCompare(userName(b.user_id)));
+  const todayKey = attDay(new Date().toISOString());
+  const accountants = users.filter(u=>u.role==='accountant' && u.active!==false);
+  // monthly summary per person
+  const sum = new Map();
+  dayList.forEach(e=>{ const x = sum.get(e.user_id) || {days:0, hours:0, late:0, lateMin:0, open:0}; x.days++; x.hours+=e.hours; if(e.late){ x.late++; x.lateMin+=e.late; } if(e.openIn && e.day!==todayKey) x.open++; sum.set(e.user_id,x); });
+  const myToday = dayList.find(e=>e.day===todayKey && e.user_id===currentUser().id);
+  box.innerHTML = `
+    ${!isAdmin()?`<div class="panel" style="text-align:center;">
+      <div style="font-size:14px;color:var(--muted,#667);">${new Date().toLocaleDateString(ar?'ar-SA-u-ca-gregory':'en-GB',{timeZone:ATT_TZ,weekday:'long',day:'numeric',month:'long'})}</div>
+      <div style="font-size:15px;margin:10px 0;">${open
+        ? (ar?`حاضر من الساعة <b>${attTime(open.check_in)}</b>`:`Checked in at <b>${attTime(open.check_in)}</b>`)
+        : myToday ? (ar?`آخر انصراف: <b>${attTime(myToday.last.check_out)}</b> — مجموع اليوم ${fmtHours(myToday.hours)} ساعة`:`Last check-out ${attTime(myToday.last.check_out)}`)
+        : (ar?'ما سجّلت حضور اليوم':'Not checked in today')}</div>
+      <button class="btn ${open?'btn-ghost':'btn-gold'}" id="attActionBtn" style="min-width:200px;padding:14px 20px;font-size:16px;" onclick="uiAttendance('${open?'out':'in'}')">${open?(ar?'تسجيل انصراف':'Check out'):(ar?'تسجيل حضور':'Check in')}</button>
+      <div id="attMsg" style="margin-top:10px;"></div>
+      <p class="note" style="margin-top:8px;">${ar?'الوقت يُسجَّل من السيرفر مو من جهازك.':'Time is taken from the server, not your device.'}</p>
+    </div>`:''}
+    ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'حضور اليوم':'Today'}</h3></div>
+      ${accountants.length?`<table><thead><tr><th>${ar?'المحاسب':'Accountant'}</th><th>${t('colBranch')}</th><th>${ar?'الحالة':'Status'}</th></tr></thead><tbody>
+      ${accountants.map(u=>{ const e = dayList.find(x=>x.day===todayKey && x.user_id===u.id);
+        const st = !e ? `<span class="tag rejected">${ar?'لم يحضر':'Absent'}</span>`
+          : e.openIn ? `<span class="tag collected">${ar?'حاضر من':'In since'} ${attTime(e.first.check_in)}</span>${e.late?` <span class="tag pending">${ar?'متأخر':'Late'} ${e.late} ${ar?'د':'min'}</span>`:''}`
+          : `<span class="tag">${ar?'انصرف':'Left'} ${attTime(e.last.check_out)}</span>`;
+        return `<tr><td>${esc(u.name)}</td><td>${esc(branchName(u.branch_id))}</td><td>${st}</td></tr>`; }).join('')}</tbody></table>`
+      :`<div class="empty">${ar?'ما فيه مستخدمين بدور محاسب.':'No accountants.'}</div>`}
+    </div>`:''}
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'سجل الشهر':'Monthly log'}</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <input type="month" id="attMonthInput" value="${month}">
+        ${isAdmin()?`<select id="attUserSel"><option value="all">${t('allEmployeesOpt')}</option>${users.filter(u=>u.role!=='employee'||attRows.some(r=>r.user_id===u.id)).map(u=>`<option value="${u.id}" ${attUser===u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
+        <button class="btn btn-ghost btn-sm" id="attExcelBtn">${t('exportExcelBtn')}</button>`:''}
+      </div></div>
+      ${isAdmin() && sum.size ? `<div style="overflow-x:auto;margin-bottom:12px;"><table><thead><tr><th>${ar?'الاسم':'Name'}</th><th>${ar?'أيام الحضور':'Days'}</th><th>${ar?'مجموع الساعات':'Hours'}</th><th>${ar?'مرات التأخير':'Late days'}</th><th>${ar?'دقائق التأخير':'Late min'}</th><th>${ar?'بدون انصراف':'No check-out'}</th></tr></thead><tbody>
+        ${[...sum.entries()].map(([id,x])=>`<tr><td style="font-weight:600">${esc(userName(id))}</td><td class="num">${x.days}</td><td class="num">${fmtHours(x.hours)}</td><td class="num" style="${x.late?'color:var(--red);font-weight:600':''}">${x.late}</td><td class="num">${x.lateMin}</td><td class="num" style="${x.open?'color:var(--red);font-weight:600':''}">${x.open}</td></tr>`).join('')}
+      </tbody></table></div>` : ''}
+      ${dayList.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('fieldDate')}</th>${isAdmin()?`<th>${ar?'الاسم':'Name'}</th>`:''}<th>${t('colBranch')}</th><th>${ar?'حضور':'In'}</th><th>${ar?'انصراف':'Out'}</th><th>${ar?'الساعات':'Hours'}</th><th>${ar?'ملاحظات':'Notes'}</th></tr></thead><tbody>
+        ${dayList.map(e=>`<tr><td style="white-space:nowrap">${e.day}</td>${isAdmin()?`<td style="font-weight:600">${esc(userName(e.user_id))}</td>`:''}<td>${esc(branchName(e.branch))}</td>
+          <td class="num">${attTime(e.first.check_in)}</td><td class="num">${e.openIn?(e.day===todayKey?(ar?'لسا داخل':'In'):`<span style="color:var(--red);font-weight:600">${ar?'ما سجّل':'Missing'}</span>`):attTime(e.last.check_out)}</td>
+          <td class="num">${fmtHours(e.hours)}</td>
+          <td>${e.late?`<span class="tag pending">${ar?'تأخير':'Late'} ${e.late} ${ar?'د':'min'}</span> `:''}${e.recs.length>1?`<span class="tag">${e.recs.length} ${ar?'فترات':'shifts'}</span>`:''}</td></tr>`).join('')}
+      </tbody></table></div>`}
+    </div>`;
+  document.getElementById('attMonthInput').onchange = e=>{ attMonth = e.target.value || null; renderAttendance(); };
+  if(document.getElementById('attUserSel')) document.getElementById('attUserSel').onchange = e=>{ attUser = e.target.value; renderAttendance(); };
+  if(document.getElementById('attExcelBtn')) document.getElementById('attExcelBtn').onclick = ()=>{
+    const data = dayList.map(e=>({ [ar?'التاريخ':'Date']:e.day, [ar?'الاسم':'Name']:userName(e.user_id), [ar?'الفرع':'Branch']:branchName(e.branch),
+      [ar?'حضور':'In']:attTime(e.first.check_in), [ar?'انصراف':'Out']:e.openIn?'':attTime(e.last.check_out), [ar?'الساعات':'Hours']:fmtHours(e.hours), [ar?'تأخير (دقيقة)':'Late (min)']:e.late||0 }));
+    const ws = XLSX.utils.json_to_sheet(data); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Attendance');
+    XLSX.writeFile(wb, `attendance-${month}.xlsx`);
+  };
+}
+/* admin: set a branch's location (stand inside it and tap, or paste coordinates), allowed radius and shift start */
+window.uiBranchAttendance = function(id){
+  const b = branches.find(x=>x.id===id); if(!b) return; const ar = lang==='ar';
+  showModal(`
+    <div class="modal-head"><h3>${ar?'دوام الفرع':'Branch shift'} — ${esc(b.name)}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="brAttForm">
+      <div class="field"><label>${ar?'بداية الدوام':'Shift start'}</label><input type="time" name="shift" value="${String(b.shift_start||'08:00').slice(0,5)}"></div>
+      <p class="note">${ar?'يُحسب تأخير لو الحضور بعد بداية الدوام بأكثر من 15 دقيقة.':'Late = more than 15 minutes after shift start.'}</p>
+      <div id="brAttErr"></div>
+      <div style="margin-top:14px;display:flex;gap:10px;"><button type="submit" class="btn btn-primary" id="brAttSave">${t('saveChanges')}</button><button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>
+    </form>`);
+  const f = document.getElementById('brAttForm');
+  f.onsubmit = async (e)=>{
+    e.preventDefault(); const bt = document.getElementById('brAttSave'); bt.disabled = true;
+    const upd = {shift_start: f.shift.value||null};
+    try{ const {error} = await sb.from('branches').update(upd).eq('id', id); if(error) throw error; Object.assign(b, upd); closeModal(); render(); }
+    catch(err){ console.error(err); document.getElementById('brAttErr').innerHTML = `<div class="login-error">${errText()}</div>`; bt.disabled=false; }
+  };
+};
 
 /* ===================== LOGIN ===================== */
 function renderLogin(app){
@@ -1833,7 +2190,7 @@ function renderDashboard(){
   const myPendingCharges = u.role==='employee' ? employeeCharges.filter(c=>c.employee_id===u.id && !c.settled) : [];
   const myRejectedMisc = u.role==='employee' ? miscReceipts.filter(r=>r.employee_id===u.id && r.status==='rejected') : [];
   const myReturnedForEdit = u.role==='employee' ? bookings.filter(b=>b.created_by===u.id && b.edit_requested) : [];
-  const myRejectedRefunds = u.role==='employee' ? bookings.filter(b=>b.created_by===u.id && b.refund_status==='rejected' && !b.refunded) : [];
+  const myRejectedRefunds = (u.role==='employee' && !refundsReady) ? bookings.filter(b=>b.created_by===u.id && b.refund_status==='rejected' && !b.refunded) : [];
   const myRejectedDeposits = u.role==='employee' ? deposits.filter(d=>d.submitted_by===u.id && d.status==='rejected') : [];
   const myRejectedHandovers = u.role==='employee' ? profitHandovers.filter(h=>h.employee_id===u.id && h.status==='rejected') : [];
   const pendingProfitAmt = pendingProfitHandoverAmount(list);
@@ -1862,6 +2219,7 @@ function renderDashboard(){
         <button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>
       </div>`).join('')}
     </div>`:''}
+    ${refundsReady && u.role==='employee' ? employeeRefundsPanel(u) : ''}
     ${myRejectedRefunds.length>0?`<div class="panel" style="border:2px solid var(--red);">
       <div class="panel-head"><h3 class="panel-title" style="color:var(--red);">🚫 ${t('refundRejectedAlertTitle')}</h3></div>
       ${myRejectedRefunds.map(b=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
@@ -1993,7 +2351,7 @@ function renderMySales(){
   const myCharges = employeeCharges.filter(c=>c.employee_id===u.id && !c.settled);
   const myRejectedMiscMS = miscReceipts.filter(r=>r.employee_id===u.id && r.status==='rejected');
   const myReturnedForEditMS = bookings.filter(b=>b.created_by===u.id && b.edit_requested);
-  const myRejectedRefundsMS = bookings.filter(b=>b.created_by===u.id && b.refund_status==='rejected' && !b.refunded);
+  const myRejectedRefundsMS = refundsReady ? [] : bookings.filter(b=>b.created_by===u.id && b.refund_status==='rejected' && !b.refunded);
   const myRejectedDepositsMS = deposits.filter(d=>d.submitted_by===u.id && d.status==='rejected');
   const myRejectedHandoversMS = profitHandovers.filter(h=>h.employee_id===u.id && h.status==='rejected');
   const pendingProfitAmt = pendingProfitHandoverAmount(allMine);
@@ -2021,6 +2379,7 @@ function renderMySales(){
         <button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiEditBooking('${b.id}')">${t('edit')}</button>
       </div>`).join('')}
     </div>`:''}
+    ${refundsReady ? employeeRefundsPanel(u) : ''}
     ${myRejectedRefundsMS.length>0?`<div class="panel" style="border:2px solid var(--red);">
       <div class="panel-head"><h3 class="panel-title" style="color:var(--red);">🚫 ${t('refundRejectedAlertTitle')}</h3></div>
       ${myRejectedRefundsMS.map(b=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
@@ -2111,6 +2470,7 @@ function renderBookings(){
       String(b.invoice_no||'').toLowerCase().includes(term));
   }
   document.getElementById('content').innerHTML = `
+    ${refundsReady && currentUser() && currentUser().role==='employee' ? employeeRefundsPanel(currentUser()) : ''}
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('bookingsLog')}</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <input class="select-ctrl" id="bookingsSearchInput" type="text" placeholder="${t('bookingsSearchPlaceholder')}" value="${esc(bookingsSearchTerm)}">
@@ -2299,6 +2659,24 @@ function employeeCashStatement(employeeId, from, to){
   const ar = lang==='ar';
   const all = [];
   bookings.filter(b=>b.created_by===employeeId).forEach(b=>{
+    // with the refunds table: the sale and the refund are separate lines (like deposits)
+    if(refundsReady && b.refunded && (b.refund_method||'cash')==='cash'){
+      const cashRef = bookingRefundAmount(b), cashIn0 = +(bookingCashNet(b) + cashRef).toFixed(2);
+      const rv = refundRows.find(r=>r.booking_id===b.id && r.status==='approved');
+      if(cashIn0>0.004){
+        const sell0 = Number(b.sell)||0;
+        let n0 = ar ? `كاش مستلم ${money(cashIn0)} (تكلفة ${money(b.cost)} + ربح ${money(sell0-Number(b.cost||0))})` : `Cash received ${money(cashIn0)}`;
+        { const m = String(b.note||'').match(/(?:بديلة عن|Replacement for) #(\d+)/); if(m) n0 += ar ? ` — 🔁 تذكرة بديلة عن #${m[1]} (ثمنها من قيمة الاسترجاع)` : ` — replacement for #${m[1]}`; }
+        all.push({date:b.date||'', stamp:b.created_at||'', type: ar?'تذكرة':'Ticket', desc:`#${b.booking_no} ${b.customer||''}`, note:n0, amt:cashIn0});
+      }
+      const x = b.exchange_data && b.exchange_data.new_id ? b.exchange_data : null;
+      const d = x ? +(cashRef - Number(x.sell||0)).toFixed(2) : 0;
+      all.push({date:String((rv&&rv.reviewed_at)||b.refund_reviewed_at||b.date||'').slice(0,10), stamp:(rv&&rv.reviewed_at)||b.refund_reviewed_at||b.created_at||'', type: ar?'استرجاع':'Refund',
+        desc:`${rv?refundLabel(rv)+' — ':''}${b.ticket_no||''} ${b.customer||''}`,
+        note: x ? (ar?`🔁 تغيير تذكرة: ${money(x.sell)} ثمن البديلة #${x.new_no||''}${d>0.004?` + ${money(d)} كاش للعميل`:d<-0.004?` — العميل دفع ${money(-d)} زيادة`:''}`:'exchange')
+                : (ar?`كاش للعميل${isRefundOnly(b)?' — تذكرة غير مسجلة بالنظام':''}`:'cash to customer'), amt:-cashRef});
+      return;
+    }
     const amt = bookingCashNet(b);
     if(Math.abs(amt)<0.005) return;
     const sell = Number(b.sell)||0;
@@ -2747,6 +3125,7 @@ function openBookingModal(existing){
         <div class="field"><label>${t('fieldTicketNo')}</label><input name="ticketNo" value="${v.ticket_no||''}"></div>
         <div class="field"><label>${t('fieldInvoiceNo')}</label><input name="invoiceNo" value="${v.invoice_no||''}"></div>
       </div>
+      <div class="field"><label>PNR ${lang==='ar'?'(رقم الحجز — مهم للمطابقة مع طيران الخليج NDC وأكبر)':'(booking reference — needed to match Gulf Air NDC and Akbar)'}</label><input name="pnr" dir="ltr" autocomplete="off" style="text-transform:uppercase" placeholder="ESRAVR" value="${esc(v.pnr||'')}"></div>
       <div class="grid-2">
         <div class="field"><label>${t('fieldFlightRoute')}</label><input name="flightRoute" placeholder="${t('flightRoutePlaceholder')}" value="${v.flight_route||''}"></div>
         <div class="field"><label>${t('fieldSupplier')}</label><select name="source">${SOURCE_PRESETS.map(s=>`<option ${v.supplier===s?'selected':''}>${s}</option>`).join('')}</select></div>
@@ -2854,7 +3233,7 @@ function openBookingModal(existing){
     const f = new FormData(e.target);
     const isSplit = document.getElementById('splitPaymentToggle').checked;
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
-      ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
+      ticketNo:f.get('ticketNo'), pnr:f.get('pnr'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
       sell:f.get('sell'), cost:f.get('cost'), isOpenTicket: f.get('isOpenTicket')==='on',
       paymentMethod:isSplit?'split':f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider'), note:f.get('note') };
     if(isSplit){
@@ -3035,6 +3414,25 @@ function integrityIssues(){
     if(!miscReceiptJournalRow(r)) issues.push({b:null, fix:{kind:'misc', id:r.id}, issue: ar?`مبلغ بدون تذكرة معتمد بدون قيد — ${userName(r.employee_id)}`:`Confirmed misc receipt without entry — ${userName(r.employee_id)}`, expected:+Number(r.amount).toFixed(2), actual:0});
   });
   const orphans = journal.filter(j=>j.booking_id && !ids.has(j.booking_id));
+  if(refundsReady) refundRows.forEach(r=>{
+    const lines = journal.filter(j=>j.refund_id===r.id);
+    const cust = +lines.filter(j=>j.desc_key==='jRefund').reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2);
+    const air = +lines.filter(j=>j.desc_key==='jSupplierRefund').reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2);
+    const reps = bookings.filter(x=>x.refund_link==='R:'+r.id);
+    const bk = r.booking_id ? bookings.find(x=>x.id===r.booking_id) : null;
+    const lbl = `${refundLabel(r)} — ${r.ticket_no||''} ${r.customer||''}`;
+    const add = (msg, exp, act)=> issues.push({b:null, fix:{kind:'refundV2', id:r.id}, issue:(ar?'استرجاع ':'Refund ')+lbl+': '+msg, expected:exp, actual:act});
+    if(r.status==='approved'){
+      const wantAir = r.airline_amount==null ? 0 : +Number(r.airline_amount).toFixed(2);
+      if(Math.abs(cust - Number(r.customer_amount))>0.009) add(ar?'قيد المسترد للعميل لا يطابق':'customer line mismatch', +Number(r.customer_amount).toFixed(2), cust);
+      if(r.airline_amount!=null && Math.abs(air - wantAir)>0.009) add(ar?'قيد المسترد من الطيران لا يطابق':'airline line mismatch', wantAir, air);
+      if(!bk || !bk.refunded) add(ar?'التذكرة ما تبيّن إنها مسترجعة':'ticket not marked refunded', '✔', '—');
+      if(r.method==='exchange' && reps.length!==1) add(ar?'التذكرة البديلة':'replacement ticket', 1, reps.length);
+    }else{
+      if(lines.length) add(ar?'عليه قيود وهو مو معتمد':'has entries but not approved', 0, lines.length);
+      if(reps.length) add(ar?'له تذكرة بديلة وهو مو معتمد':'has a replacement but not approved', 0, reps.length);
+    }
+  });
   bookings.filter(b=>b.exchange_data && b.exchange_data.new_id && !bookings.some(y=>y.id===b.exchange_data.new_id)).forEach(b=>{
     const t = findExchangeTicket({...b, exchange_data:{...b.exchange_data, new_id:null}});
     issues.push({b:null, fix:{kind:'relinkExchange', id:b.id}, issue: ar?`استرجاع #${b.booking_no} مربوط بتذكرة بديلة محذوفة #${b.exchange_data.new_no||''}${t?` — التذكرة البديلة الصحيحة #${t.booking_no}`:''}`:`Refund #${b.booking_no} linked to a deleted replacement`, expected:t?t.booking_no:'—', actual:b.exchange_data.new_no||'—'});
@@ -3068,6 +3466,14 @@ async function repairOther(fix){
     const {data, error} = await sb.from('journal').insert({date:(r.confirmed_at||r.created_at||'').slice(0,10)||todayStr(), branch_id:r.branch_id||null, desc_key:'jMiscReceipt', desc_args:[userName(r.employee_id), r.note||'-', r.id],
       debit_key: r.method==='cash'?'accCashOnHand':'accBank', credit_key:'accMiscReceipts', amount:+Number(r.amount).toFixed(2)}).select().single();
     if(error) throw error; journal.unshift(data);
+  }else if(fix.kind==='refundV2'){
+    const r = refundById(fix.id); if(!r) return;
+    if(r.status==='approved') await editApprovedRefundV2(r.id);       // rebuild: undo + approve again (each line once)
+    else {
+      const {error:e1} = await sb.from('journal').delete().eq('refund_id', r.id); if(e1) throw e1; journal = journal.filter(j=>j.refund_id!==r.id);
+      for(const nb of bookings.filter(x=>x.refund_link==='R:'+r.id)){ const {error:e2} = await sb.from('journal').delete().eq('booking_id', nb.id); if(e2) throw e2;
+        const {error:e3} = await sb.from('bookings').delete().eq('id', nb.id); if(e3) throw e3; journal = journal.filter(j=>j.booking_id!==nb.id); bookings = bookings.filter(x=>x.id!==nb.id); }
+    }
   }else if(fix.kind==='relinkExchange'){
     const b = bookings.find(x=>x.id===fix.id); if(!b) return;
     const t = findExchangeTicket({...b, exchange_data:{...b.exchange_data, new_id:null}});
@@ -3186,7 +3592,9 @@ async function repairBooking(bookingId){
     if(Math.abs(custPosted - bookingRefundAmount(b))>0.009 || custCount>1 || supCount>1 || Math.abs(supPosted - supWanted)>0.009){
       const keepDate = (ref.find(j=>j.desc_key==='jRefund')||ref[0]||{}).date;
       if(ref.length){ const {error} = await sb.from('journal').delete().in('id', ref.map(j=>j.id)); if(error) throw error; const d = new Set(ref.map(j=>j.id)); journal = journal.filter(j=>!d.has(j.id)); }
-      await postRefundReversal(b.id);
+      const rv = refundsReady ? refundRows.find(x=>x.booking_id===b.id && x.status==='approved') : null;
+      if(rv){ for(const row of refundJournalRows(rv, b)) await insertOnce('journal', row); await syncRefundJournal(rv.id); }
+      else await postRefundReversal(b.id);
       if(keepDate){ const fresh = journal.filter(j=>j.booking_id===b.id && (j.desc_key==='jRefund' || j.desc_key==='jSupplierRefund') && j.date!==keepDate);
         if(fresh.length){ const {error} = await sb.from('journal').update({date:keepDate}).in('id', fresh.map(j=>j.id)); if(error) throw error; fresh.forEach(j=>j.date=keepDate); } }
       notes.push(ar?'قيود الاسترجاع انبنت من جديد (كانت مكررة أو ناقصة)':'Refund entries rebuilt');
@@ -3702,17 +4110,23 @@ window.uiPickRefundTicket = function(id){ openUnifiedRefundModal(id); };
 function openNewTicketRefundModal(){ openUnifiedRefundModal(null); }
 function normTkt(v){ return String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,''); }
 function openRefundRequestModal(bookingId){ openUnifiedRefundModal(bookingId); }
-function openUnifiedRefundModal(prefillId){
+function openUnifiedRefundModal(prefillId, refundId){
   const u = currentUser(); const ar = lang==='ar';
   const scope = (isAdmin()||isAccountant()) ? bookings : bookings.filter(b=>b.created_by===u.id);
+  // with the refunds table: the form edits ONE refund row (pending / returned), never the ticket itself
+  const R0 = refundsReady ? (refundId ? refundById(refundId) : (prefillId ? (openRefundFor(prefillId) || refundRows.find(r=>r.booking_id===prefillId && r.status==='rejected')) : null)) : null;
+  if(R0 && !prefillId && R0.booking_id) prefillId = R0.booking_id;
   let linked = prefillId ? bookings.find(x=>x.id===prefillId) : null;
-  const L = linked || {};
+  const L = Object.assign({}, linked||{}, R0 ? { ticket_no:R0.ticket_no, customer:R0.customer, supplier:R0.supplier, refund_amount:R0.customer_amount, supplier_refund_amount:R0.airline_amount,
+    refund_method: R0.method==='transfer'?'transfer':'cash', exchange_data: R0.method==='exchange' ? R0.new_ticket : null, refund_receipt_url:R0.receipt_url,
+    refund_status:R0.status, refund_note: R0.status==='rejected' ? (R0.review_note||'') : (R0.note||'') } : {});
+  const unknownPrefill = R0 && !R0.booking_id;
   showModal(`
     <div class="modal-head"><h3>${ar?'طلب استرجاع':'Refund request'}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="refundRequestForm">
       ${L.refund_status==='rejected' && L.refund_note?`<div class="note" style="background:#FBEFE0;color:#A8722C;padding:8px;border-radius:8px;">📝 ${ar?'ملاحظة المحاسب':'Accountant note'}: ${esc(L.refund_note)}</div>`:''}
       <div class="grid-2">
-        <div class="field"><label>${ar?'رقم التذكرة':'Ticket no.'}</label><input name="ticketNo" id="urTicket" value="${esc(L.ticket_no||'')}" ${linked?'readonly':''} required autocomplete="off"></div>
+        <div class="field"><label>${ar?'رقم التذكرة':'Ticket no.'}</label><input name="ticketNo" id="urTicket" value="${esc(L.ticket_no||'')}" ${linked||unknownPrefill?'readonly':''} required autocomplete="off"></div>
         <div class="field"><label>${ar?'اسم العميل':'Customer'}</label><input name="customer" id="urCustomer" value="${esc(L.customer||'')}" ${linked?'readonly':''} required></div>
       </div>
       <div id="urFound" class="note"></div>
@@ -3742,7 +4156,7 @@ function openUnifiedRefundModal(prefillId){
           <option value="cash">${t('payCash')}</option><option value="transfer">${t('payTransfer')}</option><option value="span">${ar?'شبكة':'Card'}</option></select></div>
       </div>
       <div class="field"><label>${ar?'نموذج / إيصال الرفند':'Refund form / receipt'}${L.refund_receipt_url?` (${ar?'مرفق سابقًا — ارفع جديد بس لو تبي تغيّره':'already attached'})`:''}</label><input type="file" name="receipt" accept="image/*,.pdf" ${L.refund_receipt_url?'':'required'}></div>
-      <div class="field"><label>${t('fieldRefundNote')}</label><input name="note" value="${esc(L.refund_status==='rejected'?'':(L.refund_note||''))}"></div>
+      <div class="field"><label>${t('fieldRefundNote')}</label><input name="note" value="${esc(R0 ? (R0.note||'') : (L.refund_status==='rejected'?'':(L.refund_note||'')))}"></div>
       <p class="note">${ar?'الطلب يبقى معلّق لين يعتمده المحاسب — ما ينخصم شي قبل الاعتماد.':'Stays pending until the accountant approves it.'}</p>
       <div id="refundErrorBox"></div>
       <div style="margin-top:12px;display:flex;gap:10px;"><button type="submit" class="btn btn-primary" id="refundSaveBtn">${ar?'إرسال للمحاسب للاعتماد':'Send for approval'}</button><button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>
@@ -3750,8 +4164,10 @@ function openUnifiedRefundModal(prefillId){
   const findTicket = ()=>{
     if(prefillId) return linked;
     const k = normTkt(document.getElementById('urTicket').value);
-    if(k.length<5) return null;
-    const hits = scope.filter(b=>!b.refunded && b.refund_status!=='pending' && (normTkt(b.ticket_no)===k || (k.length>=6 && normTkt(b.ticket_no).includes(k))));
+    if(!k) return null;
+    const pool = scope.filter(b=>!b.refunded && b.refund_status!=='pending' && !(refundsReady && openRefundFor(b.id)) && !isReplacementTicket(b));
+    const exact = pool.filter(b=>normTkt(b.ticket_no)===k);
+    const hits = exact.length ? exact : (k.length>=6 ? pool.filter(b=>normTkt(b.ticket_no).includes(k)) : []);
     return hits.length===1 ? hits[0] : null;
   };
   const draw = ()=>{
@@ -3797,7 +4213,7 @@ function openUnifiedRefundModal(prefillId){
     if(!(cust>0)) return err(t('invalidRefundAmount'));
     if(linked && !isRefundOnly(linked) && cust>(Number(linked.sell)||0)+0.01) return err(ar?`المسترد للعميل أكبر من سعر البيع (${money(linked.sell)}).`:'More than the sale price.');
     if(linked && !isRefundOnly(linked) && sup!=null && sup>(Number(linked.cost)||0)+0.01) return err(ar?`المسترد من الطيران أكبر من التكلفة (${money(linked.cost)}).`:'More than the cost.');
-    if((!file || !file.size) && !(linked && linked.refund_receipt_url)) return err(t('receiptRequired'));
+    if((!file || !file.size) && !(linked && linked.refund_receipt_url) && !(R0 && R0.receipt_url)) return err(t('receiptRequired'));
     if(!String(f.get('customer')||'').trim() || !String(f.get('ticketNo')||'').trim()) return err(ar?'اكتب اسم العميل ورقم التذكرة.':'Customer and ticket no. are required.');
     const exch = document.getElementById('urExch').checked;
     let exchangeData;
@@ -3809,6 +4225,15 @@ function openUnifiedRefundModal(prefillId){
         sell:+nSell.toFixed(2), cost:+nCost.toFixed(2), supplier:document.getElementById('urNSupplier').value, extraMethod:document.getElementById('urExtraMethod').value};
     }else if(linked && linked.exchange_data) exchangeData = null;
     btn.disabled = true; btn.textContent = t('uploading');
+    if(refundsReady){
+      try{
+        await submitRefund({ id: R0 && R0.status!=='approved' ? R0.id : null, bookingId: linked ? linked.id : null, ticketNo:f.get('ticketNo'), customer:f.get('customer'),
+          supplier: linked ? linked.supplier : (f.get('supplier')||(R0&&R0.supplier)||null), customerAmount:cust, airlineAmount:sup,
+          method: exch ? 'exchange' : f.get('refundMethod'), newTicket: exchangeData||null, file, note:f.get('note') });
+        closeModal(); render();
+      }catch(ex){ console.error(ex); err(errText()); btn.disabled=false; btn.textContent=ar?'إرسال للمحاسب للاعتماد':'Send for approval'; }
+      return;
+    }
     try{
       let id = linked && linked.id;
       if(!id){
@@ -4461,7 +4886,7 @@ function renderSettings(){
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('branchesTitle')}</h3><button class="btn btn-primary btn-sm" id="addBranchBtn">${t('addBranch')}</button></div>
       <table><thead><tr><th>${t('colBranchOnly')}</th><th></th></tr></thead>
-        <tbody>${branches.map(b=>`<tr><td>${esc(b.name)}</td><td><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
+        <tbody>${branches.map(b=>`<tr><td>${esc(b.name)}${b.shift_start?` <span class="tag">🕘 ${String(b.shift_start).slice(0,5)}</span>`:''}</td><td style="display:flex;gap:6px;"><button class="btn btn-ghost btn-sm" onclick="uiBranchAttendance('${b.id}')">🕘 ${lang==='ar'?'وقت الدوام':'Shift time'}</button><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
       <div class="note">${t('branchDeleteNote')}</div>
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('backupTitle')}</h3></div>
@@ -4529,6 +4954,23 @@ async function exportFullBackup(){
 
 /* ===================== RECONCILIATION ===================== */
 /* ---- robust parsing for statements coming from GDS / suppliers / banks ---- */
+/* ======= supplier report recognition (Galileo, Amadeus/IATA, Air Arabia, Akbar B2B, Gulf Air NDC) ======= */
+function detectReportSource(headers){
+  const h = headers.map(x=>String(x).trim().toLowerCase());
+  const has = n=> h.some(x=>x===n);
+  if(has('pcc') && has('record locator')) return {key:'galileo', label:'Galileo / Travelport', amt:['total fare'], sup:/galileo|travelport/i};
+  if(has('doc number') && has('trnc')) return {key:'amadeus', label:'Amadeus / IATA', amt:[], sup:/amadeus|iata|bsp/i};
+  if(has('e-ticket') && has('routing') && has('payment')) return {key:'g9', label:'Air Arabia', amt:['payment'], sup:/arabia|g9|portal/i};
+  if(has('ticketnumber') && has('invoice no') && h.some(x=>x.includes('ledger'))) return {key:'akbar', label:'Akbar B2B', amt:['net amount'], sup:/akbar/i};
+  if(has('order reference') && has('ndc id')) return {key:'ndc', label:'Gulf Air NDC', amt:['amount'], sup:/ndc|gulf/i};
+  return null;
+}
+/* status values that mean the ticket was voided / cancelled before it counted */
+const RECON_VOID = new Set(['VA','VOID','VOIDED','CANX','CANN']);
+function isVoidRow(row){ return Object.values(row).some(v=> RECON_VOID.has(String(v??'').trim().toUpperCase())); }
+/* statement lines that are money movements, not new tickets (refunds, credit notes, extra services, reissue fees, deposits) */
+const RECON_NON_TICKET = new Set(['flight refund','refund','rfnd','credit-other','debit-other','post ssr','other-sale','reissued','deposit','receipt','credit note','debit note','adm','acm']);
+function isNonTicketRow(row){ return Object.values(row).some(v=> RECON_NON_TICKET.has(String(v??'').trim().toLowerCase())); }
 function parseAmount(v){
   if(v===null || v===undefined) return NaN;
   if(typeof v==='number') return v;
@@ -4792,7 +5234,168 @@ function setReconcileQuickRange(kind){
 let refundsSearchTerm = 'all';
 let refundsDateFrom = null;
 let refundsDateTo = null;
+function refundMethodLabel(r){ const ar = lang==='ar'; return r.method==='exchange' ? (ar?'🔁 تذكرة بديلة':'🔁 Exchange') : r.method==='transfer' ? t('payTransfer') : t('payCash'); }
+function refundExchangeLine(r){
+  if(r.method!=='exchange' || !r.new_ticket) return '';
+  const ar = lang==='ar', x = r.new_ticket, d = +((Number(r.customer_amount)||0) - (Number(x.sell)||0)).toFixed(2);
+  return `<div style="font-size:12px;color:var(--muted,#666);">${ar?'البديلة':'New'}: ${esc(x.ticketNo||'')} — ${money(x.sell)} / ${ar?'سستم فير':'fare'} ${money(x.cost)}${d>0.004?` — ${ar?'يرجع للعميل كاش':'cash back'} ${money(d)}`:d<-0.004?` — ${ar?'العميل دفع زيادة':'customer paid'} ${money(-d)}`:''}</div>`;
+}
+function refundProfitOf(r){
+  if(r.airline_amount===null || r.airline_amount===undefined) return null;
+  let p = (Number(r.airline_amount)||0) - (Number(r.customer_amount)||0);
+  if(r.method==='exchange' && r.new_ticket) p += (Number(r.new_ticket.sell)||0) - (Number(r.new_ticket.cost)||0);
+  return +p.toFixed(2);
+}
+function legacyRefundsToMove(){ return bookings.filter(b=>b.refund_status && !isReplacementTicket(b) && !refundRows.some(r=>r.booking_id===b.id)); }
+function employeeRefundsPanel(u){
+  const ar = lang==='ar';
+  const mine = refundRows.filter(r=>r.employee_id===u.id && (r.status==='pending' || r.status==='rejected'));
+  if(!mine.length) return '';
+  return `<div class="panel" style="border:2px solid ${mine.some(r=>r.status==='rejected')?'var(--red)':'var(--gold)'};">
+    <div class="panel-head"><h3 class="panel-title">↩️ ${ar?'طلبات الاسترجاع حقتي':'My refund requests'}</h3></div>
+    ${mine.map(r=>`<div style="padding:8px 0;border-bottom:1px solid var(--line);">
+      <div style="font-weight:700;">${refundLabel(r)} — ${esc(r.ticket_no||'')} — ${esc(r.customer||'')} — ${money(r.customer_amount)} (${refundMethodLabel(r)})
+        <span class="tag ${r.status==='rejected'?'rejected':'pending'}">${r.status==='rejected'?(ar?'مرجوع لك':'Returned'):(ar?'بانتظار المحاسب':'Pending')}</span></div>
+      ${r.status==='rejected'?`<div class="note" style="color:var(--red);">📝 ${esc(r.review_note||'—')}</div>`:''}
+      <button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiEditRefundRequest('${r.id}')">${r.status==='rejected'?(ar?'تعديل وإعادة الإرسال':'Fix & resend'):(ar?'تعديل الطلب':'Edit')}</button>
+    </div>`).join('')}</div>`;
+}
+function renderRefundsV2(){
+  const ar = lang==='ar', staff = isAdmin()||isAccountant(), u = currentUser();
+  document.getElementById('pageSub').textContent = t('subRefunds');
+  const bf = effectiveBranchFilter();
+  let scoped = refundRows.filter(r=> bf==='all' || r.branch_id===bf);
+  if(!staff) scoped = scoped.filter(r=>r.employee_id===u.id);
+  const pending = scoped.filter(r=>r.status==='pending');
+  const awaiting = scoped.filter(r=>r.status==='approved' && (r.airline_amount===null || r.airline_amount===undefined));
+  let history = scoped.filter(r=>r.status!=='pending').sort((a,b)=>String(b.reviewed_at||b.created_at||'').localeCompare(String(a.reviewed_at||a.created_at||'')));
+  if(refundsSearchTerm!=='all') history = history.filter(r=>r.employee_id===refundsSearchTerm);
+  if(refundsDateFrom) history = history.filter(r=>String(r.reviewed_at||r.created_at||'').slice(0,10) >= refundsDateFrom);
+  if(refundsDateTo) history = history.filter(r=>String(r.reviewed_at||r.created_at||'').slice(0,10) <= refundsDateTo);
+  const legacy = staff ? legacyRefundsToMove() : [];
+  const head = `<th>#</th><th>${ar?'التاريخ':'Date'}</th><th>${t('colEmployee')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${ar?'الطريقة':'Method'}</th><th>${ar?'المسترد للعميل':'To customer'}</th><th>${ar?'المسترد من الطيران':'From airline'}</th><th>${ar?'ربح الاسترجاع':'Refund profit'}</th><th>${ar?'الإيصال':'Receipt'}</th>`;
+  const cells = r=>{ const p = refundProfitOf(r); const bk = r.booking_id ? bookings.find(b=>b.id===r.booking_id) : null;
+    return `<td class="num"><b>${refundLabel(r)}</b>${bk&&Number(bk.sell)>0?`<div style="font-size:11px;color:var(--muted,#888)">#${bk.booking_no}</div>`:''}</td><td style="white-space:nowrap">${String(r.created_at||'').slice(0,10)}</td><td>${esc(userName(r.employee_id))}</td><td>${esc(r.ticket_no||'')}</td>
+      <td>${esc(r.customer||'')}${!bk||!(Number(bk.sell)>0)?` <span style="font-size:11px;color:var(--muted,#888)">(${ar?'غير مسجلة':'outside'})</span>`:''}</td><td>${refundMethodLabel(r)}${refundExchangeLine(r)}</td>
+      <td class="num" style="font-weight:700">${money(r.customer_amount)}</td><td class="num">${r.airline_amount==null?'⏳':money(r.airline_amount)}</td>
+      <td class="num">${p===null?'⏳':(canSeeProfit()?`<span style="color:${p<0?'var(--red)':'#1f7a4d'}">${money(p)}</span>`:t('hiddenValue'))}</td>
+      <td>${r.receipt_url?`<a href="${r.receipt_url}" target="_blank">${t('viewReceipt')}</a>`:'—'}</td>`; };
+  const stTag = r=> r.status==='approved' ? `<span class="tag collected">${ar?'معتمد':'Approved'}</span>` : r.status==='cancelled' ? `<span class="tag rejected">${ar?'ملغي':'Cancelled'}</span>` : `<span class="tag rejected">${ar?'مرجوع للموظف':'Returned'}</span>`;
+  document.getElementById('content').innerHTML = `
+    <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary" onclick="openUnifiedRefundModal(null)">+ ${ar?'تسجيل استرجاع':'New refund'}</button></div>
+    ${legacy.length?`<div class="panel" style="border:2px dashed var(--gold);"><div class="note" style="font-weight:600;">🔄 ${ar?`فيه ${legacy.length} استرجاع مسجل بالطريقة القديمة. انقلها للنظام الجديد (بنفس أرقامها — ما يتغير أي كاش أو ربح):`:`${legacy.length} refunds from the old system.`}</div>
+      <button class="btn btn-gold btn-sm" style="margin-top:6px;" onclick="uiMigrateRefunds()">${ar?'نقل الاسترجاعات القديمة':'Move old refunds'}</button></div>`:''}
+    ${staff && awaiting.length ? `<div class="panel"><div class="panel-head"><h3 class="panel-title">⏳ ${ar?'بانتظار تسجيل المسترد من الطيران':'Awaiting airline refund'} (${awaiting.length})</h3></div>
+      <div style="overflow-x:auto;"><table><thead><tr>${head}<th></th></tr></thead><tbody>${awaiting.map(r=>`<tr>${cells(r)}<td><button class="btn btn-gold btn-sm" onclick="uiAirlineAmountV2('${r.id}')">${ar?'تسجيل المسترد':'Record'}</button></td></tr>`).join('')}</tbody></table></div></div>` : ''}
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingRefundsTitle')} (${pending.length})</h3></div>
+      ${pending.length===0?`<div class="empty">${t('noPendingRefunds')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr>${head}<th></th></tr></thead>
+      <tbody>${pending.map(r=>`<tr>${cells(r)}<td style="white-space:nowrap">${staff
+        ? `<button class="btn btn-gold btn-sm" onclick="uiApproveRefundV2('${r.id}')">${t('approve')}</button> <button class="btn btn-danger btn-sm" onclick="uiReturnRefundV2('${r.id}')">${ar?'إرجاع للموظف':'Return'}</button>`
+        : `<button class="btn btn-ghost btn-sm" onclick="uiEditRefundRequest('${r.id}')">${ar?'تعديل':'Edit'}</button>`}</td></tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('refundHistoryTitle')}</h3></div>
+      <div class="grid-2">
+        <div class="field"><label>${t('fieldEmployeeFilter')}</label><select id="refundsSearchInput"><option value="all" ${refundsSearchTerm==='all'?'selected':''}>${t('allEmployeesOpt')}</option>${users.map(x=>`<option value="${x.id}" ${refundsSearchTerm===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldDateFrom')}</label><input type="date" id="refundsDateFromInput" value="${refundsDateFrom||''}"></div>
+      </div>
+      <div class="field"><label>${t('fieldDateTo')}</label><input type="date" id="refundsDateToInput" value="${refundsDateTo||''}"></div>
+      ${history.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;margin-top:10px;"><table><thead><tr>${head}<th>${ar?'الحالة':'Status'}</th></tr></thead>
+      <tbody>${history.slice(0,300).map(r=>`<tr>${cells(r)}<td style="white-space:nowrap">${stTag(r)}${r.status==='rejected'&&r.review_note?`<div style="font-size:11px;color:var(--red)">${esc(r.review_note)}</div>`:''}
+        ${r.status==='approved' && staff ? ` <button class="btn btn-ghost btn-sm" onclick="uiEditRefundV2('${r.id}')">✏️ ${ar?'تعديل':'Edit'}</button>` : ''}
+        ${r.status==='rejected' && (staff || r.employee_id===u.id) ? ` <button class="btn btn-ghost btn-sm" onclick="uiEditRefundRequest('${r.id}')">${ar?'تعديل وإرسال':'Fix & resend'}</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`}
+    </div>`;
+  document.getElementById('refundsSearchInput').onchange = (e)=>{ refundsSearchTerm = e.target.value; render(); };
+  document.getElementById('refundsDateFromInput').onchange = (e)=>{ refundsDateFrom = e.target.value||null; render(); };
+  document.getElementById('refundsDateToInput').onchange = (e)=>{ refundsDateTo = e.target.value||null; render(); };
+}
+window.uiEditRefundRequest = function(id){ openUnifiedRefundModal(null, id); };
+window.uiMigrateRefunds = async function(){
+  const ar = lang==='ar'; const n0 = legacyRefundsToMove().length;
+  if(!confirm(ar?`نقل ${n0} استرجاع قديم للنظام الجديد؟\nبنفس الأرقام — ما يتغير كاش ولا ربح.`:`Move ${n0} refunds?`)) return;
+  try{ const n = await migrateLegacyRefunds(); alert(ar?`✔ انتقل ${n} استرجاع`:`Moved ${n}`); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
+window.uiApproveRefundV2 = function(id){
+  const r = refundById(id); if(!r) return; const ar = lang==='ar';
+  const bk = r.booking_id ? bookings.find(b=>b.id===r.booking_id) : null; const isEx = r.method==='exchange';
+  showModal(`<div class="modal-head"><h3>${ar?'اعتماد استرجاع':'Approve refund'} ${refundLabel(r)}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <p class="note">${esc(r.ticket_no||'')} — ${esc(r.customer||'')} — ${esc(userName(r.employee_id))}${bk&&Number(bk.sell)>0?` — ${ar?'التذكرة':'ticket'} #${bk.booking_no}: ${ar?'بيع':'sale'} ${money(bk.sell)} / ${ar?'تكلفة':'cost'} ${money(bk.cost)}`:` — ${ar?'غير مسجلة بالنظام':'not in the system'}`}</p>
+    ${isEx?`<div class="note" style="background:#EEF3F8;padding:8px;border-radius:8px;">🔁 ${ar?'تذكرة بديلة تنسجل عند الاعتماد':'Replacement created on approval'}${refundExchangeLine(r)}</div>`:''}
+    <div class="grid-2">
+      <div class="field"><label>${ar?'المسترد الفعلي للعميل':'To customer'}</label><input type="number" step="0.01" min="0.01" id="v2Cust" value="${r.customer_amount}"></div>
+      <div class="field"><label>${ar?'المسترد من الطيران (فاضي = لاحقًا)':'From airline (blank = later)'}</label><input type="number" step="0.01" min="0" id="v2Air" value="${r.airline_amount==null?'':r.airline_amount}"></div>
+    </div>
+    <div class="field"><label>${t('fieldRefundMethod')}</label><select id="v2Method" ${isEx?'disabled':''}><option value="cash" ${r.method!=='transfer'?'selected':''}>${t('payCash')} — ${ar?'من كاش الموظف':'from employee cash'}</option><option value="transfer" ${r.method==='transfer'?'selected':''}>${t('payTransfer')} — ${ar?'من البنك':'from bank'}</option></select></div>
+    <div class="field" id="v2ProofBox" style="${r.method==='transfer'?'':'display:none'}"><label>${t('fieldRefundProof')}</label><input type="file" id="v2Proof" accept="image/*,.pdf"></div>
+    <div class="note" id="v2Profit" style="font-weight:600"></div>
+    <div id="v2Err"></div>
+    <div style="display:flex;gap:8px;margin-top:12px;"><button class="btn btn-primary" id="v2Ok">${t('approve')}</button><button class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>`);
+  const calc = ()=>{ const c = parseAmount(document.getElementById('v2Cust').value)||0, a = document.getElementById('v2Air').value;
+    const box = document.getElementById('v2Profit');
+    if(a===''){ box.innerHTML = `⏳ ${ar?'ربح الاسترجاع ينحسب لما يتسجل المسترد من الطيران':'Profit when airline amount is known'}`; return; }
+    let p = (parseAmount(a)||0) - c; let x = isEx ? (Number(r.new_ticket.sell)||0)-(Number(r.new_ticket.cost)||0) : 0;
+    box.innerHTML = `${ar?'ربح الاسترجاع':'Refund profit'}: <b style="color:${p<0?'var(--red)':'#1f7a4d'}">${money(+p.toFixed(2))}</b>${isEx?` + ${ar?'ربح البديلة':'replacement'} ${money(+x.toFixed(2))} = <b>${money(+(p+x).toFixed(2))}</b>`:''}`; };
+  ['v2Cust','v2Air'].forEach(k=>document.getElementById(k).oninput = calc); calc();
+  document.getElementById('v2Method').onchange = e=>{ document.getElementById('v2ProofBox').style.display = e.target.value==='transfer' ? '' : 'none'; };
+  document.getElementById('v2Ok').onclick = async ()=>{
+    const btn = document.getElementById('v2Ok'); const err = m=>{ document.getElementById('v2Err').innerHTML = `<div class="login-error">${m}</div>`; };
+    const c = +(parseAmount(document.getElementById('v2Cust').value)||0).toFixed(2), aRaw = document.getElementById('v2Air').value, method = isEx ? 'exchange' : document.getElementById('v2Method').value;
+    if(!(c>0)) return err(t('invalidRefundAmount'));
+    if(bk && Number(bk.sell)>0 && c>(Number(bk.sell)||0)+0.01) return err(ar?`أكبر من سعر البيع (${money(bk.sell)}).`:'More than the sale.');
+    const file = document.getElementById('v2Proof').files && document.getElementById('v2Proof').files[0];
+    if(method==='transfer' && !(file && file.size) && !r.proof_url) return err(t('refundProofRequired'));
+    btn.disabled = true;
+    try{
+      const proofUrl = (method==='transfer' && file && file.size) ? await uploadReceiptFile(file) : null;
+      await approveRefundV2(id, {customerAmount:c, airlineAmount: aRaw===''?null:parseAmount(aRaw), method, proofUrl});
+      closeModal(); render();
+    }catch(e){ console.error(e); err(errText()); btn.disabled = false; }
+  };
+};
+window.uiReturnRefundV2 = async function(id){
+  const r = refundById(id); if(!r) return; const ar = lang==='ar';
+  const note = prompt(ar?`سبب الإرجاع للموظف ${userName(r.employee_id)} (يظهر له):`:'Reason (shown to the employee):'); if(note===null) return;
+  try{ await undoRefundV2(id, 'return', note); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
+window.uiAirlineAmountV2 = async function(id){
+  const r = refundById(id); if(!r) return; const ar = lang==='ar';
+  const v = prompt(ar?`كم رجّع الطيران/المورد على ${refundLabel(r)} — ${r.ticket_no}؟`:'Airline refund amount?'); if(v===null || v==='') return;
+  const a = parseAmount(v); if(!(a>=0)){ alert(t('invalidNumber')); return; }
+  try{ await setAirlineAmountV2(id, a); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
+window.uiEditRefundV2 = function(id){
+  const r = refundById(id); if(!r) return; const ar = lang==='ar'; const isEx = r.method==='exchange';
+  showModal(`<div class="modal-head"><h3>✏️ ${ar?'تعديل استرجاع معتمد':'Edit approved refund'} ${refundLabel(r)}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <p class="note">${esc(r.ticket_no||'')} — ${esc(r.customer||'')} — ${esc(userName(r.employee_id))}</p>
+    ${isEx?`<div class="note" style="background:#EEF3F8;padding:8px;border-radius:8px;">🔁 ${ar?'لتعديل التذكرة البديلة: ↩ إرجاع للموظف':'To change the replacement: return to employee'}${refundExchangeLine(r)}</div>`:''}
+    <div class="grid-2">
+      <div class="field"><label>${ar?'المسترد الفعلي للعميل':'To customer'}</label><input type="number" step="0.01" id="e2Cust" value="${r.customer_amount}"></div>
+      <div class="field"><label>${ar?'المسترد من الطيران':'From airline'}</label><input type="number" step="0.01" id="e2Air" value="${r.airline_amount==null?'':r.airline_amount}"></div>
+    </div>
+    <div class="field"><label>${t('fieldRefundMethod')}</label><select id="e2Method" ${isEx?'disabled':''}><option value="cash" ${r.method!=='transfer'?'selected':''}>${t('payCash')}</option><option value="transfer" ${r.method==='transfer'?'selected':''}>${t('payTransfer')}</option></select></div>
+    <div id="e2Err"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+      <button class="btn btn-primary" id="e2Save">${t('save')}</button>
+      <button class="btn btn-gold" id="e2Return">↩ ${ar?'إرجاع للموظف':'Return to employee'}</button>
+      <button class="btn btn-danger" id="e2Cancel">${ar?'إلغاء الاسترجاع':'Cancel refund'}</button>
+      <button class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>`);
+  const err = m=>{ document.getElementById('e2Err').innerHTML = `<div class="login-error">${m}</div>`; };
+  document.getElementById('e2Save').onclick = async ()=>{
+    const c = parseAmount(document.getElementById('e2Cust').value), a = document.getElementById('e2Air').value;
+    if(!(c>0)) return err(t('invalidRefundAmount'));
+    try{ await editApprovedRefundV2(id, {customerAmount:c, airlineAmount: a===''?null:parseAmount(a), method: isEx?'exchange':document.getElementById('e2Method').value}); closeModal(); render(); }
+    catch(e){ console.error(e); err(errText()); }
+  };
+  document.getElementById('e2Return').onclick = async ()=>{
+    const note = prompt(ar?'سبب الإرجاع (يظهر للموظف):':'Reason:'); if(note===null) return;
+    try{ await undoRefundV2(id, 'return', note); closeModal(); render(); }catch(e){ console.error(e); err(errText()); }
+  };
+  document.getElementById('e2Cancel').onclick = async ()=>{
+    if(!confirm(ar?'إلغاء الاسترجاع بالكامل؟ كل شي يرجع مثل ما كان قبل الاسترجاع.':'Cancel this refund?')) return;
+    try{ await undoRefundV2(id, 'cancel'); closeModal(); render(); }catch(e){ console.error(e); err(errText()); }
+  };
+};
 function renderRefunds(){
+  if(refundsReady) return renderRefundsV2();
   document.getElementById('pageSub').textContent = t('subRefunds');
   const bf = effectiveBranchFilter();
   const scoped = bf==='all' ? bookings : bookings.filter(b=>b.branch_id===bf);
@@ -4966,9 +5569,21 @@ function renderReconcile(){
         document.getElementById('reconcileBankAmountColSel').innerHTML = opts;
         document.getElementById('reconcileColumnBox').style.display = '';
         if(isPosReport(reconcileHeaders)){ const ms = document.getElementById('reconcileModeSel'); ms.value = 'pos'; ms.onchange({target:ms}); }
+        const src = detectReportSource(reconcileHeaders);
+        let srcNote = '';
+        if(src){
+          const amtH = reconcileHeaders.find(h=> src.amt.includes(String(h).trim().toLowerCase()));
+          if(amtH) document.getElementById('reconcileTicketAmountColSel').value = amtH;
+          const supSel = document.getElementById('rfSupplier');
+          const supOpt = supSel ? [...supSel.options].find(o=> o.value!=='all' && src.sup.test(o.value)) : null;
+          if(supOpt){ supSel.value = supOpt.value; updateReconcileCount(); }
+          srcNote = `<div class="note" style="background:#EAF3DE;padding:10px;border-radius:8px;margin-bottom:6px;">✅ ${lang==='ar'
+            ? `تم التعرف على التقرير: <b>${src.label}</b>${amtH?` — عمود المبلغ: <b>${esc(amtH)}</b>`:''}${supOpt?` — المورد: <b>${esc(supOpt.value)}</b>`:''}. تأكد من الفترة (من/إلى) تطابق فترة التقرير.`
+            : `Report recognised: <b>${src.label}</b>${amtH?` — amount column: <b>${esc(amtH)}</b>`:''}${supOpt?` — supplier: <b>${esc(supOpt.value)}</b>`:''}. Make sure the date range matches the report.`}</div>`;
+        }
         // show what was read, so a wrong sheet / header is visible immediately
         const prevCols = reconcileHeaders.slice(0,8);
-        document.getElementById('reconcileResultBox').innerHTML = `<div class="note" style="background:#EEF5F4;padding:10px;border-radius:8px;">📄 ${lang==='ar'?`تمت قراءة <b>${reconcileRows.length}</b> سطر من <b>${sheetsUsed}</b> ورقة. أول 3 سطور:`:`Read <b>${reconcileRows.length}</b> rows from <b>${sheetsUsed}</b> sheet(s). First 3 rows:`}</div>
+        document.getElementById('reconcileResultBox').innerHTML = srcNote + `<div class="note" style="background:#EEF5F4;padding:10px;border-radius:8px;">📄 ${lang==='ar'?`تمت قراءة <b>${reconcileRows.length}</b> سطر من <b>${sheetsUsed}</b> ورقة. أول 3 سطور:`:`Read <b>${reconcileRows.length}</b> rows from <b>${sheetsUsed}</b> sheet(s). First 3 rows:`}</div>
           <div style="overflow-x:auto;margin-top:6px;"><table><thead><tr>${prevCols.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead>
           <tbody>${reconcileRows.slice(0,3).map(r=>`<tr>${prevCols.map(h=>`<td>${esc(String(r[h]??''))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
       }catch(err){ console.error(err); alert(t('reconcileParseError')); }
@@ -5007,6 +5622,9 @@ function renderReconcile(){
       const compareTo = document.getElementById('reconcileCompareSel')?.value || 'cost';
       const index = new Map();
       scoped.filter(b=>b.ticket_no).forEach(b=>{ ticketKeys(b.ticket_no).forEach(k=>{ if(!index.has(k)) index.set(k, b); }); });
+      // PNR -> every booking on that reservation (one PNR can hold several passengers)
+      const pnrIndex = new Map();
+      scoped.filter(b=>b.pnr).forEach(b=>{ const k = normTicket(b.pnr); if(k.length>=5){ const a = pnrIndex.get(k); if(a){ if(!a.includes(b)) a.push(b); } else pnrIndex.set(k,[b]); } });
       const sameText = (a,b)=> !a || !b || String(a).trim().toUpperCase()===String(b).trim().toUpperCase();
       let fuzzyMatches = 0;
       let emptyValCount = 0;
@@ -5022,10 +5640,17 @@ function renderReconcile(){
         const keys = [...ticketKeys(raw)];
         if(pass===1){
           for(const pref of ['T:','D:','L:']){
+            const found = new Map();
             for(const k of keys.filter(k=>k.startsWith(pref))){
               const b = index.get(k);
-              if(b && okExtra(b)) return {hit:b, fuzzy: pref!=='T:'};
+              if(b && okExtra(b)) found.set(b.id, b);
             }
+            if(found.size){ const g = [...found.values()]; return {hit:g[0], group: g.length>1 ? g : null, fuzzy: pref!=='T:'}; }
+          }
+          // no ticket number matched: try it as a PNR (Gulf Air NDC, FlyDubai / Jazeera via B2B)
+          for(const k of keys.filter(k=>k.startsWith('T:'))){
+            const g = (pnrIndex.get(k.slice(2))||[]).filter(okExtra);
+            if(g.length) return {hit:g[0], group: g.length>1 ? g : null, fuzzy:false, byPnr:true};
           }
           return null;
         }
@@ -5048,10 +5673,14 @@ function renderReconcile(){
         reconcileRows.forEach(r=>{ const n = parseAmount(r[amtCol]); if(!isNaN(n) && n!==0){ if(n<0) neg++; else pos++; } });
         if(neg>pos) flip = -1;
       }
-      const agg = new Map();   // booking id -> {b, sale, refund, tickets:[]}
-      let skipped = 0;
+      const agg = new Map();   // booking id (or PNR group) -> {b, group, sale, refund, tickets:[]}
+      let skipped = 0, voided = 0, nonTicket = 0;
+      const crdrCol = reconcileHeaders.find(h=>/^(cr\s*\/\s*dr|dr\s*\/\s*cr)$/i.test(String(h).trim()));
+      const rowAmt = row=>{ const n = parseAmount(row[amtCol]); if(isNaN(n)) return NaN; return (crdrCol && String(row[crdrCol]??'').trim().toUpperCase()==='CR') ? -Math.abs(n)*flip : n; };
+      const missingByKey = new Map();
       reconcileRows.forEach(row=>{
         if(isSkipRow(row)){ skipped++; return; }
+        if(isVoidRow(row)){ voided++; return; }
         const airlineVal = airlineCol ? row[airlineCol] : '';
         const routeVal = routeCol ? row[routeCol] : '';
         let result = null, matchedCol = null, anyValPresent = false;
@@ -5068,37 +5697,45 @@ function renderReconcile(){
         if(!result){
           // a row with nothing in the ticket / PNR / reference columns is a balance or narration line, not a ticket
           if(likelyCols.length && likelyCols.every(c=>String(row[c]??'').trim()==='')){ skipped++; return; }
-          missing.push(row); return;
+          if(isNonTicketRow(row)){ nonTicket++; return; }
+          // the same ticket split over several lines (one per flight segment) is ONE missing ticket
+          const dk = likelyCols.map(c=>normTicket(row[c])).join('|');
+          const prev = dk.replace(/\|/g,'') ? missingByKey.get(dk) : null;
+          if(prev){ if(amtCol){ const a = parseAmount(prev[amtCol]), n = parseAmount(row[amtCol]); if(!isNaN(n)) prev[amtCol] = +(((isNaN(a)?0:a)+n).toFixed(2)); } return; }
+          const copy = {...row}; if(dk.replace(/\|/g,'')) missingByKey.set(dk, copy);
+          missing.push(copy); return;
         }
         if(result.fuzzy) fuzzyMatches++;
         const hit = result.hit;
-        const e = agg.get(hit.id) || {b:hit, sale:0, refund:0, hasAmt:false, tickets:[]};
-        e.tickets.push(row[matchedCol]);
+        const group = result.group || [hit];
+        const aggKey = group.map(b=>b.id).sort().join('+');
+        const e = agg.get(aggKey) || {b:hit, group, sale:0, refund:0, hasAmt:false, tickets:[]};
+        if(!e.tickets.includes(row[matchedCol])) e.tickets.push(row[matchedCol]);
         if(amtCol){
-          const n = parseAmount(row[amtCol]);
+          const n = rowAmt(row);
           if(!isNaN(n)){ const v = n*flip; e.hasAmt = true; if(v>=0) e.sale += v; else e.refund += -v; }
         }
-        agg.set(hit.id, e);
+        agg.set(aggKey, e);
       });
       agg.forEach(e=>{
         const hit = e.b;
+        const G = e.group || [hit];
         if(amtCol && e.hasAmt){
-          const base = compareTo==='cost' ? (Number(hit.cost)||0) : (Number(hit.sell)||0);
-          const refBase = compareTo==='cost' ? bookingSupplierRefund(hit) : bookingRefundAmount(hit);
+          const base = G.reduce((s,b)=> s + (compareTo==='cost' ? (Number(b.cost)||0) : (Number(b.sell)||0)), 0);
+          const refBase = G.reduce((s,b)=> s + (compareTo==='cost' ? bookingSupplierRefund(b) : bookingRefundAmount(b)), 0);
           const saleOk = e.sale<0.005 || Math.abs(e.sale-base)<0.05;
           const refOk = e.refund<0.005 || Math.abs(e.refund-refBase)<0.05;
           if(!saleOk || !refOk){
             const fileAmt = +(e.sale - e.refund).toFixed(2), sysAmt = +((e.sale>0.005?base:0) - (e.refund>0.005?refBase:0)).toFixed(2);
-            amountMismatches.push({row:null, sysAmt, fileAmt, ticket:e.tickets.join(' + '), b:hit});
+            amountMismatches.push({row:null, sysAmt, fileAmt, ticket:e.tickets.join(' + ') + (G.length>1?` (${G.length} ${lang==='ar'?'تذاكر':'tickets'})`:''), b:hit});
+            G.forEach(b=>seen.set(b.id, true));
             return;
           }
         }
-        matched++;
-        matchedList.push(hit);
-        seen.set(hit.id, true);
+        G.forEach(b=>{ matched++; matchedList.push(b); seen.set(b.id, true); });
       });
       amountMismatches.forEach(m=>seen.set(m.b.id, true));
-      missing._skipped = skipped;
+      missing._skipped = skipped; missing._voided = voided; missing._nonTicket = nonTicket;
       // the "who issued it" column: the one whose values match employees' supplier usernames most often
       let userCol = document.getElementById('reconcileUserColSel')?.value || null, bestHits = userCol ? 1e9 : 0;
       const sample = reconcileRows.slice(0, 400);
@@ -5221,6 +5858,8 @@ function renderReconcile(){
     box.innerHTML = `
       ${missing._emptyColWarning?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">⚠️ ${missing._emptyColWarning}</div>`:''}
       ${missing._diagnostic?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;margin-bottom:10px;">🔎 ${missing._diagnostic}</div>`:''}
+      ${missing._voided?`<div class="note" style="margin-bottom:8px;">🚫 ${lang==='ar'?`تم استبعاد ${missing._voided} تذكرة ملغاة (Void) — ما تُحسب ناقصة`:`${missing._voided} voided tickets excluded`}</div>`:''}
+      ${missing._nonTicket?`<div class="note" style="margin-bottom:8px;">↩️ ${lang==='ar'?`${missing._nonTicket} حركة مو تذاكر جديدة (استرجاع، إشعار دائن، خدمات إضافية، رسوم إعادة إصدار) وما لقينا لها تذكرة بالنظام — راجعها من صفحة الاسترجاعات`:`${missing._nonTicket} non-ticket movements (refunds, credit notes, SSR, reissue fees) not linked to a system ticket`}</div>`:''}
       ${missing._skipped?`<div class="note" style="margin-bottom:8px;">ℹ️ ${lang==='ar'?`تم تجاهل ${missing._skipped} سطر ليست تذاكر (دفعات، أرصدة، مجاميع، نهاية التقرير)`:`${missing._skipped} non-ticket rows ignored (receipts, balances, totals)`}</div>`:''}
       <div class="kpi-row" style="grid-template-columns:repeat(${amountMismatches.length>0?4:3},1fr);margin-bottom:14px;">
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('reconcileTotalRows')}</div><div class="kpi-value">${reconcileRows.length}</div></div>
@@ -5349,6 +5988,12 @@ repairOther = lockify(repairOther, 'repairOther');
 submitProfitHandover = lockify(submitProfitHandover, 'submitProfitHandover');
 applyPosFees = lockify(applyPosFees, 'applyPosFees');
 convertToSpan = lockify(convertToSpan, 'convertToSpan');
+submitRefund = lockify(submitRefund, 'submitRefund');
+approveRefundV2 = lockify(approveRefundV2, 'approveRefundV2');
+undoRefundV2 = lockify(undoRefundV2, 'undoRefundV2');
+editApprovedRefundV2 = lockify(editApprovedRefundV2, 'editApprovedRefundV2');
+setAirlineAmountV2 = lockify(setAirlineAmountV2, 'setAirlineAmountV2');
+migrateLegacyRefunds = lockify(migrateLegacyRefunds, 'migrateLegacyRefunds');
 editApprovedRefund = lockify(editApprovedRefund, 'editApprovedRefund');
 cancelApprovedRefund = lockify(cancelApprovedRefund, 'cancelApprovedRefund');
 confirmPosSettled = lockify(confirmPosSettled, 'confirmPosSettled');
