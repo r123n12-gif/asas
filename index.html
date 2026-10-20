@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-F1</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-F3</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1068,6 +1068,7 @@ async function requestRefund(bookingId, file, note, refundMethod, refundAmount, 
   const patch = { refund_status:'pending', refund_method:refundMethod||'cash', refund_amount:refundAmount!=null?+Number(refundAmount).toFixed(2):null,
     supplier_refund_amount:(supplierRefund!==undefined && supplierRefund!==null && supplierRefund!=='')?+Number(supplierRefund).toFixed(2):null,
     refund_receipt_url:receiptUrl, refund_note:note||null, refund_requested_by:currentUser()?.id||null, refund_requested_at:new Date().toISOString() };
+  if(exchangeData) exchangeData = {...exchangeData, key: exchangeData.key || ((b.exchange_data&&b.exchange_data.key) || (Date.now().toString(36)+Math.random().toString(36).slice(2,8)))};
   if(exchangeData!==undefined) patch.exchange_data = exchangeData;   // replacement ticket, created when the accountant approves
   await mustUpdate('bookings', bookingId, patch);
   Object.assign(b, patch);
@@ -1163,11 +1164,20 @@ async function approveRefund(bookingId, refundMethod, refundProofUrl){
   await createExchangeTicket(b);
 }
 // refund + replacement ticket: the old ticket's value pays for the new one, only the difference moves in cash
+function exchangeTag(b){ const x = b.exchange_data||{}; return x.key ? `[EX:${x.key}]` : `#${b.booking_no}`; }
+function findExchangeTicket(b){
+  const x = b.exchange_data||{};
+  if(x.new_id){ const t = bookings.find(y=>y.id===x.new_id); if(t) return t; }
+  return bookings.find(y=>y.id!==b.id && y.note && (x.key ? y.note.includes(`[EX:${x.key}]`) : (y.note.includes(`بديلة عن #${b.booking_no}`)||y.note.includes(`Replacement for #${b.booking_no}`))) && normTkt(y.ticket_no)===normTkt(x.ticketNo)) || null;
+}
 async function createExchangeTicket(b){
   const x = b.exchange_data; if(!x || x.new_id) return;
+  // already created by an earlier attempt that did not finish? link it instead of creating a second one
+  const existing = findExchangeTicket(b);
+  if(existing){ const nx = {...x, new_id:existing.id, new_no:existing.booking_no}; await mustUpdate('bookings', b.id, {exchange_data:nx}); b.exchange_data = nx; return; }
   const sell = +Number(x.sell).toFixed(2), extra = +Math.max(0, sell - (Number(b.refund_amount)||0)).toFixed(2);
   const data = {date:todayStr(), customer:b.customer, branchId:b.branch_id, airline:x.airline||b.airline||'-', ticketNo:x.ticketNo, source:x.supplier||b.supplier,
-    sell, cost:+Number(x.cost).toFixed(2), createdBy:b.created_by, note:(lang==='ar'?`تذكرة بديلة عن #${b.booking_no}`:`Replacement for #${b.booking_no}`)};
+    sell, cost:+Number(x.cost).toFixed(2), createdBy:b.created_by, note:(lang==='ar'?`تذكرة بديلة عن #${b.booking_no}`:`Replacement for #${b.booking_no}`) + (x.key?` [EX:${x.key}]`:'')};
   if(extra>0.004 && x.extraMethod && x.extraMethod!=='cash'){
     data.paymentMethod = 'split';
     data.paymentSplits = [{method:'cash', amount:+(sell-extra).toFixed(2)}, {method:x.extraMethod, amount:extra, bankName:x.bankName||null}];
@@ -3003,6 +3013,10 @@ function integrityIssues(){
     if(!miscReceiptJournalRow(r)) issues.push({b:null, fix:{kind:'misc', id:r.id}, issue: ar?`مبلغ بدون تذكرة معتمد بدون قيد — ${userName(r.employee_id)}`:`Confirmed misc receipt without entry — ${userName(r.employee_id)}`, expected:+Number(r.amount).toFixed(2), actual:0});
   });
   const orphans = journal.filter(j=>j.booking_id && !ids.has(j.booking_id));
+  { const groups = {};
+    bookings.forEach(y=>{ const m = String(y.note||'').match(/\[EX:([a-z0-9]+)\]|(?:بديلة عن|Replacement for) #(\d+)/i); if(!m) return; const k = (m[1]||('#'+m[2]))+'|'+normTkt(y.ticket_no); (groups[k]=groups[k]||[]).push(y); });
+    Object.values(groups).filter(g=>g.length>1).forEach(g=>{ g.sort((a,b)=>(a.booking_no||0)-(b.booking_no||0)); g.slice(1).forEach(extra=>{
+      issues.push({b:null, fix:{kind:'dupExchange', id:extra.id}, issue: ar?`تذكرة بديلة مكررة #${extra.booking_no} (نسخة من #${g[0].booking_no}) — ${esc(extra.customer||'')}`:`Duplicate replacement ticket #${extra.booking_no}`, expected:0, actual:+Number(extra.sell||0).toFixed(2)}); }); }); }
   { const seen = new Map(), dups = new Set();
     profitHandovers.filter(h=>h.status==='approved').sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at))).forEach(h=>{
       handoverBookingIds(h).forEach(x=>{ if(seen.has(x) && seen.get(x)!==h.id) dups.add(h.id); else seen.set(x,h.id); }); });
@@ -3028,6 +3042,8 @@ async function repairOther(fix){
     const {data, error} = await sb.from('journal').insert({date:(r.confirmed_at||r.created_at||'').slice(0,10)||todayStr(), branch_id:r.branch_id||null, desc_key:'jMiscReceipt', desc_args:[userName(r.employee_id), r.note||'-', r.id],
       debit_key: r.method==='cash'?'accCashOnHand':'accBank', credit_key:'accMiscReceipts', amount:+Number(r.amount).toFixed(2)}).select().single();
     if(error) throw error; journal.unshift(data);
+  }else if(fix.kind==='dupExchange'){
+    if(bookings.some(x=>x.id===fix.id)) await deleteBooking(fix.id);
   }else if(fix.kind==='dupHandover'){
     // remove from the later handover every ticket already handed in an earlier one; reject it if nothing is left
     const h = profitHandovers.find(x=>x.id===fix.id); if(!h) return;
@@ -3122,6 +3138,23 @@ async function repairBooking(bookingId){
       notes.push(has ? (ar?'الحالة صُحّحت إلى مؤكَّد':'Status set to confirmed') : (ar?'الحالة رجعت "بانتظار التأكيد" ليؤكدها المحاسب من البنك':'Status reset to awaiting confirmation'));
     }
   }
+  // 4b) refund entries: rebuilt from the ticket when they are missing, duplicated or have the wrong amount
+  if(b.refunded){
+    const supField = b.supplier_refund_amount!=null;   // supplier refund only rebuilt when the ticket itself holds the amount
+    const ref = journal.filter(j=>j.booking_id===b.id && (j.desc_key==='jRefund' || (supField && j.desc_key==='jSupplierRefund')));
+    const custPosted = +ref.filter(j=>j.desc_key==='jRefund').reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2);
+    const supPosted = +ref.filter(j=>j.desc_key==='jSupplierRefund').reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2);
+    const custCount = ref.filter(j=>j.desc_key==='jRefund').length, supCount = ref.filter(j=>j.desc_key==='jSupplierRefund').length;
+    const supWanted = supField ? +Number(b.supplier_refund_amount||0).toFixed(2) : supPosted;
+    if(Math.abs(custPosted - bookingRefundAmount(b))>0.009 || custCount>1 || supCount>1 || Math.abs(supPosted - supWanted)>0.009){
+      const keepDate = (ref.find(j=>j.desc_key==='jRefund')||ref[0]||{}).date;
+      if(ref.length){ const {error} = await sb.from('journal').delete().in('id', ref.map(j=>j.id)); if(error) throw error; const d = new Set(ref.map(j=>j.id)); journal = journal.filter(j=>!d.has(j.id)); }
+      await postRefundReversal(b.id);
+      if(keepDate){ const fresh = journal.filter(j=>j.booking_id===b.id && (j.desc_key==='jRefund' || j.desc_key==='jSupplierRefund') && j.date!==keepDate);
+        if(fresh.length){ const {error} = await sb.from('journal').update({date:keepDate}).in('id', fresh.map(j=>j.id)); if(error) throw error; fresh.forEach(j=>j.date=keepDate); } }
+      notes.push(ar?'قيود الاسترجاع انبنت من جديد (كانت مكررة أو ناقصة)':'Refund entries rebuilt');
+    }
+  }
   // 5) anything still off needs a human decision
   const left = integrityIssues().filter(x=>x.b && x.b.id===b.id);
   return {notes, left};
@@ -3135,7 +3168,7 @@ function integrityWarnings(){
     if(p < -0.004) w.push({b, refundLoss: !!b.refunded, issue: b.refunded
       ? (ar?`خسارة ${money(-p)} بعد الاسترجاع — المرجّع للعميل أكثر مما رجّعه المورد + الربح (تأكد من المبلغين)`:`Loss ${money(-p)} after refund — check customer vs supplier refund`)
       : (ar?`تذكرة بخسارة ${money(-p)} (تأكد إن البيع والسستم فير مو معكوسين)`:`Loss ticket ${money(-p)} (check sell / fare not swapped)`), sell:b.sell, cost:b.cost});
-    else if(Number(b.cost)===0) w.push({b, issue: ar?'تكلفة صفر — الربح يساوي كامل سعر البيع':'Zero cost — profit equals full price', sell:b.sell, cost:b.cost});
+    else if(Number(b.cost)===0 && !isRefundOnly(b)) w.push({b, issue: ar?'تكلفة صفر — الربح يساوي كامل سعر البيع':'Zero cost — profit equals full price', sell:b.sell, cost:b.cost});
   });
   return w;
 }
