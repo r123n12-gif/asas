@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-F3</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-F7</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1099,7 +1099,7 @@ async function cancelApprovedRefund(bookingId, returnNote){
   const b = bookings.find(x=>x.id===bookingId); if(!b) throw new Error('booking not found');
   const old = journal.filter(j=>j.booking_id===bookingId && (j.desc_key==='jRefund' || j.desc_key==='jSupplierRefund'));
   if(b.exchange_data && b.exchange_data.new_id){
-    if(bookings.some(x=>x.id===b.exchange_data.new_id)) await deleteBooking(b.exchange_data.new_id);
+    if(bookings.some(x=>x.id===b.exchange_data.new_id)) await deleteBooking(b.exchange_data.new_id, true);
     const nx = {...b.exchange_data}; delete nx.new_id; delete nx.new_no;
     await mustUpdate('bookings', bookingId, {exchange_data:nx}); b.exchange_data = nx;
   }
@@ -1380,6 +1380,9 @@ async function updateBooking(id, data){
   const matchesBank = !isSplit && prevB && prevB.payment_method===method && Math.abs((Number(data.sell)||0) - bookingConfirmedGross(id))<0.01;
   if(prevB && prevB.supplier_settled && Math.abs((Number(data.cost)||0)-(Number(prevB.cost)||0))>0.004)
     throw new Error(lang==='ar' ? 'لا يمكن تعديل التكلفة: تم سداد المورد لهذه التذكرة بالمبلغ القديم.' : 'Cost cannot change: the supplier was already paid for this ticket.');
+  if(isReplacementTicket(prevB) && (Math.abs((Number(data.sell)||0)-(Number(prevB.sell)||0))>0.004 || prevB.payment_method!==method
+     || (isSplit && JSON.stringify((data.paymentSplits||[]).map(x=>[x.method,+Number(x.amount).toFixed(2)]))!==JSON.stringify((prevB.payment_splits||[]).map(x=>[x.method,+Number(x.amount).toFixed(2)])))))
+    throw new Error(replacementLockMsg(prevB));
   const returnedForFix = !!prevB && !!prevB.edit_requested && !isSplit && prevB.payment_method===method;
   const priceChanged = !!prevB && Math.abs((Number(data.sell)||0)-(Number(prevB.sell)||0))>0.004;
   if(prevConfirmed && !matchesBank && !returnedForFix && (priceChanged || prevB.payment_method!==method))
@@ -1395,7 +1398,7 @@ async function updateBooking(id, data){
     bank_name: method==='transfer' ? (data.bankName||null) : method==='installment' ? (data.installmentProvider||null) : null,
     payment_splits: isSplit ? data.paymentSplits.map(s=>({...s, verified: s.method==='cash' ? true : !!s.verified})) : null,
     transfer_verified: isSplit ? allSettled : (method==='cash' || alreadyConfirmed),
-    edit_requested:false, edit_note:null, note: data.note||null
+    edit_requested:false, edit_note:null, note: keepReplacementMarker(prevB, data.note!==undefined ? (data.note||null) : (prevB ? prevB.note : null))
   };
   const {data:updated, error} = await sb.from('bookings').update(row).eq('id', id).select().single();
   if(error) throw error;
@@ -1452,11 +1455,23 @@ async function updateBooking(id, data){
 }
 function bookingIsLocked(b){
   if(!b) return false;
-  return !!b.transfer_verified || !!b.refunded || !!b.profit_handed_over || !!b.supplier_settled
+  return (b.payment_method!=='cash' && !!b.transfer_verified) || !!b.refunded || !!b.profit_handed_over || !!b.supplier_settled
     || (Array.isArray(b.payment_splits) && b.payment_splits.some(s=>s.method!=='cash' && s.verified))
     || jrows(b.id).some(j=>['jBankReceipt','jRefund','jSupplierPay'].includes(j.desc_key));
 }
-async function deleteBooking(id){
+function isReplacementTicket(b){ return !!b && /(?:بديلة عن|Replacement for) #\d+/.test(String(b.note||'')); }
+function keepReplacementMarker(prevB, note){
+  // the "replacement for #N [EX:key]" marker links the ticket to its refund — it survives any note edit
+  const m = String(prevB&&prevB.note||'').match(/(?:تذكرة بديلة عن|Replacement for) #\d+(?:\s*\[EX:[a-z0-9]+\])?/);
+  if(!m || String(note||'').includes(m[0])) return note;
+  return (note ? String(note).replace(/(?:تذكرة بديلة عن|Replacement for) #\d+(?:\s*\[EX:[a-z0-9]+\])?/g,'').trim()+' — ' : '') + m[0];
+}
+function replacementOf(b){ const m = String(b&&b.note||'').match(/(?:بديلة عن|Replacement for) #(\d+)/); return m ? m[1] : ''; }
+function replacementLockMsg(b){ return lang==='ar'
+  ? `هذي تذكرة بديلة عن استرجاع #${replacementOf(b)} — سعرها وطريقة دفعها مربوطة بالاسترجاع، فتعديلها من هنا يخرّب كاش الموظف.\nللتصحيح: الاسترجاعات ← السجل ← ✏️ تعديل على #${replacementOf(b)} ← ↩ إرجاع للموظف، والموظف يصحح التذكرة البديلة ويرسلها من جديد.`
+  : `This is the replacement for refund #${replacementOf(b)}. Correct it from the refund (return it to the employee).`; }
+async function deleteBooking(id, internal){
+  if(!internal && isReplacementTicket(bookings.find(b=>b.id===id))) throw new Error(replacementLockMsg(bookings.find(b=>b.id===id)));
   if(bookingIsLocked(bookings.find(b=>b.id===id))) throw new Error(lang==='ar'
     ? 'لا يمكن حذف هذه التذكرة: عليها حركة مالية مؤكدة (تحويل مؤكد، استرجاع، أرباح مسلّمة أو دفعة مورد). التذكرة تبقى كمرجع.'
     : 'This ticket cannot be deleted: it has confirmed money movement. It stays as a reference.');
@@ -2288,8 +2303,14 @@ function employeeCashStatement(employeeId, from, to){
     if(Math.abs(amt)<0.005) return;
     const sell = Number(b.sell)||0;
     const cashIn = b.payment_method==='cash' ? sell : (Array.isArray(b.payment_splits) ? b.payment_splits.filter(x=>x.method==='cash').reduce((a,x)=>a+Number(x.amount||0),0) : 0);
-    let note = ar ? `كاش مستلم ${money(cashIn)} (تكلفة ${money(b.cost)} + ربح ${money(sell-Number(b.cost||0))})` : `Cash received ${money(cashIn)} (cost ${money(b.cost)} + profit ${money(sell-Number(b.cost||0))})`;
-    if(b.refunded) note += ar ? ` — استرجاع ${money(bookingRefundAmount(b))} (${(b.refund_method||'cash')==='cash'?'كاش':'تحويل'})` : ` — refund ${money(bookingRefundAmount(b))} (${b.refund_method||'cash'})`;
+    let note = isRefundOnly(b) ? (ar ? 'تذكرة مو مباعة بالنظام (استرجاع فقط)' : 'Refund-only ticket')
+      : ar ? `كاش مستلم ${money(cashIn)} (تكلفة ${money(b.cost)} + ربح ${money(sell-Number(b.cost||0))})` : `Cash received ${money(cashIn)} (cost ${money(b.cost)} + profit ${money(sell-Number(b.cost||0))})`;
+    { const m = String(b.note||'').match(/(?:بديلة عن|Replacement for) #(\d+)/); if(m) note += ar ? ` — 🔁 تذكرة بديلة: ثمنها مدفوع من قيمة استرجاع #${m[1]} (ما استلم كاش جديد)` : ` — replacement, paid by refund #${m[1]}`; }
+    if(b.refunded && b.exchange_data && b.exchange_data.new_id){
+      const x = b.exchange_data, d = +(bookingRefundAmount(b) - Number(x.sell||0)).toFixed(2);
+      note += ar ? ` — 🔁 تغيير تذكرة: استرجاع ${money(bookingRefundAmount(b))}، منها ${money(x.sell)} ثمن التذكرة البديلة #${x.new_no||''}${d>0.004?` و${money(d)} كاش للعميل`:d<-0.004?` والعميل دفع ${money(-d)} زيادة`:''}`
+                 : ` — exchange: refund ${money(bookingRefundAmount(b))}, ${money(x.sell)} paid the replacement #${x.new_no||''}`;
+    }else if(b.refunded) note += ar ? ` — استرجاع ${money(bookingRefundAmount(b))} (${(b.refund_method||'cash')==='cash'?'كاش':'تحويل'})` : ` — refund ${money(bookingRefundAmount(b))} (${b.refund_method||'cash'})`;
     all.push({date:b.date||'', stamp:b.created_at||'', type: ar?'تذكرة':'Ticket', desc:`#${b.booking_no} ${b.customer||''}`, note, amt});
   });
   miscReceipts.filter(r=>r.employee_id===employeeId && r.status==='confirmed' && r.method==='cash').forEach(r=>{
@@ -2326,7 +2347,7 @@ function employeeCashStatementHTML(employeeId, from, to){
   return `<div class="kpi-row" style="grid-template-columns:repeat(4,1fr);margin-bottom:10px;">
       ${kv(ar?'رصيد أول الفترة':'Opening balance', st.opening, 'var(--navy)')}
       ${kv(ar?'عليه خلال الفترة (+)':'Added in period (+)', st.periodIn, '#A8722C')}
-      ${kv(ar?'أودع / سلّم أرباح خلال الفترة (−)':'Deposited / profit handed (−)', st.periodOut, 'var(--teal)')}
+      ${kv(ar?'أودع / سلّم أرباح / رجّع لعملاء (−)':'Deposited / profit / refunds (−)', st.periodOut, 'var(--teal)')}
       ${kv(ar?'رصيد آخر الفترة':'Closing balance', st.closing, 'var(--red)')}</div>
     ${st.rows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${ar?'النوع':'Type'}</th><th>${ar?'البيان':'Description'}</th><th>${ar?'تفاصيل':'Details'}</th><th>${ar?'له / عليه':'In / Out'}</th><th>${ar?'الرصيد':'Balance'}</th></tr></thead>
     <tbody>${st.rows.map(r=>`<tr><td>${r.date}</td><td>${r.type}</td><td>${esc(r.desc)}</td><td style="font-size:12px;">${esc(r.note)}</td>
@@ -2714,6 +2735,7 @@ function openBookingModal(existing){
   showModal(`
     <div class="modal-head"><h3>${isEdit?t('modalEditBooking'):t('modalNewBooking')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
     <form id="bookingForm">
+      ${isReplacementTicket(existing)?`<div class="note" style="background:#EEF3F8;padding:8px;border-radius:8px;margin-bottom:8px;">🔁 ${lang==='ar'?`تذكرة بديلة عن استرجاع #${replacementOf(existing)} — تقدر تعدّل الاسم ورقم التذكرة والسستم فير. السعر وطريقة الدفع يتعدلون من الاسترجاع نفسه (إرجاع للموظف) عشان ما يتأثر الكاش.`:'Replacement ticket — price/payment are changed from the refund.'}</div>`:''}
       <div class="grid-2">
         <div class="field"><label>${t('fieldAirline')}</label><input name="airline" list="airlineHints" required value="${v.airline||''}">
           <datalist id="airlineHints">${AIRLINE_HINTS.map(a=>`<option value="${a}">`).join('')}</datalist>
@@ -3013,6 +3035,10 @@ function integrityIssues(){
     if(!miscReceiptJournalRow(r)) issues.push({b:null, fix:{kind:'misc', id:r.id}, issue: ar?`مبلغ بدون تذكرة معتمد بدون قيد — ${userName(r.employee_id)}`:`Confirmed misc receipt without entry — ${userName(r.employee_id)}`, expected:+Number(r.amount).toFixed(2), actual:0});
   });
   const orphans = journal.filter(j=>j.booking_id && !ids.has(j.booking_id));
+  bookings.filter(b=>b.exchange_data && b.exchange_data.new_id && !bookings.some(y=>y.id===b.exchange_data.new_id)).forEach(b=>{
+    const t = findExchangeTicket({...b, exchange_data:{...b.exchange_data, new_id:null}});
+    issues.push({b:null, fix:{kind:'relinkExchange', id:b.id}, issue: ar?`استرجاع #${b.booking_no} مربوط بتذكرة بديلة محذوفة #${b.exchange_data.new_no||''}${t?` — التذكرة البديلة الصحيحة #${t.booking_no}`:''}`:`Refund #${b.booking_no} linked to a deleted replacement`, expected:t?t.booking_no:'—', actual:b.exchange_data.new_no||'—'});
+  });
   { const groups = {};
     bookings.forEach(y=>{ const m = String(y.note||'').match(/\[EX:([a-z0-9]+)\]|(?:بديلة عن|Replacement for) #(\d+)/i); if(!m) return; const k = (m[1]||('#'+m[2]))+'|'+normTkt(y.ticket_no); (groups[k]=groups[k]||[]).push(y); });
     Object.values(groups).filter(g=>g.length>1).forEach(g=>{ g.sort((a,b)=>(a.booking_no||0)-(b.booking_no||0)); g.slice(1).forEach(extra=>{
@@ -3042,8 +3068,19 @@ async function repairOther(fix){
     const {data, error} = await sb.from('journal').insert({date:(r.confirmed_at||r.created_at||'').slice(0,10)||todayStr(), branch_id:r.branch_id||null, desc_key:'jMiscReceipt', desc_args:[userName(r.employee_id), r.note||'-', r.id],
       debit_key: r.method==='cash'?'accCashOnHand':'accBank', credit_key:'accMiscReceipts', amount:+Number(r.amount).toFixed(2)}).select().single();
     if(error) throw error; journal.unshift(data);
+  }else if(fix.kind==='relinkExchange'){
+    const b = bookings.find(x=>x.id===fix.id); if(!b) return;
+    const t = findExchangeTicket({...b, exchange_data:{...b.exchange_data, new_id:null}});
+    const nx = {...b.exchange_data}; if(t){ nx.new_id = t.id; nx.new_no = t.booking_no; } else { delete nx.new_id; delete nx.new_no; }
+    await mustUpdate('bookings', b.id, {exchange_data:nx}); b.exchange_data = nx;
   }else if(fix.kind==='dupExchange'){
-    if(bookings.some(x=>x.id===fix.id)) await deleteBooking(fix.id);
+    if(bookings.some(x=>x.id===fix.id)) await deleteBooking(fix.id, true);
+    // the refund may have been linked to the copy that was just removed: point it at the ticket that stays
+    for(const b of bookings.filter(x=>x.exchange_data && x.exchange_data.new_id===fix.id)){
+      const t = findExchangeTicket({...b, exchange_data:{...b.exchange_data, new_id:null}});
+      const nx = {...b.exchange_data}; if(t){ nx.new_id = t.id; nx.new_no = t.booking_no; } else { delete nx.new_id; delete nx.new_no; }
+      await mustUpdate('bookings', b.id, {exchange_data:nx}); b.exchange_data = nx;
+    }
   }else if(fix.kind==='dupHandover'){
     // remove from the later handover every ticket already handed in an earlier one; reject it if nothing is left
     const h = profitHandovers.find(x=>x.id===fix.id); if(!h) return;
