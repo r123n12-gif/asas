@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-E8</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-E9</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1323,7 +1323,6 @@ async function addBooking(data){
   const row = {
     date: data.date||todayStr(), customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
-    ...(('pnr' in data && data.pnr!==null && data.pnr!==undefined) ? {pnr: String(data.pnr).trim().toUpperCase()||null} : {}),
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, commission_rate: 0, commission: 0, profit_amount: profit,
     margin: profit, net_profit: profit,
@@ -1380,7 +1379,6 @@ async function updateBooking(id, data){
   const row = {
     date: data.date, customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
-    ...(('pnr' in data && data.pnr!==null && data.pnr!==undefined) ? {pnr: String(data.pnr).trim().toUpperCase()||null} : {}),
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
     sell, cost: net, profit_amount: profit, margin: profit, net_profit: profit, cost_reviewed: true,
     payment_method: method, payment_status: isSplit ? (allSettled?'paid':'pending') : ((method==='cash' || alreadyConfirmed) ? 'paid' : 'pending'),
@@ -1626,7 +1624,6 @@ function navItems(){
     items.push({route:'reports', label:t('navReports'), icon:'▤'});
     items.push({route:'reconcile', label:t('navReconcile'), icon:'🔍'});
     items.push({route:'refunds', label:t('navRefunds'), icon:'↩️'});
-    items.push({route:'attendance', label:(lang==='ar'?'الحضور والانصراف':'Attendance'), icon:'🕘'});
   }
   if(isAdmin()){
     items.push({route:'profits', label:t('navProfits'), icon:'💎'});
@@ -1742,146 +1739,9 @@ function render(){
   document.getElementById('myAccountBtn').onclick = openMyAccountModal;
 
   const routes = { dashboard:renderDashboard, bookings:renderBookings, ledger:renderLedger,
-    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile, attendance:renderAttendance, mysales:renderMySales, refunds:renderRefunds, profits:renderProfits };
+    reports:renderReports, users:renderUsers, settings:renderSettings, deposits:renderDeposits, transfers:renderTransfers, reconcile:renderReconcile, mysales:renderMySales, refunds:renderRefunds, profits:renderProfits };
   (routes[route]||renderDashboard)();
 }
-
-/* ===================== ATTENDANCE (accountants) ===================== */
-/* time always comes from the server (database trigger); location is checked against the branch */
-let attRows = [], attMonth = null, attUser = 'all';
-const ATT_TZ = 'Asia/Riyadh';
-function attDay(ts){ return new Date(ts).toLocaleDateString('en-CA',{timeZone:ATT_TZ}); }
-function attTime(ts){ return ts ? new Date(ts).toLocaleTimeString('en-US',{timeZone:ATT_TZ,hour:'2-digit',minute:'2-digit'}) : '—'; }
-function attHM(ts){ const p = new Date(ts).toLocaleTimeString('en-GB',{timeZone:ATT_TZ,hour:'2-digit',minute:'2-digit',hour12:false}).split(':'); return (+p[0])*60 + (+p[1]); }
-function attHours(r){ if(!r.check_out) return 0; return Math.max(0,(new Date(r.check_out)-new Date(r.check_in))/3600000); }
-function fmtHours(h){ const m = Math.round(h*60); return `${Math.floor(m/60)}:${String(m%60).padStart(2,'0')}`; }
-function attLateMin(r){
-  const b = branches.find(x=>x.id===r.branch_id); const st = String((b&&b.shift_start)||'').slice(0,5);
-  if(!/^\d{1,2}:\d{2}$/.test(st)) return 0;
-  const [h,m] = st.split(':').map(Number); const late = attHM(r.check_in) - (h*60+m);
-  return late > 15 ? late : 0;   // 15 minutes grace
-}
-async function loadAttendance(){
-  const m = attMonth || todayStr().slice(0,7);
-  const from = new Date(`${m}-01T00:00:00+03:00`);
-  const to = new Date(from); to.setMonth(to.getMonth()+1);
-  let q = sb.from('attendance').select('*').gte('check_in', from.toISOString()).lt('check_in', to.toISOString()).order('check_in',{ascending:false});
-  if(!isAdmin()) q = q.eq('user_id', currentUser().id);
-  const {data, error} = await q; if(error) throw error;
-  attRows = data||[];
-}
-async function attOpenRow(){
-  const {data, error} = await sb.from('attendance').select('*').eq('user_id', currentUser().id).is('check_out', null).order('check_in',{ascending:false}).limit(1);
-  if(error) throw error; return (data||[])[0]||null;
-}
-window.uiAttendance = async function(kind){
-  const btn = document.getElementById('attActionBtn'); const msg = document.getElementById('attMsg');
-  if(btn){ btn.disabled = true; btn.textContent = lang==='ar'?'جاري التسجيل…':'Saving…'; }
-  try{
-    if(kind==='in'){
-      if(await attOpenRow()) throw new Error(lang==='ar'?'عندك حضور مسجّل من قبل — سجّل انصراف أول.':'Already checked in.');
-      const {error} = await sb.from('attendance').insert({user_id:currentUser().id, branch_id:currentUser().branch_id||null});
-      if(error) throw error;
-    }else{
-      const open = await attOpenRow(); if(!open) throw new Error(lang==='ar'?'ما عندك حضور مفتوح.':'No open check-in.');
-      const {error} = await sb.from('attendance').update({check_out:new Date().toISOString()}).eq('id', open.id);
-      if(error) throw error;
-    }
-    renderAttendance();
-  }catch(e){
-    console.error(e);
-    if(msg) msg.innerHTML = `<div class="login-error">${e && e.code ? errText() : esc(e.message||String(e))}</div>`;
-    if(btn){ btn.disabled = false; btn.textContent = kind==='in' ? (lang==='ar'?'تسجيل حضور':'Check in') : (lang==='ar'?'تسجيل انصراف':'Check out'); }
-  }
-};
-async function renderAttendance(){
-  const ar = lang==='ar';
-  document.getElementById('pageSub').textContent = ar ? 'تسجيل الحضور والانصراف — الوقت يُسجَّل من السيرفر' : 'Check in and out — time is taken from the server';
-  const box = document.getElementById('content');
-  box.innerHTML = `<div class="panel"><div class="empty">${ar?'جاري التحميل…':'Loading…'}</div></div>`;
-  let open = null;
-  try{ await loadAttendance(); if(!isAdmin()) open = await attOpenRow(); }
-  catch(e){ console.error(e); box.innerHTML = `<div class="panel"><div class="login-error">${errText()}<br>${ar?'تأكد إنك شغّلت كود SQL الخاص بالحضور في Supabase.':'Make sure the attendance SQL was run in Supabase.'}</div></div>`; return; }
-  if(route!=='attendance') return;
-  const month = attMonth || todayStr().slice(0,7);
-  const rows = isAdmin() && attUser!=='all' ? attRows.filter(r=>r.user_id===attUser) : attRows;
-  // one line per person per day
-  const days = new Map();
-  rows.forEach(r=>{ const k = r.user_id+'|'+attDay(r.check_in); const e = days.get(k) || {user_id:r.user_id, day:attDay(r.check_in), recs:[]}; e.recs.push(r); days.set(k,e); });
-  const dayList = [...days.values()].map(e=>{ e.recs.sort((a,b)=>a.check_in.localeCompare(b.check_in));
-    e.first = e.recs[0]; e.last = e.recs[e.recs.length-1]; e.hours = e.recs.reduce((s,r)=>s+attHours(r),0);
-    e.late = attLateMin(e.first); e.openIn = e.recs.some(r=>!r.check_out); e.branch = e.first.branch_id; return e; })
-    .sort((a,b)=> b.day.localeCompare(a.day) || userName(a.user_id).localeCompare(userName(b.user_id)));
-  const todayKey = attDay(new Date().toISOString());
-  const accountants = users.filter(u=>u.role==='accountant' && u.active!==false);
-  // monthly summary per person
-  const sum = new Map();
-  dayList.forEach(e=>{ const x = sum.get(e.user_id) || {days:0, hours:0, late:0, lateMin:0, open:0}; x.days++; x.hours+=e.hours; if(e.late){ x.late++; x.lateMin+=e.late; } if(e.openIn && e.day!==todayKey) x.open++; sum.set(e.user_id,x); });
-  const myToday = dayList.find(e=>e.day===todayKey && e.user_id===currentUser().id);
-  box.innerHTML = `
-    ${!isAdmin()?`<div class="panel" style="text-align:center;">
-      <div style="font-size:14px;color:var(--muted,#667);">${new Date().toLocaleDateString(ar?'ar-SA-u-ca-gregory':'en-GB',{timeZone:ATT_TZ,weekday:'long',day:'numeric',month:'long'})}</div>
-      <div style="font-size:15px;margin:10px 0;">${open
-        ? (ar?`حاضر من الساعة <b>${attTime(open.check_in)}</b>`:`Checked in at <b>${attTime(open.check_in)}</b>`)
-        : myToday ? (ar?`آخر انصراف: <b>${attTime(myToday.last.check_out)}</b> — مجموع اليوم ${fmtHours(myToday.hours)} ساعة`:`Last check-out ${attTime(myToday.last.check_out)}`)
-        : (ar?'ما سجّلت حضور اليوم':'Not checked in today')}</div>
-      <button class="btn ${open?'btn-ghost':'btn-gold'}" id="attActionBtn" style="min-width:200px;padding:14px 20px;font-size:16px;" onclick="uiAttendance('${open?'out':'in'}')">${open?(ar?'تسجيل انصراف':'Check out'):(ar?'تسجيل حضور':'Check in')}</button>
-      <div id="attMsg" style="margin-top:10px;"></div>
-      <p class="note" style="margin-top:8px;">${ar?'الوقت يُسجَّل من السيرفر مو من جهازك.':'Time is taken from the server, not your device.'}</p>
-    </div>`:''}
-    ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'حضور اليوم':'Today'}</h3></div>
-      ${accountants.length?`<table><thead><tr><th>${ar?'المحاسب':'Accountant'}</th><th>${t('colBranch')}</th><th>${ar?'الحالة':'Status'}</th></tr></thead><tbody>
-      ${accountants.map(u=>{ const e = dayList.find(x=>x.day===todayKey && x.user_id===u.id);
-        const st = !e ? `<span class="tag rejected">${ar?'لم يحضر':'Absent'}</span>`
-          : e.openIn ? `<span class="tag collected">${ar?'حاضر من':'In since'} ${attTime(e.first.check_in)}</span>${e.late?` <span class="tag pending">${ar?'متأخر':'Late'} ${e.late} ${ar?'د':'min'}</span>`:''}`
-          : `<span class="tag">${ar?'انصرف':'Left'} ${attTime(e.last.check_out)}</span>`;
-        return `<tr><td>${esc(u.name)}</td><td>${esc(branchName(u.branch_id))}</td><td>${st}</td></tr>`; }).join('')}</tbody></table>`
-      :`<div class="empty">${ar?'ما فيه مستخدمين بدور محاسب.':'No accountants.'}</div>`}
-    </div>`:''}
-    <div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'سجل الشهر':'Monthly log'}</h3>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <input type="month" id="attMonthInput" value="${month}">
-        ${isAdmin()?`<select id="attUserSel"><option value="all">${t('allEmployeesOpt')}</option>${users.filter(u=>u.role!=='employee'||attRows.some(r=>r.user_id===u.id)).map(u=>`<option value="${u.id}" ${attUser===u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
-        <button class="btn btn-ghost btn-sm" id="attExcelBtn">${t('exportExcelBtn')}</button>`:''}
-      </div></div>
-      ${isAdmin() && sum.size ? `<div style="overflow-x:auto;margin-bottom:12px;"><table><thead><tr><th>${ar?'الاسم':'Name'}</th><th>${ar?'أيام الحضور':'Days'}</th><th>${ar?'مجموع الساعات':'Hours'}</th><th>${ar?'مرات التأخير':'Late days'}</th><th>${ar?'دقائق التأخير':'Late min'}</th><th>${ar?'بدون انصراف':'No check-out'}</th></tr></thead><tbody>
-        ${[...sum.entries()].map(([id,x])=>`<tr><td style="font-weight:600">${esc(userName(id))}</td><td class="num">${x.days}</td><td class="num">${fmtHours(x.hours)}</td><td class="num" style="${x.late?'color:var(--red);font-weight:600':''}">${x.late}</td><td class="num">${x.lateMin}</td><td class="num" style="${x.open?'color:var(--red);font-weight:600':''}">${x.open}</td></tr>`).join('')}
-      </tbody></table></div>` : ''}
-      ${dayList.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('fieldDate')}</th>${isAdmin()?`<th>${ar?'الاسم':'Name'}</th>`:''}<th>${t('colBranch')}</th><th>${ar?'حضور':'In'}</th><th>${ar?'انصراف':'Out'}</th><th>${ar?'الساعات':'Hours'}</th><th>${ar?'ملاحظات':'Notes'}</th></tr></thead><tbody>
-        ${dayList.map(e=>`<tr><td style="white-space:nowrap">${e.day}</td>${isAdmin()?`<td style="font-weight:600">${esc(userName(e.user_id))}</td>`:''}<td>${esc(branchName(e.branch))}</td>
-          <td class="num">${attTime(e.first.check_in)}</td><td class="num">${e.openIn?(e.day===todayKey?(ar?'لسا داخل':'In'):`<span style="color:var(--red);font-weight:600">${ar?'ما سجّل':'Missing'}</span>`):attTime(e.last.check_out)}</td>
-          <td class="num">${fmtHours(e.hours)}</td>
-          <td>${e.late?`<span class="tag pending">${ar?'تأخير':'Late'} ${e.late} ${ar?'د':'min'}</span> `:''}${e.recs.length>1?`<span class="tag">${e.recs.length} ${ar?'فترات':'shifts'}</span>`:''}</td></tr>`).join('')}
-      </tbody></table></div>`}
-    </div>`;
-  document.getElementById('attMonthInput').onchange = e=>{ attMonth = e.target.value || null; renderAttendance(); };
-  if(document.getElementById('attUserSel')) document.getElementById('attUserSel').onchange = e=>{ attUser = e.target.value; renderAttendance(); };
-  if(document.getElementById('attExcelBtn')) document.getElementById('attExcelBtn').onclick = ()=>{
-    const data = dayList.map(e=>({ [ar?'التاريخ':'Date']:e.day, [ar?'الاسم':'Name']:userName(e.user_id), [ar?'الفرع':'Branch']:branchName(e.branch),
-      [ar?'حضور':'In']:attTime(e.first.check_in), [ar?'انصراف':'Out']:e.openIn?'':attTime(e.last.check_out), [ar?'الساعات':'Hours']:fmtHours(e.hours), [ar?'تأخير (دقيقة)':'Late (min)']:e.late||0 }));
-    const ws = XLSX.utils.json_to_sheet(data); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Attendance');
-    XLSX.writeFile(wb, `attendance-${month}.xlsx`);
-  };
-}
-/* admin: set a branch's location (stand inside it and tap, or paste coordinates), allowed radius and shift start */
-window.uiBranchAttendance = function(id){
-  const b = branches.find(x=>x.id===id); if(!b) return; const ar = lang==='ar';
-  showModal(`
-    <div class="modal-head"><h3>${ar?'دوام الفرع':'Branch shift'} — ${esc(b.name)}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
-    <form id="brAttForm">
-      <div class="field"><label>${ar?'بداية الدوام':'Shift start'}</label><input type="time" name="shift" value="${String(b.shift_start||'08:00').slice(0,5)}"></div>
-      <p class="note">${ar?'يُحسب تأخير لو الحضور بعد بداية الدوام بأكثر من 15 دقيقة.':'Late = more than 15 minutes after shift start.'}</p>
-      <div id="brAttErr"></div>
-      <div style="margin-top:14px;display:flex;gap:10px;"><button type="submit" class="btn btn-primary" id="brAttSave">${t('saveChanges')}</button><button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>
-    </form>`);
-  const f = document.getElementById('brAttForm');
-  f.onsubmit = async (e)=>{
-    e.preventDefault(); const bt = document.getElementById('brAttSave'); bt.disabled = true;
-    const upd = {shift_start: f.shift.value||null};
-    try{ const {error} = await sb.from('branches').update(upd).eq('id', id); if(error) throw error; Object.assign(b, upd); closeModal(); render(); }
-    catch(err){ console.error(err); document.getElementById('brAttErr').innerHTML = `<div class="login-error">${errText()}</div>`; bt.disabled=false; }
-  };
-};
 
 /* ===================== LOGIN ===================== */
 function renderLogin(app){
@@ -2855,7 +2715,6 @@ function openBookingModal(existing){
         <div class="field"><label>${t('fieldTicketNo')}</label><input name="ticketNo" value="${v.ticket_no||''}"></div>
         <div class="field"><label>${t('fieldInvoiceNo')}</label><input name="invoiceNo" value="${v.invoice_no||''}"></div>
       </div>
-      <div class="field"><label>PNR ${lang==='ar'?'(رقم الحجز — مهم للمطابقة مع طيران الخليج NDC وأكبر)':'(booking reference — needed to match Gulf Air NDC and Akbar)'}</label><input name="pnr" dir="ltr" autocomplete="off" style="text-transform:uppercase" placeholder="ESRAVR" value="${esc(v.pnr||'')}"></div>
       <div class="grid-2">
         <div class="field"><label>${t('fieldFlightRoute')}</label><input name="flightRoute" placeholder="${t('flightRoutePlaceholder')}" value="${v.flight_route||''}"></div>
         <div class="field"><label>${t('fieldSupplier')}</label><select name="source">${SOURCE_PRESETS.map(s=>`<option ${v.supplier===s?'selected':''}>${s}</option>`).join('')}</select></div>
@@ -2963,7 +2822,7 @@ function openBookingModal(existing){
     const f = new FormData(e.target);
     const isSplit = document.getElementById('splitPaymentToggle').checked;
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
-      ticketNo:f.get('ticketNo'), pnr:f.get('pnr'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
+      ticketNo:f.get('ticketNo'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
       sell:f.get('sell'), cost:f.get('cost'), isOpenTicket: f.get('isOpenTicket')==='on',
       paymentMethod:isSplit?'split':f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider'), note:f.get('note') };
     if(isSplit){
@@ -3831,7 +3690,9 @@ function openUnifiedRefundModal(prefillId){
     document.getElementById('urSupplierBox').style.display = linked ? 'none' : '';
     if(linked){
       if(!prefillId) document.getElementById('urCustomer').value = linked.customer||'';
-      box.innerHTML = `✔ ${ar?'التذكرة موجودة بالنظام':'Ticket found'}: #${linked.booking_no} — ${ar?'البيع':'sale'} ${money(linked.sell)} — ${ar?'التكلفة':'cost'} ${money(linked.cost)} — ${esc(userName(linked.created_by))}`;
+      box.innerHTML = isRefundOnly(linked)
+        ? `✔ #${linked.booking_no} — ${ar?'تذكرة مسجلة للاسترجاع فقط (مو مباعة بالنظام)':'refund-only ticket'} — ${esc(userName(linked.created_by))}`
+        : `✔ ${ar?'التذكرة موجودة بالنظام':'Ticket found'}: #${linked.booking_no} — ${ar?'البيع':'sale'} ${money(linked.sell)} — ${ar?'التكلفة':'cost'} ${money(linked.cost)} — ${esc(userName(linked.created_by))}`;
     }else box.innerHTML = normTkt(document.getElementById('urTicket').value).length>=5 ? `ℹ️ ${ar?'التذكرة مو مسجلة بالنظام — بتنسجل كاسترجاع فقط (بدون بيع)، والربح = المسترد من الطيران − المسترد للعميل':'Not in the system — recorded as refund only'}` : '';
     const sup = document.getElementById('urSup').value, cust = parseAmount(document.getElementById('urCust').value)||0;
     const pb = document.getElementById('urProfit');
@@ -3864,8 +3725,8 @@ function openUnifiedRefundModal(prefillId){
     const supRaw = f.get('supplierRefund'); const sup = (supRaw===''||supRaw===null||supRaw===undefined) ? null : +(parseAmount(supRaw)||0).toFixed(2);
     linked = findTicket();
     if(!(cust>0)) return err(t('invalidRefundAmount'));
-    if(linked && cust>(Number(linked.sell)||0)+0.01) return err(ar?`المسترد للعميل أكبر من سعر البيع (${money(linked.sell)}).`:'More than the sale price.');
-    if(linked && sup!=null && sup>(Number(linked.cost)||0)+0.01) return err(ar?`المسترد من الطيران أكبر من التكلفة (${money(linked.cost)}).`:'More than the cost.');
+    if(linked && !isRefundOnly(linked) && cust>(Number(linked.sell)||0)+0.01) return err(ar?`المسترد للعميل أكبر من سعر البيع (${money(linked.sell)}).`:'More than the sale price.');
+    if(linked && !isRefundOnly(linked) && sup!=null && sup>(Number(linked.cost)||0)+0.01) return err(ar?`المسترد من الطيران أكبر من التكلفة (${money(linked.cost)}).`:'More than the cost.');
     if((!file || !file.size) && !(linked && linked.refund_receipt_url)) return err(t('receiptRequired'));
     if(!String(f.get('customer')||'').trim() || !String(f.get('ticketNo')||'').trim()) return err(ar?'اكتب اسم العميل ورقم التذكرة.':'Customer and ticket no. are required.');
     const exch = document.getElementById('urExch').checked;
@@ -4528,7 +4389,7 @@ function renderSettings(){
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('branchesTitle')}</h3><button class="btn btn-primary btn-sm" id="addBranchBtn">${t('addBranch')}</button></div>
       <table><thead><tr><th>${t('colBranchOnly')}</th><th></th></tr></thead>
-        <tbody>${branches.map(b=>`<tr><td>${esc(b.name)}${b.shift_start?` <span class="tag">🕘 ${String(b.shift_start).slice(0,5)}</span>`:''}</td><td style="display:flex;gap:6px;"><button class="btn btn-ghost btn-sm" onclick="uiBranchAttendance('${b.id}')">🕘 ${lang==='ar'?'وقت الدوام':'Shift time'}</button><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
+        <tbody>${branches.map(b=>`<tr><td>${esc(b.name)}</td><td><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
       <div class="note">${t('branchDeleteNote')}</div>
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('backupTitle')}</h3></div>
@@ -4596,23 +4457,6 @@ async function exportFullBackup(){
 
 /* ===================== RECONCILIATION ===================== */
 /* ---- robust parsing for statements coming from GDS / suppliers / banks ---- */
-/* ======= supplier report recognition (Galileo, Amadeus/IATA, Air Arabia, Akbar B2B, Gulf Air NDC) ======= */
-function detectReportSource(headers){
-  const h = headers.map(x=>String(x).trim().toLowerCase());
-  const has = n=> h.some(x=>x===n);
-  if(has('pcc') && has('record locator')) return {key:'galileo', label:'Galileo / Travelport', amt:['total fare'], sup:/galileo|travelport/i};
-  if(has('doc number') && has('trnc')) return {key:'amadeus', label:'Amadeus / IATA', amt:[], sup:/amadeus|iata|bsp/i};
-  if(has('e-ticket') && has('routing') && has('payment')) return {key:'g9', label:'Air Arabia', amt:['payment'], sup:/arabia|g9|portal/i};
-  if(has('ticketnumber') && has('invoice no') && h.some(x=>x.includes('ledger'))) return {key:'akbar', label:'Akbar B2B', amt:['net amount'], sup:/akbar/i};
-  if(has('order reference') && has('ndc id')) return {key:'ndc', label:'Gulf Air NDC', amt:['amount'], sup:/ndc|gulf/i};
-  return null;
-}
-/* status values that mean the ticket was voided / cancelled before it counted */
-const RECON_VOID = new Set(['VA','VOID','VOIDED','CANX','CANN']);
-function isVoidRow(row){ return Object.values(row).some(v=> RECON_VOID.has(String(v??'').trim().toUpperCase())); }
-/* statement lines that are money movements, not new tickets (refunds, credit notes, extra services, reissue fees, deposits) */
-const RECON_NON_TICKET = new Set(['flight refund','refund','rfnd','credit-other','debit-other','post ssr','other-sale','reissued','deposit','receipt','credit note','debit note','adm','acm']);
-function isNonTicketRow(row){ return Object.values(row).some(v=> RECON_NON_TICKET.has(String(v??'').trim().toLowerCase())); }
 function parseAmount(v){
   if(v===null || v===undefined) return NaN;
   if(typeof v==='number') return v;
@@ -5050,21 +4894,9 @@ function renderReconcile(){
         document.getElementById('reconcileBankAmountColSel').innerHTML = opts;
         document.getElementById('reconcileColumnBox').style.display = '';
         if(isPosReport(reconcileHeaders)){ const ms = document.getElementById('reconcileModeSel'); ms.value = 'pos'; ms.onchange({target:ms}); }
-        const src = detectReportSource(reconcileHeaders);
-        let srcNote = '';
-        if(src){
-          const amtH = reconcileHeaders.find(h=> src.amt.includes(String(h).trim().toLowerCase()));
-          if(amtH) document.getElementById('reconcileTicketAmountColSel').value = amtH;
-          const supSel = document.getElementById('rfSupplier');
-          const supOpt = supSel ? [...supSel.options].find(o=> o.value!=='all' && src.sup.test(o.value)) : null;
-          if(supOpt){ supSel.value = supOpt.value; updateReconcileCount(); }
-          srcNote = `<div class="note" style="background:#EAF3DE;padding:10px;border-radius:8px;margin-bottom:6px;">✅ ${lang==='ar'
-            ? `تم التعرف على التقرير: <b>${src.label}</b>${amtH?` — عمود المبلغ: <b>${esc(amtH)}</b>`:''}${supOpt?` — المورد: <b>${esc(supOpt.value)}</b>`:''}. تأكد من الفترة (من/إلى) تطابق فترة التقرير.`
-            : `Report recognised: <b>${src.label}</b>${amtH?` — amount column: <b>${esc(amtH)}</b>`:''}${supOpt?` — supplier: <b>${esc(supOpt.value)}</b>`:''}. Make sure the date range matches the report.`}</div>`;
-        }
         // show what was read, so a wrong sheet / header is visible immediately
         const prevCols = reconcileHeaders.slice(0,8);
-        document.getElementById('reconcileResultBox').innerHTML = srcNote + `<div class="note" style="background:#EEF5F4;padding:10px;border-radius:8px;">📄 ${lang==='ar'?`تمت قراءة <b>${reconcileRows.length}</b> سطر من <b>${sheetsUsed}</b> ورقة. أول 3 سطور:`:`Read <b>${reconcileRows.length}</b> rows from <b>${sheetsUsed}</b> sheet(s). First 3 rows:`}</div>
+        document.getElementById('reconcileResultBox').innerHTML = `<div class="note" style="background:#EEF5F4;padding:10px;border-radius:8px;">📄 ${lang==='ar'?`تمت قراءة <b>${reconcileRows.length}</b> سطر من <b>${sheetsUsed}</b> ورقة. أول 3 سطور:`:`Read <b>${reconcileRows.length}</b> rows from <b>${sheetsUsed}</b> sheet(s). First 3 rows:`}</div>
           <div style="overflow-x:auto;margin-top:6px;"><table><thead><tr>${prevCols.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead>
           <tbody>${reconcileRows.slice(0,3).map(r=>`<tr>${prevCols.map(h=>`<td>${esc(String(r[h]??''))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
       }catch(err){ console.error(err); alert(t('reconcileParseError')); }
@@ -5103,9 +4935,6 @@ function renderReconcile(){
       const compareTo = document.getElementById('reconcileCompareSel')?.value || 'cost';
       const index = new Map();
       scoped.filter(b=>b.ticket_no).forEach(b=>{ ticketKeys(b.ticket_no).forEach(k=>{ if(!index.has(k)) index.set(k, b); }); });
-      // PNR -> every booking on that reservation (one PNR can hold several passengers)
-      const pnrIndex = new Map();
-      scoped.filter(b=>b.pnr).forEach(b=>{ const k = normTicket(b.pnr); if(k.length>=5){ const a = pnrIndex.get(k); if(a){ if(!a.includes(b)) a.push(b); } else pnrIndex.set(k,[b]); } });
       const sameText = (a,b)=> !a || !b || String(a).trim().toUpperCase()===String(b).trim().toUpperCase();
       let fuzzyMatches = 0;
       let emptyValCount = 0;
@@ -5121,17 +4950,10 @@ function renderReconcile(){
         const keys = [...ticketKeys(raw)];
         if(pass===1){
           for(const pref of ['T:','D:','L:']){
-            const found = new Map();
             for(const k of keys.filter(k=>k.startsWith(pref))){
               const b = index.get(k);
-              if(b && okExtra(b)) found.set(b.id, b);
+              if(b && okExtra(b)) return {hit:b, fuzzy: pref!=='T:'};
             }
-            if(found.size){ const g = [...found.values()]; return {hit:g[0], group: g.length>1 ? g : null, fuzzy: pref!=='T:'}; }
-          }
-          // no ticket number matched: try it as a PNR (Gulf Air NDC, FlyDubai / Jazeera via B2B)
-          for(const k of keys.filter(k=>k.startsWith('T:'))){
-            const g = (pnrIndex.get(k.slice(2))||[]).filter(okExtra);
-            if(g.length) return {hit:g[0], group: g.length>1 ? g : null, fuzzy:false, byPnr:true};
           }
           return null;
         }
@@ -5154,14 +4976,10 @@ function renderReconcile(){
         reconcileRows.forEach(r=>{ const n = parseAmount(r[amtCol]); if(!isNaN(n) && n!==0){ if(n<0) neg++; else pos++; } });
         if(neg>pos) flip = -1;
       }
-      const agg = new Map();   // booking id (or PNR group) -> {b, group, sale, refund, tickets:[]}
-      let skipped = 0, voided = 0, nonTicket = 0;
-      const crdrCol = reconcileHeaders.find(h=>/^(cr\s*\/\s*dr|dr\s*\/\s*cr)$/i.test(String(h).trim()));
-      const rowAmt = row=>{ const n = parseAmount(row[amtCol]); if(isNaN(n)) return NaN; return (crdrCol && String(row[crdrCol]??'').trim().toUpperCase()==='CR') ? -Math.abs(n)*flip : n; };
-      const missingByKey = new Map();
+      const agg = new Map();   // booking id -> {b, sale, refund, tickets:[]}
+      let skipped = 0;
       reconcileRows.forEach(row=>{
         if(isSkipRow(row)){ skipped++; return; }
-        if(isVoidRow(row)){ voided++; return; }
         const airlineVal = airlineCol ? row[airlineCol] : '';
         const routeVal = routeCol ? row[routeCol] : '';
         let result = null, matchedCol = null, anyValPresent = false;
@@ -5178,45 +4996,37 @@ function renderReconcile(){
         if(!result){
           // a row with nothing in the ticket / PNR / reference columns is a balance or narration line, not a ticket
           if(likelyCols.length && likelyCols.every(c=>String(row[c]??'').trim()==='')){ skipped++; return; }
-          if(isNonTicketRow(row)){ nonTicket++; return; }
-          // the same ticket split over several lines (one per flight segment) is ONE missing ticket
-          const dk = likelyCols.map(c=>normTicket(row[c])).join('|');
-          const prev = dk.replace(/\|/g,'') ? missingByKey.get(dk) : null;
-          if(prev){ if(amtCol){ const a = parseAmount(prev[amtCol]), n = parseAmount(row[amtCol]); if(!isNaN(n)) prev[amtCol] = +(((isNaN(a)?0:a)+n).toFixed(2)); } return; }
-          const copy = {...row}; if(dk.replace(/\|/g,'')) missingByKey.set(dk, copy);
-          missing.push(copy); return;
+          missing.push(row); return;
         }
         if(result.fuzzy) fuzzyMatches++;
         const hit = result.hit;
-        const group = result.group || [hit];
-        const aggKey = group.map(b=>b.id).sort().join('+');
-        const e = agg.get(aggKey) || {b:hit, group, sale:0, refund:0, hasAmt:false, tickets:[]};
-        if(!e.tickets.includes(row[matchedCol])) e.tickets.push(row[matchedCol]);
+        const e = agg.get(hit.id) || {b:hit, sale:0, refund:0, hasAmt:false, tickets:[]};
+        e.tickets.push(row[matchedCol]);
         if(amtCol){
-          const n = rowAmt(row);
+          const n = parseAmount(row[amtCol]);
           if(!isNaN(n)){ const v = n*flip; e.hasAmt = true; if(v>=0) e.sale += v; else e.refund += -v; }
         }
-        agg.set(aggKey, e);
+        agg.set(hit.id, e);
       });
       agg.forEach(e=>{
         const hit = e.b;
-        const G = e.group || [hit];
         if(amtCol && e.hasAmt){
-          const base = G.reduce((s,b)=> s + (compareTo==='cost' ? (Number(b.cost)||0) : (Number(b.sell)||0)), 0);
-          const refBase = G.reduce((s,b)=> s + (compareTo==='cost' ? bookingSupplierRefund(b) : bookingRefundAmount(b)), 0);
+          const base = compareTo==='cost' ? (Number(hit.cost)||0) : (Number(hit.sell)||0);
+          const refBase = compareTo==='cost' ? bookingSupplierRefund(hit) : bookingRefundAmount(hit);
           const saleOk = e.sale<0.005 || Math.abs(e.sale-base)<0.05;
           const refOk = e.refund<0.005 || Math.abs(e.refund-refBase)<0.05;
           if(!saleOk || !refOk){
             const fileAmt = +(e.sale - e.refund).toFixed(2), sysAmt = +((e.sale>0.005?base:0) - (e.refund>0.005?refBase:0)).toFixed(2);
-            amountMismatches.push({row:null, sysAmt, fileAmt, ticket:e.tickets.join(' + ') + (G.length>1?` (${G.length} ${lang==='ar'?'تذاكر':'tickets'})`:''), b:hit});
-            G.forEach(b=>seen.set(b.id, true));
+            amountMismatches.push({row:null, sysAmt, fileAmt, ticket:e.tickets.join(' + '), b:hit});
             return;
           }
         }
-        G.forEach(b=>{ matched++; matchedList.push(b); seen.set(b.id, true); });
+        matched++;
+        matchedList.push(hit);
+        seen.set(hit.id, true);
       });
       amountMismatches.forEach(m=>seen.set(m.b.id, true));
-      missing._skipped = skipped; missing._voided = voided; missing._nonTicket = nonTicket;
+      missing._skipped = skipped;
       // the "who issued it" column: the one whose values match employees' supplier usernames most often
       let userCol = document.getElementById('reconcileUserColSel')?.value || null, bestHits = userCol ? 1e9 : 0;
       const sample = reconcileRows.slice(0, 400);
@@ -5339,8 +5149,6 @@ function renderReconcile(){
     box.innerHTML = `
       ${missing._emptyColWarning?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;">⚠️ ${missing._emptyColWarning}</div>`:''}
       ${missing._diagnostic?`<div class="note" style="background:#FFF1DE;padding:10px;border-radius:8px;color:#A8722C;font-weight:600;margin-bottom:10px;">🔎 ${missing._diagnostic}</div>`:''}
-      ${missing._voided?`<div class="note" style="margin-bottom:8px;">🚫 ${lang==='ar'?`تم استبعاد ${missing._voided} تذكرة ملغاة (Void) — ما تُحسب ناقصة`:`${missing._voided} voided tickets excluded`}</div>`:''}
-      ${missing._nonTicket?`<div class="note" style="margin-bottom:8px;">↩️ ${lang==='ar'?`${missing._nonTicket} حركة مو تذاكر جديدة (استرجاع، إشعار دائن، خدمات إضافية، رسوم إعادة إصدار) وما لقينا لها تذكرة بالنظام — راجعها من صفحة الاسترجاعات`:`${missing._nonTicket} non-ticket movements (refunds, credit notes, SSR, reissue fees) not linked to a system ticket`}</div>`:''}
       ${missing._skipped?`<div class="note" style="margin-bottom:8px;">ℹ️ ${lang==='ar'?`تم تجاهل ${missing._skipped} سطر ليست تذاكر (دفعات، أرصدة، مجاميع، نهاية التقرير)`:`${missing._skipped} non-ticket rows ignored (receipts, balances, totals)`}</div>`:''}
       <div class="kpi-row" style="grid-template-columns:repeat(${amountMismatches.length>0?4:3},1fr);margin-bottom:14px;">
         <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">${t('reconcileTotalRows')}</div><div class="kpi-value">${reconcileRows.length}</div></div>
