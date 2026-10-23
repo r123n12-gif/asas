@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G4</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G5</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -2328,7 +2328,7 @@ function bookingsTableInner(list, mode){
         <th>${t('colNet')}</th><th>${t('colProfit')}</th><th>${t('colSell')}</th><th>${t('colSupplier')}</th><th>${t('colInvoiceNo')}</th><th>${t('colPayStatus')}</th><th>${t('colPaymentMethod')}</th>${showActions?'<th></th>':''}</tr></thead>
       <tbody>${list.map(b=>`
         <tr><td class="num">${b.booking_no}</td><td style="white-space:nowrap">${b.date||''}</td><td><b>${esc(b.airline||'—')}</b></td><td>${esc(b.customer)}</td>
-          <td>${b.is_open_ticket?`<span class="tag pending">${t('tagOpen')}</span>`:(b.ticket_no||'—')}${b.flight_route?`<br><span style="font-size:10.5px;color:var(--ink-soft)">${esc(b.flight_route)}</span>`:''}</td>
+          <td>${b.ticket_no||'—'}${b.flight_route?`<br><span style="font-size:10.5px;color:var(--ink-soft)">${esc(b.flight_route)}</span>`:''}</td>
           <td>${branchName(b.branch_id)}</td>
           <td class="num">${b.cost_reviewed?money(b.cost):`<span class="tag pending">${t('pendingReviewTag')}</span>`}</td><td class="num">${canSeeOwnProfit()?(b.cost_reviewed?profitCell(b.profit_amount):`<span class="tag pending">${t('pendingReviewTag')}</span>`):moneyOrHidden(0)}</td>
           <td class="num" style="font-weight:600">${canSeeSell()?money(b.sell):moneyOrHidden(0)}</td>
@@ -3162,10 +3162,6 @@ function openBookingModal(existing){
         <div class="field"><label>${t('fieldSystemFare')}</label><input type="number" step="0.01" name="cost" min="0" id="costPriceInput" required value="${v.cost??''}"></div>
       </div>
       <div class="note" id="autoProfitNote">${t('profitEntryNote')}</div>
-      <div class="field" style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" name="isOpenTicket" id="isOpenTicket" style="width:auto;" ${v.is_open_ticket?'checked':''}>
-        <label for="isOpenTicket" style="margin:0;">${t('fieldOpenTicket')}</label>
-      </div>
       <div class="grid-2">
         <div class="field" style="display:flex;align-items:center;gap:8px;">
           <input type="checkbox" id="splitPaymentToggle" ${(v.payment_splits&&v.payment_splits.length>1)?'checked':''} ${(v.payment_splits&&v.payment_splits.some(s=>s.verified))?'disabled':''} style="width:auto;">
@@ -3260,7 +3256,7 @@ function openBookingModal(existing){
     const isSplit = document.getElementById('splitPaymentToggle').checked;
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
       ticketNo:f.get('ticketNo'), pnr:f.get('pnr'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
-      sell:f.get('sell'), cost:f.get('cost'), isOpenTicket: f.get('isOpenTicket')==='on',
+      sell:f.get('sell'), cost:f.get('cost'), isOpenTicket: false,
       paymentMethod:isSplit?'split':f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider'), note:f.get('note') };
     if(isSplit){
       const sellVal = Number(f.get('sell'))||0;
