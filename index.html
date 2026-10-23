@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G3</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G4</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -848,9 +848,21 @@ async function rejectDeposit(id, notes){
   if(error) throw error;
   const d = deposits.find(x=>x.id===id); if(d){ d.status='rejected'; d.notes=notes||null; }
 }
-async function verifySplitPayment(bookingId, splitIndex){
-  const b = bookings.find(x=>x.id===bookingId);
+// parts of the same ticket are confirmed one after the other (never dropped, never overwriting each other)
+const __splitChain = {};
+function verifySplitPayment(bookingId, splitIndex){
+  const prev = __splitChain[bookingId] || Promise.resolve();
+  const run = prev.catch(()=>{}).then(()=>verifySplitPaymentNow(bookingId, splitIndex));
+  const tail = run.then(()=>{}, ()=>{});   // the queue itself never fails
+  __splitChain[bookingId] = tail; tail.then(()=>{ if(__splitChain[bookingId]===tail) delete __splitChain[bookingId]; });
+  return run;
+}
+async function verifySplitPaymentNow(bookingId, splitIndex){
+  let b = bookings.find(x=>x.id===bookingId);
+  // read the ticket fresh: another device may have confirmed a part a moment ago
+  { const {data:fresh, error:fe} = await sb.from('bookings').select('*').eq('id', bookingId).maybeSingle(); if(fe) throw fe; if(fresh){ if(b) Object.assign(b, fresh); else { b = fresh; bookings.unshift(b); } } }
   if(!b || !Array.isArray(b.payment_splits)) return;
+  if(journal.some(j=>j.booking_id===bookingId && j.desc_key==='jBankReceipt' && (j.desc_args||[])[2]===splitIndex) && b.payment_splits[splitIndex] && b.payment_splits[splitIndex].verified) throw new Error(lang==='ar'?'هذا الجزء مؤكَّد مسبقًا.':'This part is already confirmed.');
   if(b.payment_splits[splitIndex] && b.payment_splits[splitIndex].verified) throw new Error(lang==='ar'?'هذا الجزء مؤكَّد مسبقًا.':'This part is already confirmed.');
   const partBefore = transferParts(b).find(p=>p.part===splitIndex);
   if(!partBefore || partBefore.status!=='pending') throw new Error(lang==='ar'?'لا يوجد مبلغ بانتظار التأكيد في هذا الجزء (قد يكون مسترجعًا).':'Nothing awaiting confirmation in this part (it may be refunded).');
@@ -858,18 +870,19 @@ async function verifySplitPayment(bookingId, splitIndex){
   const splits = b.payment_splits.map((s,i)=> i===splitIndex ? {...s, verified:true, verified_by:currentUser()?.id||null, verified_at:new Date().toISOString(),
     ...(confirmedAmt!=null && Math.abs(confirmedAmt-(Number(s.amount)||0))>0.004 ? {verified_amount:confirmedAmt} : {})} : s);
   const allVerified = splits.every(s=>s.verified || s.method==='cash');
-  const error = null; await mustUpdate('bookings', bookingId, {payment_splits:splits, payment_status: allVerified?'paid':'pending', transfer_verified: allVerified});
-  if(error) throw error;
-  b.payment_splits = splits; b.payment_status = allVerified?'paid':'pending'; b.transfer_verified = allVerified;
   const s = splits[splitIndex];
   const partAmt = (partBefore && partBefore.status==='pending') ? partBefore.counted : Number(s.amount)||0;
   const feeRate = s.method==='span'?0.008:s.method==='installment'?0.07:0;
   const feeAmount = +(partAmt*feeRate).toFixed(2);
   const netToBank = +(partAmt-feeAmount).toFixed(2);
-  const jRows = [{date:todayStr(), branch_id:b.branch_id, booking_id:b.id, desc_key:'jBankReceipt', desc_args:[b.booking_no, b.customer], debit_key:'accBank', credit_key:'accCustomers', amount:netToBank}];
-  if(feeAmount>0) jRows.push({date:todayStr(), branch_id:b.branch_id, booking_id:b.id, desc_key:'jCardFee', desc_args:[b.booking_no], debit_key:'accExpenses', credit_key:'accCustomers', amount:feeAmount});
+  // entries first, then the status; if the status cannot be saved the entries are removed again (nothing half-done)
+  const jRows = [{date:todayStr(), branch_id:b.branch_id, booking_id:b.id, desc_key:'jBankReceipt', desc_args:[b.booking_no, b.customer, splitIndex], debit_key:'accBank', credit_key:'accCustomers', amount:netToBank}];
+  if(feeAmount>0) jRows.push({date:todayStr(), branch_id:b.branch_id, booking_id:b.id, desc_key:'jCardFee', desc_args:[b.booking_no, '', splitIndex], debit_key:'accExpenses', credit_key:'accCustomers', amount:feeAmount});
   const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
   if(jErr) throw jErr;
+  try{ await mustUpdate('bookings', bookingId, {payment_splits:splits, payment_status: allVerified?'paid':'pending', transfer_verified: allVerified}); }
+  catch(e){ await sb.from('journal').delete().in('id', jIns.map(j=>j.id)); throw e; }
+  b.payment_splits = splits; b.payment_status = allVerified?'paid':'pending'; b.transfer_verified = allVerified;
   journal.unshift(...jIns.reverse());
 }
 async function rejectTransfer(bookingId, note){
@@ -1496,7 +1509,7 @@ function busyBadge(on){
 }
 function lockify(fn, name){
   return async function(...args){
-    const key = name + ':' + JSON.stringify(args[0]);
+    const key = name + ':' + JSON.stringify(args.slice(0,2));
     if(__busy.has(key)) return;
     __busy.add(key); busyBadge(true); __mutations++;
     try{ return await fn.apply(this, args); }
@@ -5993,7 +6006,7 @@ cancelEmployeeCharge = lockify(cancelEmployeeCharge, 'cancelEmployeeCharge');
 settleSupplierPayment = lockify(settleSupplierPayment, 'settleSupplierPayment');
 settleSupplierBulk = lockify(settleSupplierBulk, 'settleSupplierBulk');
 verifyPaymentReceived = lockify(verifyPaymentReceived, 'verifyPaymentReceived');
-verifySplitPayment = lockify(verifySplitPayment, 'verifySplitPayment');
+verifySplitPaymentNow = lockify(verifySplitPaymentNow, 'verifySplitPayment');
 approveRefund = lockify(approveRefund, 'approveRefund');
 approveProfitHandover = lockify(approveProfitHandover, 'approveProfitHandover');
 repairBooking = lockify(repairBooking, 'repairBooking');
