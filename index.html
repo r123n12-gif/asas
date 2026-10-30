@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G5</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G7</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -525,6 +525,8 @@ function t(k){ return (T[lang] && T[lang][k]!==undefined) ? T[lang][k] : k; }
 function setLang(l){ lang = l; localStorage.setItem('asas_lang', l); }
 
 /* ===================== SESSION (localStorage) ===================== */
+function cleanCred(v){ return String(v==null?'':v).replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g,'').trim()
+  .replace(/[٠-٩]/g, d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[۰-۹]/g, d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d)); }
 function getSession(){ try{ return JSON.parse(localStorage.getItem('asas_session')||'null'); }catch(e){ return null; } }
 function setSession(u){ localStorage.setItem('asas_session', JSON.stringify(u)); resetAllFilters(); }
 function clearSession(){ localStorage.removeItem('asas_session'); resetAllFilters(); stopAutoRefresh(); }
@@ -1916,6 +1918,9 @@ async function boot(){
   app.innerHTML = `<div class="login-wrap" style="color:#EDE7D6;">Loading... / جاري التحميل...</div>`;
   try{
     await fetchAll();
+    const me = users.find(x=>x.id===session.id);
+    if(!me || me.active===false){ localStorage.removeItem('asas_session'); renderLogin(app);
+      setTimeout(()=>{ const box = document.getElementById('loginErrorBox'); if(box) box.innerHTML = `<div class="login-error">${lang==='ar'?'هذا الحساب موقوف أو محذوف. راجع المدير.':'This account is disabled.'}</div>`; }, 0); return; }
     render();
     startAutoRefresh();
   }catch(e){
@@ -2161,7 +2166,7 @@ function renderLogin(app){
       <div class="login-agency-en">${t('agencyEn')}</div>
       <div id="loginErrorBox"></div>
       <form id="loginForm">
-        <div class="field"><label>${t('fieldUsernameLogin')}</label><input name="username" required autocomplete="username"></div>
+        <div class="field"><label>${t('fieldUsernameLogin')}</label><input name="username" required autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" dir="ltr"></div>
         <div class="field"><label>${t('fieldPasswordLogin')}</label><input type="password" name="password" required autocomplete="current-password"></div>
         <button type="submit" class="btn btn-primary" style="width:100%;" id="loginSubmitBtn">${t('loginBtn')}</button>
       </form>
@@ -2176,8 +2181,16 @@ function renderLogin(app){
     const uname = (f.get('username')||'').trim();
     const pwd = f.get('password')||'';
     try{
-      const {data, error} = await sb.rpc('verify_login', {p_username: uname, p_password: pwd});
-      if(error) throw error;
+      // phones capitalise the first letter or add a space; Arabic keyboards type ١٢٣ — try the variants
+      const latin = v=> String(v).replace(/[٠-٩]/g, d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[۰-۹]/g, d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d));
+      const names = [uname];
+      try{ const key = cleanCred(uname).toLowerCase();
+        const {data:hits} = await sb.from('app_users').select('username').ilike('username', '%'+cleanCred(uname).replace(/[%_]/g,'')+'%');
+        (hits||[]).forEach(h=>{ if(h.username && cleanCred(h.username).toLowerCase()===key && !names.includes(h.username)) names.push(h.username); }); }catch(e){}
+      const pwds = [...new Set([pwd, pwd.trim(), latin(pwd), latin(pwd.trim())])];
+      let data = null, error = null;
+      outer: for(const n of names){ for(const p of pwds){ const r = await sb.rpc('verify_login', {p_username: n, p_password: p}); if(r.error){ error = r.error; break outer; } if(r.data && r.data.length){ data = r.data; break outer; } } }
+      if(error && !data) throw error;
       if(data && data.length>0){
         const {data:st} = await sb.from('app_users').select('active').eq('id', data[0].id).maybeSingle();
         if(st && st.active===false){ document.getElementById('loginErrorBox').innerHTML = `<div class="login-error">${lang==='ar'?'هذا الحساب موقوف. راجع المدير.':'This account is disabled.'}</div>`; btn.disabled=false; btn.textContent=t('loginBtn'); return; }
@@ -4756,9 +4769,9 @@ window.uiEditUser = function(id){
     try{
       const aliasesRaw = f.get('supplierAliases');
       const aliases = String(aliasesRaw||'').split(',').map(x=>x.trim()).filter(Boolean).join(', ');
-      const {error} = await sb.from('app_users').update({name:f.get('name'), username:f.get('username'), role, branch_id:branchId, supplier_aliases:aliases||null}).eq('id', id);
+      const {error} = await sb.from('app_users').update({name:String(f.get('name')||'').trim(), username:cleanCred(f.get('username')), role, branch_id:branchId, supplier_aliases:aliases||null}).eq('id', id);
       if(error) throw error;
-      Object.assign(u, {name:f.get('name'), username:f.get('username'), role, branch_id:branchId, supplier_aliases:aliases||null});
+      Object.assign(u, {name:String(f.get('name')||'').trim(), username:cleanCred(f.get('username')), role, branch_id:branchId, supplier_aliases:aliases||null});
       closeModal(); render();
     }catch(err){
       console.error(err);
@@ -4769,7 +4782,7 @@ window.uiEditUser = function(id){
   };
   const rb = document.getElementById('resetPwdBtn');
   if(rb) rb.onclick = async ()=>{
-    const ar = lang==='ar'; const np = document.getElementById('resetPwdInput').value.trim();
+    const ar = lang==='ar'; const np = cleanCred(document.getElementById('resetPwdInput').value);
     if(np.length<6){ alert(ar?'كلمة المرور لازم 6 أحرف أو أكثر.':'Min 6 characters.'); return; }
     const adminPwd = prompt(ar?'للتأكيد: اكتب كلمة مرورك أنت (المدير):':'Confirm with YOUR admin password:');
     if(!adminPwd) return;
@@ -4778,7 +4791,13 @@ window.uiEditUser = function(id){
       const {data, error} = await sb.rpc('admin_reset_password', {p_admin_username: currentUser().username, p_admin_password: adminPwd, p_user_id: id, p_new_password: np});
       if(error) throw error;
       if(!data) throw new Error(ar?'ما تغيّرت — تأكد من كلمة مرورك.':'Not changed.');
-      alert(ar?`✔ تم. كلمة المرور الجديدة: ${np}`:`Done. New password: ${np}`);
+      const target = users.find(x=>x.id===id) || {};
+      const test = await sb.rpc('verify_login', {p_username: target.username, p_password: np});
+      const works = !test.error && test.data && test.data.length>0;
+      const off = target.active===false;
+      alert(works
+        ? (ar?`✔ تم وجربت الدخول وهو شغال.\nاسم المستخدم: ${target.username}\nكلمة المرور: ${np}${off?'\n\n⚠️ لكن الحساب موقوف — فعّله من المستخدمين.':''}`:`Done and tested. Username: ${target.username}`)
+        : (ar?`⚠️ كلمة المرور انحفظت، لكن تجربة الدخول فشلت.\nالسبب غالبًا في قاعدة البيانات (دالة الدخول أو إعادة التعيين). أرسل صورة هذي الرسالة.\n${test.error?test.error.message:''}`:'Saved, but the login test failed.'));
       document.getElementById('resetPwdInput').value='';
     }catch(e){ console.error(e); alert(/not authorized|غير مصرح/i.test(String(e.message))?(ar?'كلمة مرورك غير صحيحة.':'Wrong admin password.'):errTextPlain()); }
     finally{ rb.disabled = false; }
@@ -4807,7 +4826,7 @@ function openUserModal(){
     e.preventDefault();
     const btn = document.getElementById('userSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
     const f = new FormData(e.target);
-    const username = (f.get('username')||'').trim();
+    const username = cleanCred(f.get('username'));
     const role = f.get('role');
     const branchId = f.get('branchId')||null;
     if(role==='employee' && !branchId){
@@ -4815,7 +4834,7 @@ function openUserModal(){
       btn.disabled=false; btn.textContent=t('add'); return;
     }
     try{
-      const {data:newId, error} = await sb.rpc('create_app_user', { p_name:f.get('name'), p_username:username, p_password:f.get('password'), p_role:role, p_branch_id: role==='employee'?branchId:null });
+      const {data:newId, error} = await sb.rpc('create_app_user', { p_name:String(f.get('name')||'').trim(), p_username:username, p_password:cleanCred(f.get('password')), p_role:role, p_branch_id: role==='employee'?branchId:null });
       if(error){
         if(String(error.message||'').toLowerCase().includes('duplicate')){ document.getElementById('userErrorBox').innerHTML = `<div class="login-error">${t('usernameTaken')}</div>`; btn.disabled=false; btn.textContent=t('add'); return; }
         throw error;
@@ -5957,8 +5976,9 @@ function openMyAccountModal(){
     e.preventDefault();
     const btn = document.getElementById('myAccountSaveBtn');
     const f = new FormData(e.target);
-    const newPassword = f.get('newPassword')||'';
-    const confirmPassword = f.get('confirmPassword')||'';
+    const newPassword = f.get('newPassword') ? cleanCred(f.get('newPassword')) : '';
+    const confirmPassword = f.get('confirmPassword') ? cleanCred(f.get('confirmPassword')) : '';
+    if(newPassword && newPassword.length<6){ document.getElementById('myAccountErrorBox').innerHTML = `<div class="login-error">${lang==='ar'?'كلمة المرور لازم 6 أحرف أو أكثر.':'Min 6 characters.'}</div>`; return; }
     if(newPassword !== confirmPassword){
       document.getElementById('myAccountErrorBox').innerHTML = `<div class="login-error">${t('passwordMismatch')}</div>`;
       return;
@@ -5967,16 +5987,16 @@ function openMyAccountModal(){
     try{
       const {data:ok, error} = await sb.rpc('update_own_account', {
         p_user_id: u.id, p_current_password: f.get('currentPassword'),
-        p_new_username: f.get('newUsername'), p_new_password: newPassword
+        p_new_username: cleanCred(f.get('newUsername')), p_new_password: newPassword
       });
       if(error){
         if(String(error.message||'').toLowerCase().includes('duplicate')){ document.getElementById('myAccountErrorBox').innerHTML = `<div class="login-error">${t('usernameTaken')}</div>`; btn.disabled=false; btn.textContent=t('saveAccount'); return; }
         throw error;
       }
       if(!ok){ document.getElementById('myAccountErrorBox').innerHTML = `<div class="login-error">${t('wrongCurrentPassword')}</div>`; btn.disabled=false; btn.textContent=t('saveAccount'); return; }
-      const updatedUser = { ...u, username: f.get('newUsername') };
+      const updatedUser = { ...u, username: cleanCred(f.get('newUsername')) };
       setSession(updatedUser);
-      const localUser = users.find(x=>x.id===u.id); if(localUser) localUser.username = f.get('newUsername');
+      const localUser = users.find(x=>x.id===u.id); if(localUser) localUser.username = cleanCred(f.get('newUsername'));
       closeModal(); alert(t('accountUpdated')); render();
     }catch(err){
       console.error(err);
