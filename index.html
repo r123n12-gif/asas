@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G10</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G11</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1649,8 +1649,8 @@ async function addBooking(data){
   const frPax = cleanPax(data.pax);
   if(isFranchiseBranch(data.branchId) && !data.refundLink && Number(data.cost)>=0){
     // franchise ticket: the agency's price = system fare + fee × passengers (the customer's price is the franchise's business)
-    data = {...data, sell: +(Number(data.cost) + branchFranchiseFee(data.branchId)*frPax).toFixed(2)};
-    if(data.paymentMethod==='split') data.paymentMethod = 'cash';
+    if(data.paymentMethod==='split') data = {...data, paymentMethod:'cash'};
+    if((data.paymentMethod||'cash')==='cash' || !(Number(data.sell)>0)) data = {...data, sell: +(Number(data.cost) + branchFranchiseFee(data.branchId)*frPax).toFixed(2)};
   }
   requirePositive(data.sell);
   if(!(Number(data.cost)>=0)) throw new Error(lang==='ar'?'التكلفة لازم تكون صفر أو أكثر.':'Cost must be zero or more.');
@@ -1703,7 +1703,7 @@ async function updateBooking(id, data){
       const rate = keepRate ? franchisePerPax(p0) : branchFranchiseFee(data.branchId);
       data = {...data, pax, __frFee: isFranchiseBranch(data.branchId) || keepRate ? +(rate*pax).toFixed(2) : null};
       const bankLocked = p0 && (p0.transfer_verified || journal.some(j=>j.booking_id===id && j.desc_key==='jBankReceipt'));
-      if(data.__frFee!=null && !isReplacementTicket(p0) && !bankLocked && data.paymentMethod!=='split') data.sell = +(Number(data.cost||0) + data.__frFee).toFixed(2);
+      if(data.__frFee!=null && !isReplacementTicket(p0) && !bankLocked && ((data.paymentMethod||'cash')==='cash' || !(Number(data.sell)>0))) data.sell = +(Number(data.cost||0) + data.__frFee).toFixed(2);
     } }
   requirePositive(data.sell);
   if(!(Number(data.cost)>=0)) throw new Error(lang==='ar'?'التكلفة لازم تكون صفر أو أكثر.':'Cost must be zero or more.');
@@ -3365,28 +3365,35 @@ function openBookingModal(existing){
   const frPax = ()=> cleanPax(document.getElementById('paxInput').value);
   const frRate = ()=> isEdit && isFranchiseBooking(existing) && existing.branch_id===frBranchId() ? franchisePerPax(existing) : branchFranchiseFee(frBranchId());
   const frFixedPrice = ()=> isReplacementTicket(existing) || (isEdit && (existing.transfer_verified || journal.some(j=>j.booking_id===existing.id && j.desc_key==='jBankReceipt')));
+  let frAuto = false;   // the price box holds the automatic cash amount (not something the employee typed)
   const applyFranchise = ()=>{
     const ar = lang==='ar', on = frOn();
     const sellIn = document.getElementById('sellPriceInput'), costVal = Number(document.getElementById('costPriceInput').value)||0;
-    const fixed = frFixedPrice();
+    const fixed = frFixedPrice(), cash = frCashOnly();
+    const autoCash = on && !fixed && cash;
     document.getElementById('paxField').style.display = on ? '' : 'none';
-    document.getElementById('sellPriceField').style.display = on && !fixed ? 'none' : '';
-    sellIn.required = !(on && !fixed);
+    document.getElementById('sellPriceField').style.display = autoCash ? 'none' : '';
+    sellIn.required = !autoCash;
     const spT = document.getElementById('splitPaymentToggle'); const spBox = spT.closest ? spT.closest('.grid-2') : null;
     if(on && spT.checked && !fixed){ spT.checked = false; document.getElementById('singleMethodBox').style.display=''; document.getElementById('splitPaymentBox').style.display='none'; }
     if(spBox) spBox.style.display = on ? 'none' : '';
-    if(!on){ document.getElementById('sellPriceLabel').textContent = t('fieldSellPrice'); updateProfitPreview(); return; }
+    if(!on){ if(frAuto){ sellIn.value=''; frAuto=false; } document.getElementById('sellPriceLabel').textContent = t('fieldSellPrice'); updateProfitPreview(); return; }
     const pax = frPax(), fee = +(frRate()*pax).toFixed(2), due = +(costVal+fee).toFixed(2);
-    if(!fixed) sellIn.value = costVal>0 ? String(due) : '';
-    document.getElementById('sellPriceLabel').textContent = ar?'المبلغ المؤكد في البنك (ثابت)':'Confirmed amount (fixed)';
-    const cash = frCashOnly();
+    if(autoCash){ sellIn.value = costVal>0 ? String(due) : ''; frAuto = true; }
+    else if(frAuto && !fixed){ sellIn.value = ''; frAuto = false; }     // switched from cash: the real paid amount must be typed
+    const pmv = document.getElementById('paymentMethodSel').value;
+    document.getElementById('sellPriceLabel').textContent = fixed ? (ar?'المبلغ المؤكد في البنك (ثابت)':'Confirmed amount (fixed)')
+      : (ar?`المبلغ الفعلي ${pmv==='transfer'?'المحوّل لحساب الوكالة':pmv==='span'?'المدفوع بالشبكة':'المدفوع (تمارا/تابي)'} *`:'Actual amount paid *');
+    const paid = Number(sellIn.value)||0, own = +(paid-due).toFixed(2);
     document.getElementById('autoProfitNote').innerHTML = ar
-      ? `🏪 <b>فرع فرانشايز</b> — المطلوب للوكالة = السستم فير ${money(costVal)} + ${pax} × ${money(frRate())} = <b>${money(due)}</b>`
-        + (cash ? `<br>💵 كاش: يودَع ${money(due)} من زر الإيداعات.` : `<br>🏦 تحويل/شبكة: المحاسب يأكد المبلغ اللي وصل البنك فعليًا، والزيادة عن ${money(due)} ربح للفرع ينخصم من الكاش اللي عليه.`)
-      : `🏪 Franchise — agency due = fare ${money(costVal)} + ${pax} × ${money(frRate())} = <b>${money(due)}</b>`;
+      ? `🏪 <b>فرع فرانشايز</b> — حق الوكالة = السستم فير ${money(costVal)} + ${pax} × ${money(frRate())} = <b>${money(due)}</b>`
+        + (cash ? `<br>💵 كاش: يودَع ${money(due)} من زر الإيداعات.`
+          : paid>0 ? `<br>🏦 المبلغ الفعلي ${money(paid)} → ${own>0.004?`<b style="color:#1f7a4d">ربحك ${money(own)}</b> ينخصم من الكاش اللي عليك`:own<-0.004?`<b style="color:var(--red)">ناقص ${money(-own)}</b> عليك تكمّله من الكاش`:'مطابق لحق الوكالة'}${pmv!=='transfer'?` (ورسوم ${pmv==='span'?'الشبكة':'تمارا/تابي'} على الفرع)`:''}`
+          : `<br>🏦 اكتب المبلغ الفعلي اللي دخل حساب الوكالة.`)
+      : `🏪 Franchise — agency due = fare ${money(costVal)} + ${pax} × ${money(frRate())} = <b>${money(due)}</b>` + (!cash && paid>0 ? ` — franchise part ${money(own)}` : '');
   };
   document.getElementById('paxInput').oninput = applyFranchise;
-  document.getElementById('sellPriceInput').oninput = ()=>{ updateProfitPreview(); applyFranchise(); };
+  document.getElementById('sellPriceInput').oninput = ()=>{ frAuto = false; updateProfitPreview(); applyFranchise(); };
   document.getElementById('costPriceInput').oninput = ()=>{ updateProfitPreview(); applyFranchise(); };
   document.getElementById('bookingBranchSel').onchange = applyFranchise;
   { const pm = document.getElementById('paymentMethodSel'), pm0 = pm.onchange; pm.onchange = (e)=>{ if(pm0) pm0(e); applyFranchise(); };
@@ -3399,7 +3406,7 @@ function openBookingModal(existing){
     const isSplit = document.getElementById('splitPaymentToggle').checked && !(frOn() && !frFixedPrice());
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
       ticketNo:f.get('ticketNo'), pnr:f.get('pnr'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
-      sell:(frOn() && !frFixedPrice()) ? (+(Number(f.get('cost')||0)+frRate()*frPax()).toFixed(2)) : f.get('sell'), cost:f.get('cost'), pax: frOn() ? frPax() : undefined, isOpenTicket: false,
+      sell:(frOn() && !frFixedPrice() && frCashOnly()) ? (+(Number(f.get('cost')||0)+frRate()*frPax()).toFixed(2)) : f.get('sell'), cost:f.get('cost'), pax: frOn() ? frPax() : undefined, isOpenTicket: false,
       paymentMethod:isSplit?'split':f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider'), note:f.get('note') };
     if(isSplit){
       const sellVal = Number(f.get('sell'))||0;
@@ -3421,6 +3428,15 @@ function openBookingModal(existing){
     }
     try{
       const _sell = Number(payload.sell)||0, _cost = Number(payload.cost)||0;
+      if(frOn() && !frFixedPrice()){
+        const _due = +(_cost + frRate()*frPax()).toFixed(2);
+        if(!frCashOnly() && !(_sell>0)){ document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">${lang==='ar'?'اكتب المبلغ الفعلي اللي دخل حساب الوكالة.':'Enter the actual amount paid.'}</div>`; btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking'); return; }
+        if(!frCashOnly() && _sell < _due-0.004 && !confirm(lang==='ar'?`المبلغ الفعلي ${money(_sell)} أقل من حق الوكالة ${money(_due)} — الناقص ${money(_due-_sell)} ينحسب على الفرع من الكاش.
+
+متأكد؟`:`Paid ${money(_sell)} is below the agency due ${money(_due)}. Continue?`)){ btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking'); return; }
+        if(isEdit){ await updateBooking(existing.id, payload); } else { await addBooking(payload); }
+        closeModal(); render(); return;
+      }
       if(_cost > _sell + 0.004 && !(isAdmin()||isAccountant())){
         document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">⛔ ${lang==='ar'
           ? `لا يمكن حفظ تذكرة بخسارة: التكلفة ${money(_cost)} أكبر من سعر البيع ${money(_sell)} (−${money(_cost-_sell)}).<br>تأكد إنك ما عكست سعر البيع والسستم فير. لو الخسارة حقيقية، اطلب من المحاسب يسجلها.`
@@ -4829,8 +4845,7 @@ window.uiVerifyTransfer = async function(id){
   if(!b) return;
   const expected = b.refunded ? bookingPendingAmount(b) : (Number(b.sell)||0);
   const val = prompt(isFranchiseBooking(b) && !b.refunded
-    ? (lang==='ar' ? `🏪 تذكرة فرانشايز — اكتب المبلغ اللي وصل البنك فعليًا من العميل.
-حق الوكالة: ${money(expected)} — أي زيادة تنحسب ربح للفرع وتنخصم من الكاش اللي عليه.` : `Franchise ticket — amount actually received (agency due ${money(expected)})`)
+    ? (lang==='ar' ? `🏪 تذكرة فرانشايز — المبلغ اللي كتبه الموظف: ${money(expected)}\nتأكد إنه وصل البنك (لو وصل غيره اكتب الواصل فعليًا).\nحق الوكالة: ${money(+(Number(b.cost||0)+Number(b.franchise_fee||0)).toFixed(2))} — الفرق للفرع من الكاش.` : `Franchise ticket — amount entered ${money(expected)}; confirm what actually arrived`)
     : `${t('actualAmountPrompt')} (${t('fieldSellPrice')}: ${money(expected)})`, String(expected));
   if(val===null) return;
   const amt = parseAmount(val);
