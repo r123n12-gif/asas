@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G7</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G9</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -741,7 +741,44 @@ function bookingRefundAmount(b){
 }
 // a ticket registered only to record its refund (sold outside the system): no sale, no cost — profit = airline refund − customer refund
 function isRefundOnly(b){ return !!b && !(Number(b.sell)>0) && !(Number(b.cost)>0) && !!b.refund_status; }
-function bookingEffectiveSell(b){ return isRefundOnly(b) ? +(-bookingRefundAmount(b)).toFixed(2) : +Math.max(0, (Number(b.sell)||0) - bookingRefundAmount(b)).toFixed(2); }
+function bookingEffectiveSell(b){ return +((isRefundOnly(b) ? -bookingRefundAmount(b) : Math.max(0, (Number(b.sell)||0) - bookingRefundAmount(b))) - franchiseShare(b)).toFixed(2); }
+/* ===== FRANCHISE: the agency keeps only system fare + a fixed fee per ticket; the rest of what the customer paid belongs to the franchise ===== */
+function branchById(id){ return branches.find(x=>x.id===id) || null; }
+function isFranchiseBranch(id){ const b = branchById(id); return !!(b && b.is_franchise); }
+function branchFranchiseFee(id){ const b = branchById(id); const f = Number(b && b.franchise_fee); return f>0 ? f : 12; }
+function isFranchiseBooking(b){ return !!b && b.franchise_fee!=null && b.franchise_fee!=='' && !isNaN(Number(b.franchise_fee)); }
+function franchiseFeeOf(b){ return isFranchiseBooking(b) && !isRefundOnly(b) ? +Number(b.franchise_fee).toFixed(2) : 0; }
+// the franchise's own part of a ticket = what the customer paid (after any refund) − what the agency is owed (net system fare + fee)
+function franchiseShare(b){
+  if(!isFranchiseBooking(b)) return 0;
+  const base = isRefundOnly(b) ? -bookingRefundAmount(b) : (Number(b.sell)||0) - bookingRefundAmount(b);
+  // bank/card fees on the customer's payment (span 0.8%, installment 7%) are carried by the franchise, so the agency's fee stays whole
+  const cardFees = jrows(b.id).filter(j=>j.desc_key==='jCardFee').reduce((a,j)=>a+(Number(j.amount)||0),0);
+  return +(base - bookingEffectiveCost(b) - franchiseFeeOf(b) - cardFees).toFixed(2);
+}
+function franchiseShareRows(b){ return journal.filter(j=>j.booking_id===b.id && j.desc_key==='jFranchiseShare'); }
+function postedFranchiseShare(b){ return +franchiseShareRows(b).reduce((a,j)=>a+(j.debit_key==='accSalesRev'?1:-1)*(Number(j.amount)||0),0).toFixed(2); }
+// one journal line per franchise ticket: Dr Sales / Cr Cash (the franchise keeps that part of the cash; negative = it owes it)
+async function syncFranchiseShare(b){
+  const want = franchiseShare(b), rows = franchiseShareRows(b);
+  if(Math.abs(want - postedFranchiseShare(b))<0.005 && rows.length<=(Math.abs(want)<0.005?0:1)) return false;
+  const sides = {debit_key: want>0?'accSalesRev':'accCashOnHand', credit_key: want>0?'accCashOnHand':'accSalesRev', amount:+Math.abs(want).toFixed(2)};
+  if(rows.length===1 && Math.abs(want)>=0.005){
+    const {error} = await sb.from('journal').update(sides).eq('id', rows[0].id); if(error) throw error; Object.assign(rows[0], sides); return true;
+  }
+  if(rows.length){ const {error} = await sb.from('journal').delete().in('id', rows.map(j=>j.id)); if(error) throw error; const d = new Set(rows.map(j=>j.id)); journal = journal.filter(j=>!d.has(j.id)); }
+  if(Math.abs(want)>=0.005){
+    const {data, error} = await sb.from('journal').insert({date:b.date||todayStr(), branch_id:b.branch_id||null, booking_id:b.id, desc_key:'jFranchiseShare',
+      desc_args:[b.booking_no, b.customer||''], ...sides}).select().single();
+    if(error){ if(error.code==='23505') return false; throw error; }
+    journal.unshift(data);
+  }
+  return true;
+}
+async function syncAllFranchiseShares(){
+  const withRows = new Set(journal.filter(j=>j.desc_key==='jFranchiseShare').map(j=>j.booking_id));
+  for(const b of bookings.filter(x=>isFranchiseBooking(x) || withRows.has(x.id))) await syncFranchiseShare(b);
+}
 function bookingIsFullRefund(b){ return !!b.refunded && !isRefundOnly(b) && bookingRefundAmount(b) >= (Number(b.sell)||0) - 0.01; }
 function bookingCashNet(b){
   const sell = Number(b.sell)||0;
@@ -751,7 +788,8 @@ function bookingCashNet(b){
     cashIn = b.payment_splits.filter(s=>s.method==='cash').reduce((s,r)=>s+Number(r.amount||0),0);
   // a refund reduces the employee's cash only when it was paid out in cash
   const cashRefund = (b.refunded && (b.refund_method||'cash')==='cash') ? bookingRefundAmount(b) : 0;
-  return +(cashIn - cashRefund).toFixed(2);
+  // franchise: its own part stays with it (taken from the cash it holds)
+  return +(cashIn - cashRefund - franchiseShare(b)).toFixed(2);
 }
 function approvedHandovers(filterFn){
   return profitHandovers.filter(h=>h.status==='approved' && filterFn(h)).reduce((s,h)=>s+Number(h.total_profit||0),0);
@@ -792,7 +830,7 @@ function employeeCashSplit(employeeId){
   const depositDue = +(total - profitDue).toFixed(2);
   const locked = lockedHandoverIds();
   const pendingIds = new Set(profitHandovers.filter(h=>h.employee_id===employeeId && h.status==='pending').flatMap(handoverBookingIds));
-  const transferProfit = +mine.filter(b=>b.payment_method!=='cash' && b.cost_reviewed && !(b.refunded && !bookingSupplierRefundKnown(b)) && (!locked.has(b.id) || pendingIds.has(b.id)))
+  const transferProfit = +mine.filter(b=>b.payment_method!=='cash' && b.cost_reviewed && !isFranchiseBooking(b) && !(b.refunded && !bookingSupplierRefundKnown(b)) && (!locked.has(b.id) || pendingIds.has(b.id)))
     .reduce((a,b)=>a+bookingProfitNow(b),0).toFixed(2);
   return {total, profitDue, profitAll, profitFromBank, awaiting, notRequested, depositDue, transferProfit};
 }
@@ -980,7 +1018,7 @@ function bookingSupplierRefund(b){
 function bookingSupplierRefundKnown(b){ return b.supplier_refund_amount!=null || bookingSupplierRefund(b)>0.004; }
 function bookingEffectiveCost(b){ return +((Number(b.cost)||0) - bookingSupplierRefund(b)).toFixed(2); }
 function bookingNetSupplierCost(b){ return bookingEffectiveCost(b); }
-function bookingProfitNow(b){ return +(b.refunded ? bookingEffectiveSell(b)-bookingEffectiveCost(b) : (Number(b.sell)||0)-(Number(b.cost)||0)).toFixed(2); }
+function bookingProfitNow(b){ return +((b.refunded || isFranchiseBooking(b)) ? bookingEffectiveSell(b)-bookingEffectiveCost(b) : (Number(b.sell)||0)-(Number(b.cost)||0)).toFixed(2); }
 function handoverBookingIds(h){
   let ids = h.booking_ids;
   if(typeof ids==='string'){ try{ ids = JSON.parse(ids); }catch(e){ ids = ids.replace(/[{}\[\]"]/g,'').split(',').map(x=>x.trim()).filter(Boolean); } }
@@ -993,7 +1031,7 @@ function lockedHandoverIds(){
 }
 function eligibleProfitBookings(employeeId, dateFrom, dateTo){
   const lockedIds = lockedHandoverIds();
-  return bookings.filter(b=> b.created_by===employeeId && b.cost_reviewed && !(b.refunded && !bookingSupplierRefundKnown(b))
+  return bookings.filter(b=> b.created_by===employeeId && b.cost_reviewed && !isFranchiseBooking(b) && !(b.refunded && !bookingSupplierRefundKnown(b))
     && !(bookingIsFullRefund(b) && Math.abs(bookingProfitNow(b))<0.005) && !lockedIds.has(b.id)
     && (!dateFrom || b.date>=dateFrom) && (!dateTo || b.date<=dateTo));
 }
@@ -1220,7 +1258,13 @@ async function submitRefund(d){
     customer_amount:R, airline_amount:S, method, new_ticket: method==='exchange' ? {ticketNo:String(d.newTicket.ticketNo).trim(), airline:d.newTicket.airline||null, sell:+Number(d.newTicket.sell).toFixed(2), cost:+Number(d.newTicket.cost).toFixed(2), supplier:d.newTicket.supplier||null, extraMethod:d.newTicket.extraMethod||'cash'} : null,
     receipt_url:receiptUrl, note:d.note||null, status:'pending', review_note:null };
   let saved;
-  if(prev){ await mustUpdate('refunds', prev.id, row); saved = await freshRefund(prev.id); }
+  if(prev){
+    const other = row.booking_id ? refundRows.find(x=>x.id!==prev.id && x.booking_id===row.booking_id && (x.status==='pending'||x.status==='approved')) : null;
+    if(other) throw new Error(lang==='ar'?`هذي التذكرة عليها استرجاع ثاني ${refundLabel(other)} (${other.status==='approved'?'معتمد':'معلّق'}) — ما ينفع ترسل هذا الطلب القديم. ألغه أو عدّل ${refundLabel(other)}.`:'Another refund exists for this ticket.');
+    try{ await mustUpdate('refunds', prev.id, row); }
+    catch(e){ if(isDup(e)) throw new Error(lang==='ar'?'على هذي التذكرة طلب استرجاع ثاني مفتوح.':'Another open refund exists.'); throw e; }
+    saved = await freshRefund(prev.id);
+  }
   else{
     const {data, error} = await sb.from('refunds').insert({...row, created_by:u.id}).select().single();
     if(error){ if(isDup(error)) throw new Error(lang==='ar'?'على هذي التذكرة طلب استرجاع مفتوح.':'Open refund exists.'); throw error; }
@@ -1342,6 +1386,23 @@ async function undoRefundV2(id, mode, note){   // mode: 'return' (back to employ
   return await freshRefund(id);
 }
 async function editApprovedRefundV2(id, edits){
+  const r0 = await freshRefund(id);
+  const nb = r0.status==='approved' && r0.method==='exchange' ? await findBookingByLink('R:'+id) : null;
+  if(nb && bookingIsLocked(nb)){
+    // the replacement already has confirmed money on it: keep it, and only rebuild this refund's own lines
+    const b = bookings.find(x=>x.id===r0.booking_id); if(!b) throw new Error('booking not found');
+    const patch = {};
+    if(edits && edits.customerAmount!=null) patch.customer_amount = +Number(edits.customerAmount).toFixed(2);
+    if(edits && edits.airlineAmount!==undefined) patch.airline_amount = (edits.airlineAmount===null||edits.airlineAmount==='') ? null : +Number(edits.airlineAmount).toFixed(2);
+    if(Object.keys(patch).length) await mustUpdate('refunds', id, patch);
+    const r = await freshRefund(id);
+    const {error:e1} = await sb.from('journal').delete().eq('refund_id', id); if(e1) throw e1; journal = journal.filter(j=>j.refund_id!==id);
+    const mirror = { refund_amount:+Number(r.customer_amount).toFixed(2), supplier_refund_amount: r.airline_amount==null ? null : +Number(r.airline_amount).toFixed(2) };
+    await mustUpdate('bookings', b.id, mirror); Object.assign(b, mirror);
+    for(const row of refundJournalRows(r, b)) await insertOnce('journal', row);
+    await syncRefundJournal(id);
+    return r;
+  }
   await undoRefundV2(id, 'reopen');
   return await approveRefundV2(id, edits);
 }
@@ -1357,7 +1418,7 @@ async function migrateLegacyRefunds(){
   if(!refundsReady) return 0;
   let n = 0;
   const has = new Set(refundRows.filter(r=>r.booking_id).map(r=>r.booking_id));
-  for(const b of bookings.filter(x=>x.refund_status && !has.has(x.id) && !isReplacementTicket(x))){
+  for(const b of bookings.filter(x=>x.refund_status && !has.has(x.id))){
     const st = b.refunded ? 'approved' : (b.refund_status==='pending' ? 'pending' : 'rejected');
     const ex = b.exchange_data && b.exchange_data.ticketNo ? b.exchange_data : null;
     const row = { booking_id:b.id, ticket_no:b.ticket_no||'', customer:b.customer||'', supplier:b.supplier||null, employee_id:b.created_by, branch_id:b.branch_id,
@@ -1516,6 +1577,7 @@ function lockify(fn, name){
     __busy.add(key); busyBadge(true); __mutations++;
     try{ return await fn.apply(this, args); }
     finally {
+      if(__busy.size===1){ try{ await syncAllFranchiseShares(); }catch(e){ console.error('franchise sync failed', e); } }
       __busy.delete(key); __mutations++;
       if(!__busy.size){
         busyBadge(false);
@@ -1567,6 +1629,7 @@ function bankLabel(b){ return b==='RAJHI'?t('bankRajhi'):b==='AHLI'?t('bankAhli'
 
 /* ===================== ACCOUNTING ENGINE (Supabase-backed) ===================== */
 async function addBooking(data){
+  if(isFranchiseBranch(data.branchId) && !(Number(data.sell)>0) && Number(data.cost)>=0) data.sell = +(Number(data.cost) + branchFranchiseFee(data.branchId)).toFixed(2);
   requirePositive(data.sell);
   if(!(Number(data.cost)>=0)) throw new Error(lang==='ar'?'التكلفة لازم تكون صفر أو أكثر.':'Cost must be zero or more.');
   const sell = Number(data.sell)||0, net = Number(data.cost)||0;
@@ -1588,6 +1651,7 @@ async function addBooking(data){
     commission_status:'pending', created_by: data.createdBy || currentUser()?.id||null, note: data.note||null
   };
   if(data.refundLink) row.refund_link = data.refundLink;
+  if(isFranchiseBranch(data.branchId)) row.franchise_fee = branchFranchiseFee(data.branchId);
   const {data:inserted, error} = await sb.from('bookings').insert(row).select().single();
   if(error) throw error;
   bookings.unshift(inserted);
@@ -1647,6 +1711,8 @@ async function updateBooking(id, data){
     transfer_verified: isSplit ? allSettled : (method==='cash' || alreadyConfirmed),
     edit_requested:false, edit_note:null, note: keepReplacementMarker(prevB, data.note!==undefined ? (data.note||null) : (prevB ? prevB.note : null))
   };
+  { const frFee = isFranchiseBranch(data.branchId) ? (isFranchiseBooking(prevB) ? Number(prevB.franchise_fee) : branchFranchiseFee(data.branchId)) : null;
+    if(frFee!=null || isFranchiseBooking(prevB)) row.franchise_fee = frFee; }
   const {data:updated, error} = await sb.from('bookings').update(row).eq('id', id).select().single();
   if(error) throw error;
   const idx = bookings.findIndex(b=>b.id===id);
@@ -1743,6 +1809,7 @@ function journalDesc(j){
     jCollectCash:{ar:(a)=>`تحصيل كاش حجز #${a[0]} - ${a[1]}`, en:(a)=>`Cash collected for booking #${a[0]} - ${a[1]}`},
     jBankReceipt:{ar:(a)=>`استلام دفعة بنكية حجز #${a[0]} - ${a[1]}`, en:(a)=>`Bank payment received for booking #${a[0]} - ${a[1]}`},
     jCardFee:{ar:(a)=>`رسوم شبكة (سبان) حجز #${a[0]}`, en:(a)=>`Card/network fee for booking #${a[0]}`},
+    jFranchiseShare:{ar:(a)=>`حصة الفرانشايز من حجز #${a[0]} — ${a[1]||''} (تبقى عند الفرع من الكاش)`, en:(a)=>`Franchise share of booking #${a[0]} — ${a[1]||''}`},
     jDeposit:{ar:(a)=>`إيداع كاش الفرع لحساب ${a[0]}`, en:(a)=>`Branch cash deposit to ${a[0]} account`},
     jManual:{ar:(a)=>`قيد يدوي: ${a[0]}`, en:(a)=>`Manual entry: ${a[0]}`},
     jEmployeeCharge:{ar:(a)=>`مبلغ مطلوب من الموظف ${a[0]} - ${a[1]}`, en:(a)=>`Amount charged to employee ${a[0]} - ${a[1]}`},
@@ -1856,7 +1923,7 @@ function pendingConfirmationAmount(list){
 function pendingProfitHandoverAmount(list){
   const lockedIds = new Set();
   lockedHandoverIds().forEach(id=>lockedIds.add(id));
-  return +list.filter(b=>b.cost_reviewed && !(b.refunded && !bookingSupplierRefundKnown(b)) && !lockedIds.has(b.id)).reduce((s,b)=>s+bookingProfitNow(b),0).toFixed(2);
+  return +list.filter(b=>b.cost_reviewed && !isFranchiseBooking(b) && !(b.refunded && !bookingSupplierRefundKnown(b)) && !lockedIds.has(b.id)).reduce((s,b)=>s+bookingProfitNow(b),0).toFixed(2);
 }
 function computeTotals(bookingsList, expensesList){
   const active = bookingsList.filter(b=>!bookingIsFullRefund(b));
@@ -2702,7 +2769,7 @@ function employeeCashStatement(employeeId, from, to){
     if(refundsReady && b.refunded && (b.refund_method||'cash')==='cash'){
       const cashRef = bookingRefundAmount(b), cashIn0 = +(bookingCashNet(b) + cashRef).toFixed(2);
       const rv = refundRows.find(r=>r.booking_id===b.id && r.status==='approved');
-      if(cashIn0>0.004){
+      if(Math.abs(cashIn0)>0.004){
         const sell0 = Number(b.sell)||0;
         let n0 = ar ? `كاش مستلم ${money(cashIn0)} (تكلفة ${money(b.cost)} + ربح ${money(sell0-Number(b.cost||0))})` : `Cash received ${money(cashIn0)}`;
         { const m = String(b.note||'').match(/(?:بديلة عن|Replacement for) #(\d+)/); if(m) n0 += ar ? ` — 🔁 تذكرة بديلة عن #${m[1]} (ثمنها من قيمة الاسترجاع)` : ` — replacement for #${m[1]}`; }
@@ -3157,7 +3224,7 @@ function openBookingModal(existing){
         <div class="field"><label>${t('fieldAirline')}</label><input name="airline" list="airlineHints" required value="${v.airline||''}">
           <datalist id="airlineHints">${AIRLINE_HINTS.map(a=>`<option value="${a}">`).join('')}</datalist>
         </div>
-        <div class="field"><label>${t('fieldBranch')}</label><select name="branchId">${branchOptions.map(b=>`<option value="${b.id}" ${v.branch_id===b.id?'selected':''}>${esc(b.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>${t('fieldBranch')}</label><select name="branchId" id="bookingBranchSel">${branchOptions.map(b=>`<option value="${b.id}" ${v.branch_id===b.id?'selected':''}>${esc(b.name)}</option>`).join('')}</select></div>
       </div>
       <div class="field"><label>${t('fieldCustomer')}</label><input name="customer" required value="${v.customer||''}"></div>
       <div class="grid-2">
@@ -3171,7 +3238,7 @@ function openBookingModal(existing){
       </div>
       <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${v.date||todayStr()}"></div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell" min="0.01" id="sellPriceInput" required value="${v.sell??''}"></div>
+        <div class="field" id="sellPriceField"><label id="sellPriceLabel">${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell" min="0.01" id="sellPriceInput" required value="${v.sell??''}"></div>
         <div class="field"><label>${t('fieldSystemFare')}</label><input type="number" step="0.01" name="cost" min="0" id="costPriceInput" required value="${v.cost??''}"></div>
       </div>
       <div class="note" id="autoProfitNote">${t('profitEntryNote')}</div>
@@ -3259,9 +3326,32 @@ function openBookingModal(existing){
     const profitVal = +(sellVal-costVal).toFixed(2);
     document.getElementById('autoProfitNote').textContent = `${t('calculatedProfitLabel')}: ${money(profitVal)}`;
   };
-  document.getElementById('sellPriceInput').oninput = updateProfitPreview;
-  document.getElementById('costPriceInput').oninput = updateProfitPreview;
-  updateProfitPreview();
+  // franchise branch: the employee types only the system fare; the agency's due = fare + fee. A transfer/card ticket also needs what the customer actually paid.
+  const frBranchId = ()=> (document.getElementById('bookingBranchSel').value || (branchOptions[0]||{}).id || v.branch_id);
+  const frOn = ()=> isEdit && existing.branch_id===frBranchId() && isFranchiseBooking(existing) ? true : isFranchiseBranch(frBranchId());
+  const frFee = ()=> isEdit && isFranchiseBooking(existing) && existing.branch_id===frBranchId() ? Number(existing.franchise_fee) : branchFranchiseFee(frBranchId());
+  const frCashOnly = ()=> !document.getElementById('splitPaymentToggle').checked && (document.getElementById('paymentMethodSel').value||'cash')==='cash';
+  const applyFranchise = ()=>{
+    const ar = lang==='ar', on = frOn(), fee = frFee(), cashOnly = frCashOnly(), lockedPrice = isReplacementTicket(existing);
+    const sellIn = document.getElementById('sellPriceInput'), costVal = Number(document.getElementById('costPriceInput').value)||0;
+    const autoSell = on && cashOnly && !lockedPrice;
+    document.getElementById('sellPriceField').style.display = autoSell ? 'none' : '';
+    sellIn.required = !autoSell;
+    document.getElementById('sellPriceLabel').textContent = on && !cashOnly ? (ar?'المبلغ اللي دفعه العميل (تحويل/شبكة)':'Amount the customer paid (transfer/card)') : t('fieldSellPrice');
+    if(autoSell) sellIn.value = costVal>0 ? (+(costVal+fee).toFixed(2)).toString() : '';
+    if(!on){ updateProfitPreview(); return; }
+    const due = +(costVal+fee).toFixed(2), paid = Number(sellIn.value)||0, own = +(paid-due).toFixed(2);
+    document.getElementById('autoProfitNote').innerHTML = ar
+      ? `🏪 <b>فرع فرانشايز</b> — المطلوب للوكالة = السستم فير ${money(costVal)} + ${money(fee)} رسوم = <b>${money(due)}</b>`
+        + (cashOnly ? `<br>كاش: يودَع ${money(due)} من زر الإيداعات، والباقي من سعر البيع للفرع.` : (paid>0 ? `<br>العميل دفع ${money(paid)} على حساب الوكالة → ${own>=0?`ربح الفرع ${money(own)} يخصمه من الكاش اللي عنده`:`الفرع يكمّل ${money(-own)} من الكاش`}` : ''))
+      : `🏪 Franchise — agency due = fare ${money(costVal)} + fee ${money(fee)} = <b>${money(due)}</b>` + (!cashOnly && paid>0 ? `<br>Franchise part ${money(own)} (taken from its cash)` : '');
+  };
+  document.getElementById('sellPriceInput').oninput = ()=>{ updateProfitPreview(); applyFranchise(); };
+  document.getElementById('costPriceInput').oninput = ()=>{ updateProfitPreview(); applyFranchise(); };
+  document.getElementById('bookingBranchSel').onchange = applyFranchise;
+  { const pm = document.getElementById('paymentMethodSel'), pm0 = pm.onchange; pm.onchange = (e)=>{ if(pm0) pm0(e); applyFranchise(); };
+    const sp = document.getElementById('splitPaymentToggle'), sp0 = sp.onchange; sp.onchange = (e)=>{ if(sp0) sp0(e); applyFranchise(); }; }
+  updateProfitPreview(); applyFranchise();
   document.getElementById('bookingForm').onsubmit = async (e)=>{
     e.preventDefault();
     const btn = document.getElementById('bookingSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
@@ -3269,7 +3359,7 @@ function openBookingModal(existing){
     const isSplit = document.getElementById('splitPaymentToggle').checked;
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
       ticketNo:f.get('ticketNo'), pnr:f.get('pnr'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
-      sell:f.get('sell'), cost:f.get('cost'), isOpenTicket: false,
+      sell:(frOn() && frCashOnly() && !isReplacementTicket(existing)) ? (+(Number(f.get('cost')||0)+frFee()).toFixed(2)) : f.get('sell'), cost:f.get('cost'), isOpenTicket: false,
       paymentMethod:isSplit?'split':f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider'), note:f.get('note') };
     if(isSplit){
       const sellVal = Number(f.get('sell'))||0;
@@ -3436,7 +3526,9 @@ function integrityIssues(){
       issues.push({b, fix:{kind:'profitField', id:b.id}, issue: ar?'الربح المحفوظ لا يساوي البيع − التكلفة':'Stored profit ≠ sell − cost', expected:+((Number(b.sell)||0)-(Number(b.cost)||0)).toFixed(2), actual:+(Number(b.profit_amount)||0).toFixed(2)});
     const cust = bal(rows,'accCustomers','debit'), pend = bookingPendingAmount(b);
     if(Math.abs(cust-pend)>0.05) add(ar?'رصيد العملاء لا يطابق المعلّق':'Receivable ≠ pending', pend, cust);
-    const rev = bal(rows,'accSalesRev','credit'), expRev = bookingIsFullRefund(b) ? 0 : bookingEffectiveSell(b);
+    const rev = bal(rows,'accSalesRev','credit'), expRev = (bookingIsFullRefund(b) && !isFranchiseBooking(b)) ? 0 : bookingEffectiveSell(b);
+    if((isFranchiseBooking(b) || rows.some(j=>j.desc_key==='jFranchiseShare')) && (Math.abs(postedFranchiseShare(b) - franchiseShare(b))>0.05 || rows.filter(j=>j.desc_key==='jFranchiseShare').length>1))
+      add(ar?'قيد حصة الفرانشايز لا يطابق التذكرة':'Franchise share entry ≠ ticket', franchiseShare(b), postedFranchiseShare(b));
     if(Math.abs(rev-expRev)>0.05) add(ar?'الإيراد في القيود لا يطابق التذكرة':'Revenue entries ≠ ticket', expRev, rev);
     const cogs = bal(rows,'accCogs','debit'), expCogs = !b.cost_reviewed ? 0 : bookingEffectiveCost(b);
     if(Math.abs(cogs-expCogs)>0.05) add(ar?'التكلفة في القيود لا تطابق التذكرة':'Cost entries ≠ ticket', expCogs, cogs);
@@ -3635,6 +3727,8 @@ async function repairBooking(bookingId){
       notes.push(ar?'قيود الاسترجاع انبنت من جديد (كانت مكررة أو ناقصة)':'Refund entries rebuilt');
     }
   }
+  // 4c) franchise share line
+  if(await syncFranchiseShare(bookings.find(x=>x.id===b.id) || b)) notes.push(ar?'قيد حصة الفرانشايز انضبط':'Franchise share entry fixed');
   // 5) anything still off needs a human decision
   const left = integrityIssues().filter(x=>x.b && x.b.id===b.id);
   return {notes, left};
@@ -3956,6 +4050,7 @@ function renderReports(){
         <td><span class="tag ${ch.settled?'collected':ch.payment_claimed?'pending':'pending'}">${ch.settled?t('chargeSettledTag'):ch.payment_claimed?`🔔 ${t('claimPendingTag')} (${ch.claimed_method==='cash'?t('payCash'):t('payTransfer')})`:(ch.acknowledged?t('acknowledgedTag'):t('chargeUnseenTag'))}</span></td>
         ${(isAdmin()||isAccountant()) && !ch.settled?`<td><div style="display:flex;flex-direction:column;gap:4px;min-width:90px;"><button class="btn btn-gold btn-sm" onclick="uiSettleCharge('${ch.id}')">${t('settleChargeBtn')}</button><button class="btn btn-danger btn-sm" onclick="uiCancelCharge('${ch.id}')">${t('cancelChargeBtn')}</button></div></td>`:isAdmin()||isAccountant()?'<td></td>':''}</tr>`).join('')}</tbody></table></div>`:''}
     </div>`; })() : ''}
+    ${franchiseReportHTML(scoped)}
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('salesByBranch')}</h3></div>${branchBarsHTML('sales', scoped)}</div>
     ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitByBranch')}</h3></div>${branchBarsHTML('profit', scoped)}</div>`:''}
     <div class="panel">
@@ -4200,14 +4295,23 @@ function openUnifiedRefundModal(prefillId, refundId){
     if(prefillId) return linked;
     const k = normTkt(document.getElementById('urTicket').value);
     if(!k) return null;
-    const pool = scope.filter(b=>!b.refunded && b.refund_status!=='pending' && !(refundsReady && openRefundFor(b.id)) && !isReplacementTicket(b));
+    const pool = scope.filter(b=>!b.refunded && b.refund_status!=='pending' && !(refundsReady && openRefundFor(b.id)));
     const exact = pool.filter(b=>normTkt(b.ticket_no)===k);
     const hits = exact.length ? exact : (k.length>=6 ? pool.filter(b=>normTkt(b.ticket_no).includes(k)) : []);
     return hits.length===1 ? hits[0] : null;
   };
+  const blockedTicket = ()=>{
+    if(prefillId) return null;
+    const k = normTkt(document.getElementById('urTicket').value); if(!k) return null;
+    return bookings.find(b=>normTkt(b.ticket_no)===k && (b.refunded || b.refund_status==='pending' || (refundsReady && openRefundFor(b.id)))) || null;
+  };
   const draw = ()=>{
     linked = findTicket();
     const box = document.getElementById('urFound');
+    const blk = !linked ? blockedTicket() : null;
+    if(blk){ document.getElementById('urSupplierBox').style.display = 'none';
+      box.innerHTML = `<span style="color:var(--red);font-weight:700">⛔ ${ar?`التذكرة #${blk.booking_no} ${blk.refunded?'مسترجعة مسبقًا':'عليها طلب استرجاع مفتوح'} — ما يصير تسوي لها استرجاع ثاني. لو فيه خطأ، المحاسب يعدّل الاسترجاع الأول.`:'Already refunded / open refund.'}</span>`;
+      document.getElementById('urProfit').innerHTML=''; return; }
     document.getElementById('urSupplierBox').style.display = linked ? 'none' : '';
     if(linked){
       if(!prefillId) document.getElementById('urCustomer').value = linked.customer||'';
@@ -4245,6 +4349,7 @@ function openUnifiedRefundModal(prefillId, refundId){
     const cust = +(parseAmount(f.get('refundAmount'))||0).toFixed(2);
     const supRaw = f.get('supplierRefund'); const sup = (supRaw===''||supRaw===null||supRaw===undefined) ? null : +(parseAmount(supRaw)||0).toFixed(2);
     linked = findTicket();
+    { const blk = !linked ? blockedTicket() : null; if(blk) return err(ar?`التذكرة #${blk.booking_no} ${blk.refunded?'مسترجعة مسبقًا':'عليها طلب استرجاع مفتوح'}.`:'Already refunded.'); }
     if(!(cust>0)) return err(t('invalidRefundAmount'));
     if(linked && !isRefundOnly(linked) && cust>(Number(linked.sell)||0)+0.01) return err(ar?`المسترد للعميل أكبر من سعر البيع (${money(linked.sell)}).`:'More than the sale price.');
     if(linked && !isRefundOnly(linked) && sup!=null && sup>(Number(linked.cost)||0)+0.01) return err(ar?`المسترد من الطيران أكبر من التكلفة (${money(linked.cost)}).`:'More than the cost.');
@@ -4922,12 +5027,62 @@ window.uiRejectProfitHandover = async function(id){
   const note = prompt(t('rejectReason'))||'';
   try{ await rejectProfitHandover(id, note); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
+/* admin: mark a branch as a franchise — new tickets there owe the agency only system fare + fee */
+window.uiBranchFranchise = function(id){
+  const b = branches.find(x=>x.id===id); if(!b) return; const ar = lang==='ar';
+  showModal(`
+    <div class="modal-head"><h3>🏪 ${ar?'فرانشايز':'Franchise'} — ${esc(b.name)}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="brFrForm">
+      <div class="field" style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="brFrOn" ${b.is_franchise?'checked':''} style="width:auto;"><label for="brFrOn" style="margin:0;">${ar?'هذا الفرع فرانشايز':'This branch is a franchise'}</label></div>
+      <div class="field"><label>${ar?'رسوم الوكالة على كل تذكرة (شاملة الضريبة)':'Agency fee per ticket (VAT incl.)'}</label><input type="number" step="0.01" min="0.01" id="brFrFee" value="${branchFranchiseFee(b.id)}"></div>
+      <p class="note">${ar?'الموظف يكتب السستم فير فقط، والنظام يحسب المطلوب = السستم فير + الرسوم. الرسوم تشمل ضريبة 15% (12 = 10.43 + 1.57 ضريبة). التذاكر القديمة تبقى على حالها؛ التغيير يطبَّق على التذاكر الجديدة.':'Employees type only the system fare; due = fare + fee (VAT incl.). Applies to new tickets only.'}</p>
+      <div id="brFrErr"></div>
+      <div style="margin-top:14px;display:flex;gap:10px;"><button type="submit" class="btn btn-primary" id="brFrSave">${t('saveChanges')}</button><button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>
+    </form>`);
+  document.getElementById('brFrForm').onsubmit = async (e)=>{
+    e.preventDefault(); const bt = document.getElementById('brFrSave'); bt.disabled = true;
+    const fee = Number(document.getElementById('brFrFee').value);
+    if(!(fee>0)){ document.getElementById('brFrErr').innerHTML = `<div class="login-error">${ar?'اكتب مبلغ الرسوم':'Enter the fee'}</div>`; bt.disabled=false; return; }
+    const upd = {is_franchise: !!document.getElementById('brFrOn').checked, franchise_fee: +fee.toFixed(2)};
+    try{ const {error} = await sb.from('branches').update(upd).eq('id', id); if(error) throw error; Object.assign(b, upd); closeModal(); render(); }
+    catch(err){ console.error(err); document.getElementById('brFrErr').innerHTML = `<div class="login-error">${/column|is_franchise|franchise_fee/i.test(String(err&&err.message||''))?(ar?'لازم تشغّل كود SQL الفرانشايز في Supabase أول.':'Run the franchise SQL first.'):errText()}</div>`; bt.disabled=false; }
+  };
+};
+/* franchise report: per franchise branch — tickets, system fare, agency fees (with VAT part), what came to the bank, and the cash it still holds for the agency */
+function franchiseReportRows(scoped){
+  return branches.filter(br=>br.is_franchise || scoped.some(b=>b.branch_id===br.id && isFranchiseBooking(b))).map(br=>{
+    const list = scoped.filter(b=>b.branch_id===br.id && isFranchiseBooking(b));
+    const sold = list.filter(b=>!isRefundOnly(b));
+    const fees = +sold.reduce((a,b)=>a+franchiseFeeOf(b),0).toFixed(2);
+    const fare = +sold.reduce((a,b)=>a+(Number(b.cost)||0),0).toFixed(2);
+    const refunded = list.filter(b=>b.refunded);
+    const airBack = +refunded.reduce((a,b)=>a+bookingSupplierRefund(b),0).toFixed(2);
+    const due = +list.reduce((a,b)=>a+bookingEffectiveSell(b),0).toFixed(2);           // fare (net of airline refunds) + fees
+    const bank = +list.reduce((a,b)=>a+transferParts(b).filter(p=>p.status!=='pending').reduce((s,p)=>s+(Number(p.counted)||0),0),0).toFixed(2);
+    const pendingBank = +list.reduce((a,b)=>a+transferParts(b).filter(p=>p.status==='pending').reduce((s,p)=>s+(Number(p.counted)||0),0),0).toFixed(2);
+    const own = +list.reduce((a,b)=>a+franchiseShare(b),0).toFixed(2);
+    const cashNow = branchCashOnHand(br.id);
+    const pendingDeps = +deposits.filter(d=>d.branch_id===br.id && d.status==='pending').reduce((a,d)=>a+Number(d.amount||0),0).toFixed(2);
+    return {br, count:sold.length, refunds:refunded.length, fare, fees, vat:+(fees*15/115).toFixed(2), airBack, due, bank, pendingBank, own, cashNow, pendingDeps};
+  });
+}
+function franchiseReportHTML(scoped){
+  if(!(isAdmin()||isAccountant())) return '';
+  const rows = franchiseReportRows(scoped); if(!rows.length) return '';
+  const ar = lang==='ar';
+  return `<div class="panel"><div class="panel-head"><h3 class="panel-title">🏪 ${ar?'تقرير الفرانشايز':'Franchise report'}</h3><button class="btn btn-ghost btn-sm" id="frExcelBtn">⬇ Excel</button></div>
+    <p class="note">${ar?'حق الوكالة من كل تذكرة = السستم فير + الرسوم فقط. الكاش المطلوب = اللي لازم الفرع يودعه الآن (بعد خصم ربحه من التحويلات). الفترة حسب الفلتر فوق، والكاش المطلوب رصيد حالي.':'Agency due per ticket = system fare + fee. Cash owed = what the branch must deposit now.'}</p>
+    <div style="overflow-x:auto;"><table><thead><tr><th>${ar?'الفرع':'Branch'}</th><th>${ar?'تذاكر':'Tickets'}</th><th>${ar?'السستم فير':'System fare'}</th><th>${ar?'رسوم الوكالة':'Fees'}</th><th>${ar?'منها ضريبة 15%':'VAT 15%'}</th><th>${ar?'استرجاعات':'Refunds'}</th><th>${ar?'المستحق للوكالة':'Agency due'}</th><th>${ar?'وصل البنك (تحويل/شبكة)':'Received in bank'}</th><th>${ar?'تحويلات بانتظار التأكيد':'Pending transfers'}</th><th>${ar?'ربح الفرع':'Franchise part'}</th><th>${ar?'كاش مطلوب إيداعه الآن':'Cash to deposit now'}</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td>${esc(r.br.name)}</td><td class="num">${r.count}</td><td class="num">${money(r.fare)}</td><td class="num"><b>${money(r.fees)}</b></td><td class="num">${money(r.vat)}</td>
+      <td class="num">${r.refunds}${r.airBack>0?` <span class="note">(${ar?'رجع من الطيران':'airline back'} ${money(r.airBack)})</span>`:''}</td><td class="num">${money(r.due)}</td><td class="num">${money(r.bank)}</td><td class="num">${money(r.pendingBank)}</td><td class="num">${money(r.own)}</td>
+      <td class="num" style="font-weight:700;color:${r.cashNow>0.004?'var(--red)':'var(--green)'};">${money(r.cashNow)}${r.pendingDeps>0?`<div class="note">${ar?'إيداع بانتظار الاعتماد':'pending deposit'} ${money(r.pendingDeps)}</div>`:''}</td></tr>`).join('')}</tbody></table></div></div>`;
+}
 function renderSettings(){
   document.getElementById('pageSub').textContent = t('subSettings');
   document.getElementById('content').innerHTML = `
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('branchesTitle')}</h3><button class="btn btn-primary btn-sm" id="addBranchBtn">${t('addBranch')}</button></div>
       <table><thead><tr><th>${t('colBranchOnly')}</th><th></th></tr></thead>
-        <tbody>${branches.map(b=>`<tr><td>${esc(b.name)}${b.shift_start?` <span class="tag">🕘 ${String(b.shift_start).slice(0,5)}</span>`:''}</td><td style="display:flex;gap:6px;"><button class="btn btn-ghost btn-sm" onclick="uiBranchAttendance('${b.id}')">🕘 ${lang==='ar'?'وقت الدوام':'Shift time'}</button><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
+        <tbody>${branches.map(b=>`<tr><td>${esc(b.name)}${b.shift_start?` <span class="tag">🕘 ${String(b.shift_start).slice(0,5)}</span>`:''}${b.is_franchise?` <span class="tag" style="background:#FFF4E0;color:#A8722C;">🏪 ${lang==='ar'?'فرانشايز':'Franchise'} ${money(branchFranchiseFee(b.id))}</span>`:''}</td><td style="display:flex;gap:6px;"><button class="btn btn-ghost btn-sm" onclick="uiBranchAttendance('${b.id}')">🕘 ${lang==='ar'?'وقت الدوام':'Shift time'}</button><button class="btn btn-ghost btn-sm" onclick="uiBranchFranchise('${b.id}')">🏪 ${lang==='ar'?'فرانشايز':'Franchise'}</button><button class="btn btn-danger btn-sm" onclick="uiRemoveBranch('${b.id}')">${t('delete')}</button></td></tr>`).join('')}</tbody></table>
       <div class="note">${t('branchDeleteNote')}</div>
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('backupTitle')}</h3></div>
@@ -5287,10 +5442,11 @@ function refundProfitOf(r){
   if(r.method==='exchange' && r.new_ticket) p += (Number(r.new_ticket.sell)||0) - (Number(r.new_ticket.cost)||0);
   return +p.toFixed(2);
 }
-function legacyRefundsToMove(){ return bookings.filter(b=>b.refund_status && !isReplacementTicket(b) && !refundRows.some(r=>r.booking_id===b.id)); }
+function legacyRefundsToMove(){ return bookings.filter(b=>b.refund_status && !refundRows.some(r=>r.booking_id===b.id)); }
 function employeeRefundsPanel(u){
   const ar = lang==='ar';
-  const mine = refundRows.filter(r=>r.employee_id===u.id && (r.status==='pending' || r.status==='rejected'));
+  const mine = refundRows.filter(r=>r.employee_id===u.id && (r.status==='pending' || (r.status==='rejected'
+    && !(r.booking_id && refundRows.some(x=>x.id!==r.id && x.booking_id===r.booking_id && (x.status==='pending'||x.status==='approved'))))));
   if(!mine.length) return '';
   return `<div class="panel" style="border:2px solid ${mine.some(r=>r.status==='rejected')?'var(--red)':'var(--gold)'};">
     <div class="panel-head"><h3 class="panel-title">↩️ ${ar?'طلبات الاسترجاع حقتي':'My refund requests'}</h3></div>
