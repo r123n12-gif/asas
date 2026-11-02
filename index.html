@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G16</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G17</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1673,7 +1673,7 @@ async function addBooking(data){
   const isSplit = method==='split' && Array.isArray(data.paymentSplits) && data.paymentSplits.length>1;
   const allCash = isSplit && data.paymentSplits.every(s=>s.method==='cash');
   const row = {
-    date: data.date||todayStr(), customer: data.customer, branch_id: data.branchId,
+    date: (currentUser()?.role==='employee') ? todayStr() : (data.date||todayStr()), customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
     ...(('pnr' in data && data.pnr!==null && data.pnr!==undefined) ? {pnr: String(data.pnr).trim().toUpperCase()||null} : {}),
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
@@ -1744,7 +1744,7 @@ async function updateBooking(id, data){
       ? 'لا يمكن تعديل مبلغ البيع أو طريقة الدفع لتذكرة تحويلها مؤكَّد في البنك — المبلغ المستلم ثابت. يمكن تعديل باقي البيانات (الاسم، التكلفة، المورد...).'
       : 'Cannot change the sale amount or payment method of a ticket whose transfer is confirmed. Other fields can be edited.');
   const row = {
-    date: data.date, customer: data.customer, branch_id: data.branchId,
+    date: (currentUser()?.role==='employee' && prevB) ? prevB.date : data.date, customer: data.customer, branch_id: data.branchId,
     airline: data.airline, ticket_no: data.ticketNo||null, invoice_no: data.invoiceNo||null, flight_route: data.flightRoute||null,
     ...(('pnr' in data && data.pnr!==null && data.pnr!==undefined) ? {pnr: String(data.pnr).trim().toUpperCase()||null} : {}),
     is_open_ticket: !!data.isOpenTicket, supplier: data.source,
@@ -3395,7 +3395,9 @@ function openBookingModal(existing){
         <div class="field"><label>${t('fieldFlightRoute')}</label><input name="flightRoute" placeholder="${t('flightRoutePlaceholder')}" value="${v.flight_route||''}"></div>
         <div class="field"><label>${t('fieldSupplier')}</label><select name="source">${SOURCE_PRESETS.map(s=>`<option ${v.supplier===s?'selected':''}>${s}</option>`).join('')}</select></div>
       </div>
-      <div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${v.date||todayStr()}"></div>
+      ${(u.role==='employee')
+        ? `<div class="field"><label>${t('fieldDate')} 🔒</label><input type="date" value="${v.date||todayStr()}" disabled style="opacity:.75;"><input type="hidden" name="date" value="${v.date||todayStr()}"><div class="note" style="margin:2px 0 0;">${lang==='ar'?'التاريخ يتسجل تلقائي وما يتعدّل — لو تبي تغييره كلّم المحاسب.':'Date is set automatically and cannot be changed by employees.'}</div></div>`
+        : `<div class="field"><label>${t('fieldDate')}</label><input type="date" name="date" value="${v.date||todayStr()}"></div>`}
       <div class="grid-2">
         <div class="field" id="sellPriceField"><label id="sellPriceLabel">${t('fieldSellPrice')}</label><input type="number" step="0.01" name="sell" min="0.01" id="sellPriceInput" required value="${v.sell??''}"></div>
         <div class="field"><label>${t('fieldSystemFare')}</label><input type="number" step="0.01" name="cost" min="0" id="costPriceInput" required value="${v.cost??''}"></div>
