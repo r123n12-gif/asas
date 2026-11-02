@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G17</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G18</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -2814,7 +2814,7 @@ function employeeCashStatement(employeeId, from, to){
       const rv = refundRows.find(r=>r.booking_id===b.id && r.status==='approved');
       if(Math.abs(cashIn0)>0.004){
         const sell0 = Number(b.sell)||0;
-        let n0 = ar ? `كاش مستلم ${money(cashIn0)} (تكلفة ${money(b.cost)} + ربح ${money(sell0-Number(b.cost||0))})` : `Cash received ${money(cashIn0)}`;
+        let n0 = ar ? `كاش مستلم ${money(cashIn0)}${isAdmin()?` (تكلفة ${money(b.cost)} + ربح ${money(sell0-Number(b.cost||0))})`:''}` : `Cash received ${money(cashIn0)}`;
         { const m = String(b.note||'').match(/(?:بديلة عن|Replacement for) #(\d+)/); if(m) n0 += ar ? ` — 🔁 تذكرة بديلة عن #${m[1]} (ثمنها من قيمة الاسترجاع)` : ` — replacement for #${m[1]}`; }
         all.push({date:b.date||'', stamp:b.created_at||'', type: ar?'تذكرة':'Ticket', desc:`#${b.booking_no} ${b.customer||''}`, note:n0, amt:cashIn0});
       }
@@ -2831,6 +2831,7 @@ function employeeCashStatement(employeeId, from, to){
     const sell = Number(b.sell)||0;
     const cashIn = b.payment_method==='cash' ? sell : (Array.isArray(b.payment_splits) ? b.payment_splits.filter(x=>x.method==='cash').reduce((a,x)=>a+Number(x.amount||0),0) : 0);
     let note = isRefundOnly(b) ? (ar ? 'تذكرة مو مباعة بالنظام (استرجاع فقط)' : 'Refund-only ticket')
+      : !isAdmin() ? (ar ? `كاش مستلم ${money(cashIn)}` : `Cash received ${money(cashIn)}`)
       : ar ? `كاش مستلم ${money(cashIn)} (تكلفة ${money(b.cost)} + ربح ${money(sell-Number(b.cost||0))})` : `Cash received ${money(cashIn)} (cost ${money(b.cost)} + profit ${money(sell-Number(b.cost||0))})`;
     { const m = String(b.note||'').match(/(?:بديلة عن|Replacement for) #(\d+)/); if(m) note += ar ? ` — 🔁 تذكرة بديلة: ثمنها مدفوع من قيمة استرجاع #${m[1]} (ما استلم كاش جديد)` : ` — replacement, paid by refund #${m[1]}`; }
     if(b.refunded && b.exchange_data && b.exchange_data.new_id){
@@ -2992,28 +2993,28 @@ function employeeFullStatement(employeeId, from, to){
   return {rows, opening:+opening.toFixed(2), closing:+Number(closing).toFixed(2), T, split};
 }
 function employeeFullStatementHTML(employeeId, from, to){
-  const ar = lang==='ar', st = employeeFullStatement(employeeId, from, to), T = st.T;
+  const ar = lang==='ar', st = employeeFullStatement(employeeId, from, to), T = st.T, P = isAdmin();   // profit is shown to the admin only
   const kp = (l,v,c,sub)=>`<div style="border:1px solid #ddd;border-radius:8px;padding:8px;min-width:130px;flex:1;"><div style="font-size:11px;opacity:.75;">${l}</div><div class="num" style="font-weight:800;font-size:15px;color:${c||'inherit'};">${typeof v==='number'?money(v):v}</div>${sub?`<div style="font-size:10.5px;opacity:.8;">${sub}</div>`:''}</div>`;
   const sec = t=>`<div style="font-weight:800;margin:10px 0 4px;">${t}</div>`;
   const m = v=> v==null||v===''?'':money(v);
-  return `${sec(ar?'🎫 التذاكر والربح':'🎫 Tickets & profit')}<div style="display:flex;flex-wrap:wrap;gap:6px;">
+  return `${sec(P?(ar?'🎫 التذاكر والربح':'🎫 Tickets & profit'):(ar?'🎫 التذاكر':'🎫 Tickets'))}<div style="display:flex;flex-wrap:wrap;gap:6px;">
       ${kp(ar?'عدد التذاكر':'Tickets', String(T.tickets))}${kp(ar?'المبيعات':'Sales', T.sell)}${kp(ar?'السستم فير':'System fare', T.cost)}
-      ${kp(ar?'الربح':'Profit', T.profit, '#1f7a4d')}${T.refunds?kp(ar?`ربح/خسارة الاسترجاع (${T.refunds})`:'Refund result', T.refundProfit, T.refundProfit<0?'#b42318':'#1f7a4d'):''}</div>
+      ${P?kp(ar?'الربح':'Profit', T.profit, '#1f7a4d'):''}${P&&T.refunds?kp(ar?`ربح/خسارة الاسترجاع (${T.refunds})`:'Refund result', T.refundProfit, T.refundProfit<0?'#b42318':'#1f7a4d'):''}</div>
     ${sec(ar?'💳 طريقة الدفع':'💳 Payment')}<div style="display:flex;flex-wrap:wrap;gap:6px;">
       ${kp(ar?'كاش':'Cash', T.cashTickets)}${kp(ar?'تحويل':'Transfer', T.by_transfer)}${kp(ar?'شبكة (سبان)':'Card (span)', T.by_span)}${kp(ar?'تمارا/تابي':'Installment', T.by_installment)}
       ${kp(ar?'التحويل/الشبكة مؤكد':'Confirmed', T.transferOk, '#1f7a4d')}${kp(ar?'بانتظار التأكيد':'Pending', T.transferPending, T.transferPending>0.004?'#A8722C':null)}</div>
     ${sec(ar?'💵 الكاش':'💵 Cash')}<div style="display:flex;flex-wrap:wrap;gap:6px;">
       ${kp(ar?'رصيد أول الفترة':'Opening', st.opening)}${kp(ar?'+ كاش مستلم':'+ Cash in', T.cashIn)}${kp(ar?'− استرجاع كاش للعملاء':'− Cash refunds', T.cashRefunds)}
-      ${kp(ar?'− إيداعات معتمدة':'− Deposits', T.deposits)}${kp(ar?'− أرباح سُلّمت':'− Profit handed', T.handed)}
+      ${kp(ar?'− إيداعات معتمدة':'− Deposits', T.deposits)}${kp(P?(ar?'− أرباح سُلّمت':'− Profit handed'):(ar?'− سُلّم للإدارة':'− Handed to management'), T.handed)}
       ${kp(ar?'= الكاش بعهدته آخر الفترة':'= Cash in hand at end', st.closing, st.closing>0.004?'#b42318':'#1f7a4d')}</div>
-    ${!to || to>=todayStr() ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">${kp(ar?'الآن: أرباح يسلّمها':'Now: profit to hand', st.split.profitDue, '#A8722C', st.split.profitAll>0.004?(ar?`كاش ${money(st.split.cashTicketProfit)} + تحويل/شبكة ${money(+(st.split.profitAll-st.split.cashTicketProfit).toFixed(2))}`:''):'')}${kp(ar?'الآن: سستم فير يودعه':'Now: fare to deposit', st.split.depositDue)}</div>`:''}
+    ${P && (!to || to>=todayStr()) ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">${kp(ar?'الآن: أرباح يسلّمها':'Now: profit to hand', st.split.profitDue, '#A8722C', st.split.profitAll>0.004?(ar?`كاش ${money(st.split.cashTicketProfit)} + تحويل/شبكة ${money(+(st.split.profitAll-st.split.cashTicketProfit).toFixed(2))}`:''):'')}${kp(ar?'الآن: سستم فير يودعه':'Now: fare to deposit', st.split.depositDue)}</div>`:''}
     ${sec(ar?'📋 الحركات بالتفصيل':'📋 Movements')}
-    <div style="overflow-x:auto;"><table><thead><tr><th>${ar?'التاريخ':'Date'}</th><th>${ar?'النوع':'Type'}</th><th>${ar?'رقم':'No.'}</th><th>${ar?'العميل / البيان':'Customer'}</th><th>${ar?'الدفع':'Payment'}</th><th>${ar?'سعر البيع':'Sell'}</th><th>${ar?'السستم فير':'Fare'}</th><th>${ar?'الربح':'Profit'}</th><th>${ar?'كاش':'Cash'}</th><th>${ar?'تحويل/شبكة':'Transfer/card'}</th><th>${ar?'رصيد الكاش':'Cash balance'}</th></tr></thead>
-    <tbody>${from?`<tr><td colspan="10" style="font-weight:700;">${ar?'رصيد سابق':'Opening balance'}</td><td class="num" style="font-weight:700;">${money(st.opening)}</td></tr>`:''}
-    ${st.rows.map(r=>`<tr><td>${r.date}</td><td>${r.type}</td><td class="num">${r.b?'#'+r.b.booking_no:''}</td><td>${r.b?esc(r.b.customer||''):esc(r.note||'')}${r.b&&r.b.pnr?` <span style="opacity:.6;font-size:11px;">${esc(r.b.pnr)}</span>`:''}</td>
-      <td>${r.method||''}</td><td class="num">${m(r.sell)}</td><td class="num">${m(r.cost)}</td><td class="num" style="color:${(r.profit||0)<0?'#b42318':'#1f7a4d'}">${m(r.profit)}</td>
+    <div style="overflow-x:auto;"><table><thead><tr><th>${ar?'التاريخ':'Date'}</th><th>${ar?'النوع':'Type'}</th><th>${ar?'رقم':'No.'}</th><th>${ar?'العميل / البيان':'Customer'}</th><th>${ar?'الدفع':'Payment'}</th><th>${ar?'سعر البيع':'Sell'}</th><th>${ar?'السستم فير':'Fare'}</th>${P?`<th>${ar?'الربح':'Profit'}</th>`:''}<th>${ar?'كاش':'Cash'}</th><th>${ar?'تحويل/شبكة':'Transfer/card'}</th><th>${ar?'رصيد الكاش':'Cash balance'}</th></tr></thead>
+    <tbody>${from?`<tr><td colspan="${P?10:9}" style="font-weight:700;">${ar?'رصيد سابق':'Opening balance'}</td><td class="num" style="font-weight:700;">${money(st.opening)}</td></tr>`:''}
+    ${st.rows.map(r=>`<tr><td>${r.date}</td><td>${!P&&r.kind==='h'?(ar?'تسليم للإدارة':'Handed'):r.type}</td><td class="num">${r.b?'#'+r.b.booking_no:''}</td><td>${r.b?esc(r.b.customer||''):esc(r.note||'')}${r.b&&r.b.pnr?` <span style="opacity:.6;font-size:11px;">${esc(r.b.pnr)}</span>`:''}</td>
+      <td>${r.method||''}</td><td class="num">${m(r.sell)}</td><td class="num">${m(r.cost)}</td>${P?`<td class="num" style="color:${(r.profit||0)<0?'#b42318':'#1f7a4d'}">${m(r.profit)}</td>`:''}
       <td class="num">${r.cash?money(r.cash):''}</td><td class="num">${r.bank?money(r.bank)+(r.bankOk===true?' ✔':r.bankOk===false?' ⏳':''):''}</td><td class="num" style="font-weight:700;">${money(r.bal)}</td></tr>`).join('')}
-    ${st.rows.length?'':`<tr><td colspan="11" style="text-align:center;opacity:.7;">${ar?'لا توجد حركات في هذي الفترة':'No activity'}</td></tr>`}
+    ${st.rows.length?'':`<tr><td colspan="${P?11:10}" style="text-align:center;opacity:.7;">${ar?'لا توجد حركات في هذي الفترة':'No activity'}</td></tr>`}
     </tbody></table></div>
     <p class="note" style="margin-top:6px;">${ar?'رصيد الكاش يتحرك بالكاش فقط (التحويل والشبكة تروح للبنك). ✔ مؤكد في البنك · ⏳ بانتظار تأكيد المحاسب. الاسترجاع بتاريخ اعتماده.':'Cash balance moves with cash only.'}</p>`;
 }
@@ -3055,7 +3056,7 @@ function openFullStatementModal(employeeId){
   document.getElementById('fsExcel').onclick = ()=>{
     const st = employeeFullStatement(employeeId, fromEl.value||null, toEl.value||null);
     const data = st.rows.map(r=>({[ar?'التاريخ':'Date']:r.date, [ar?'النوع':'Type']:r.type, [ar?'رقم':'No.']:r.b?r.b.booking_no:'', [ar?'العميل / البيان':'Customer']:r.b?(r.b.customer||''):(r.note||''), PNR:r.b?(r.b.pnr||''):'',
-      [ar?'الدفع':'Payment']:r.method||'', [ar?'سعر البيع':'Sell']:r.sell??'', [ar?'السستم فير':'Fare']:r.cost??'', [ar?'الربح':'Profit']:r.profit??'', [ar?'كاش':'Cash']:r.cash||'', [ar?'تحويل/شبكة':'Transfer/card']:r.bank||'',
+      [ar?'الدفع':'Payment']:r.method||'', [ar?'سعر البيع':'Sell']:r.sell??'', [ar?'السستم فير':'Fare']:r.cost??'', ...(isAdmin()?{[ar?'الربح':'Profit']:r.profit??''}:{}), [ar?'كاش':'Cash']:r.cash||'', [ar?'تحويل/شبكة':'Transfer/card']:r.bank||'',
       [ar?'حالة التحويل':'Status']:r.bankOk===true?(ar?'مؤكد':'confirmed'):r.bankOk===false?(ar?'بانتظار':'pending'):'', [ar?'رصيد الكاش':'Cash balance']:r.bal}));
     data.unshift({[ar?'التاريخ':'Date']:fromEl.value||'', [ar?'النوع':'Type']:ar?'رصيد سابق':'Opening', [ar?'رصيد الكاش':'Cash balance']:st.opening});
     const ws = XLSX.utils.json_to_sheet(data); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Statement');
