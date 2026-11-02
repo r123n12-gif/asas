@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G11</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G12</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -5162,7 +5162,8 @@ function franchiseReportHTML(scoped){
       <div style="font-size:12px;opacity:.75;">${label}</div><div class="num" style="font-size:18px;font-weight:800;color:${color||'inherit'};">${money(val)}</div>${sub?`<div class="note" style="margin:2px 0 0;">${sub}</div>`:''}</div>`;
   return `<div class="panel"><div class="panel-head"><h3 class="panel-title">🏪 ${ar?'تقرير الفرانشايز':'Franchise report'}</h3><button class="btn btn-ghost btn-sm" onclick="uiFranchiseExcel()">⬇ Excel</button></div>
     ${rows.map(r=>`<div style="border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px;">
-      <div style="font-weight:800;margin-bottom:8px;">${esc(r.br.name)} <span class="tag" style="background:#FFF4E0;color:#A8722C;">${ar?'رسوم':'fee'} ${money(branchFranchiseFee(r.br.id))}</span></div>
+      <div style="font-weight:800;margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">${esc(r.br.name)} <span class="tag" style="background:#FFF4E0;color:#A8722C;">${ar?'رسوم':'fee'} ${money(branchFranchiseFee(r.br.id))}</span>
+        <button class="btn btn-primary btn-sm" style="margin-inline-start:auto;" onclick="uiFranchiseStatement('${r.br.id}')">🖨️ ${ar?'كشف حساب / طباعة من تاريخ إلى تاريخ':'Statement / print'}</button></div>
       <div style="font-size:13px;font-weight:700;margin:4px 0;">💰 ${ar?'الرصيد الحالي':'Current balance'}</div>
       <div style="display:flex;flex-wrap:wrap;gap:8px;">
         ${card(ar?'💵 كاش استلمه الفرع':'💵 Cash collected', r.cash, null, r.cashOut>0?(ar?`بعد ${money(r.cashOut)} استرجاع كاش للعملاء`:`after ${money(r.cashOut)} cash refunds`):'')}
@@ -5182,6 +5183,111 @@ function franchiseReportHTML(scoped){
       </div></div>`).join('')}
     <p class="note">${ar?'الباقي على الفرع = الكاش − ربح الفرع − المودَع. التحويلات والشبكة تروح لبنك الوكالة مباشرة فما تدخل في الكاش.':'Owed = cash − franchise profit − deposits.'}</p></div>`;
 }
+/* franchise branch statement for a period: every ticket / refund / deposit with its effect on what the branch owes */
+function franchiseStatement(branchId, from, to){
+  const ar = lang==='ar';
+  const pm = m=> m==='cash'?(ar?'كاش':'Cash') : m==='transfer'?(ar?'تحويل':'Transfer') : m==='span'?(ar?'شبكة':'Card') : m==='installment'?(ar?'تمارا/تابي':'Installment') : m==='split'?(ar?'مقسوم':'Split') : (m||'—');
+  const all = [];
+  bookings.filter(b=>b.branch_id===branchId).forEach(b=>{
+    const cashRef = (b.refunded && (b.refund_method||'cash')==='cash') ? bookingRefundAmount(b) : 0;
+    const net = bookingCashNet(b), tAmt = +(net + cashRef).toFixed(2);
+    const verified = b.payment_method==='cash' || b.transfer_verified;
+    all.push({date:b.date||'', stamp:b.created_at||'', kind:'t', b, type: isRefundOnly(b)?(ar?'استرجاع (تذكرة خارج النظام)':'Refund-only'):(ar?'حجز':'Booking'),
+      method: pm(b.payment_method) + (b.payment_method!=='cash' ? (verified?' ✔':(ar?' ⏳':' ⏳')) : ''),
+      pax: isRefundOnly(b)?'':bookingPax(b), fare: isRefundOnly(b)?null:(Number(b.cost)||0), fee: franchiseFeeOf(b), paid: isRefundOnly(b)?null:(Number(b.sell)||0),
+      due: isFranchiseBooking(b) ? +(bookingEffectiveSell(b)).toFixed(2) : null, own: isFranchiseBooking(b) ? franchiseShare(b) : null, amt: tAmt});
+    if(Math.abs(cashRef)>0.004 || b.refunded){
+      const rv = refundsReady ? refundRows.find(r=>r.booking_id===b.id && r.status==='approved') : null;
+      const d = String((rv&&rv.reviewed_at)||b.refund_reviewed_at||b.date||'').slice(0,10);
+      all.push({date:d, stamp:(rv&&rv.reviewed_at)||b.refund_reviewed_at||'', kind:'r', b, type: (ar?'استرجاع':'Refund') + (b.exchange_data&&b.exchange_data.new_id?(ar?' (تغيير)':' (exchange)'):''),
+        method: (b.refund_method||'cash')==='cash'?(ar?'من كاش الفرع':'branch cash'):(ar?'من بنك الوكالة':'agency bank'),
+        note: (ar?'رجع من الطيران ':'airline ')+money(bookingSupplierRefund(b)), amt: -cashRef});
+    }
+  });
+  miscReceipts.filter(r=>r.branch_id===branchId && r.status==='confirmed' && r.method==='cash').forEach(r=>all.push({date:(r.created_at||'').slice(0,10), stamp:r.created_at||'', kind:'m', type: ar?'مبلغ بدون تذكرة':'Misc', note:r.note||'', amt:+(Number(r.amount)||0)}));
+  deposits.filter(d=>d.branch_id===branchId && d.status==='approved').forEach(d=>all.push({date:(d.created_at||'').slice(0,10), stamp:d.created_at||'', kind:'d', type: ar?'إيداع معتمد':'Deposit', note:destLabel(d.destination)+(d.note?` — ${d.note}`:''), amt:-(Number(d.amount)||0)}));
+  profitHandovers.filter(h=>h.branch_id===branchId && h.status==='approved').forEach(h=>all.push({date:(h.created_at||'').slice(0,10), stamp:h.created_at||'', kind:'h', type: ar?'تسليم أرباح':'Handover', amt:-(Number(h.total_profit)||0)}));
+  all.sort((a,b)=>a.date.localeCompare(b.date) || String(a.stamp).localeCompare(String(b.stamp)));
+  let bal = 0, opening = 0; const rows = [];
+  all.forEach(r=>{ bal = +(bal + r.amt).toFixed(2); if(from && r.date < from){ opening = bal; return; } if(to && r.date > to) return; r.bal = bal; rows.push(r); });
+  const sold = rows.filter(r=>r.kind==='t' && r.b && isFranchiseBooking(r.b) && !isRefundOnly(r.b));
+  const sum = (list, f)=> +list.reduce((a,r)=>a+(Number(f(r))||0),0).toFixed(2);
+  const tot = { count: sold.length, pax: sum(sold, r=>r.pax), fare: sum(sold, r=>r.fare), fees: sum(sold, r=>r.fee), due: sum(rows.filter(r=>r.kind==='t'), r=>r.due),
+    own: sum(rows.filter(r=>r.kind==='t'), r=>r.own), paidBank: sum(rows.filter(r=>r.kind==='t' && r.b && r.b.payment_method!=='cash'), r=>r.paid),
+    cashIn: sum(rows.filter(r=>r.amt>0), r=>r.amt), out: sum(rows.filter(r=>r.amt<0 && r.kind!=='d'), r=>-r.amt), deps: sum(rows.filter(r=>r.kind==='d'), r=>-r.amt),
+    refunds: rows.filter(r=>r.kind==='r').length };
+  tot.vat = +(tot.fees*15/115).toFixed(2);
+  const closing = rows.length ? rows[rows.length-1].bal : opening;
+  return {rows, opening:+opening.toFixed(2), closing:+Number(closing).toFixed(2), tot};
+}
+function franchiseStatementHTML(branchId, from, to){
+  const ar = lang==='ar', st = franchiseStatement(branchId, from, to), T = st.tot;
+  const kp = (l,v,c)=>`<div style="border:1px solid #ddd;border-radius:8px;padding:8px;min-width:120px;flex:1;"><div style="font-size:11px;opacity:.75;">${l}</div><div class="num" style="font-weight:800;font-size:15px;color:${c||'inherit'};">${typeof v==='number'?money(v):v}</div></div>`;
+  return `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
+      ${kp(ar?'رصيد أول الفترة':'Opening', st.opening)}
+      ${kp(ar?'الحجوزات / الركاب':'Bookings / pax', `${T.count} / ${T.pax}`)}
+      ${kp(ar?'السستم فير':'System fare', T.fare)}
+      ${kp(ar?'رسوم الوكالة':'Agency fees', T.fees, '#1f7a4d')}
+      ${kp(ar?'منها ضريبة 15%':'VAT 15%', T.vat)}
+      ${kp(ar?'تحويل/شبكة لبنك الوكالة':'Paid to agency bank', T.paidBank)}
+      ${kp(ar?'ربح الفرع':'Franchise profit', T.own)}
+      ${kp(ar?'أودعه':'Deposited', T.deps, '#1f7a4d')}
+      ${kp(ar?'الباقي على الفرع آخر الفترة':'Owed at period end', st.closing, st.closing>0.004?'#b42318':'#1f7a4d')}
+    </div>
+    <div style="overflow-x:auto;"><table><thead><tr><th>${ar?'التاريخ':'Date'}</th><th>${ar?'النوع':'Type'}</th><th>${ar?'رقم':'No.'}</th><th>PNR</th><th>${ar?'العميل':'Customer'}</th><th>${ar?'ركاب':'Pax'}</th><th>${ar?'الدفع':'Payment'}</th><th>${ar?'السستم فير':'Fare'}</th><th>${ar?'رسوم':'Fee'}</th><th>${ar?'المبلغ الفعلي':'Paid'}</th><th>${ar?'حق الوكالة':'Agency due'}</th><th>${ar?'ربح الفرع':'Franchise'}</th><th>${ar?'على الفرع':'Owed Δ'}</th><th>${ar?'الرصيد':'Balance'}</th></tr></thead>
+    <tbody>${from?`<tr><td colspan="13" style="font-weight:700;">${ar?'رصيد سابق':'Opening balance'}</td><td class="num" style="font-weight:700;">${money(st.opening)}</td></tr>`:''}
+    ${st.rows.map(r=>`<tr><td>${r.date}</td><td>${r.type}</td><td class="num">${r.b?'#'+r.b.booking_no:''}</td><td>${r.b?esc(r.b.pnr||''):''}</td><td>${r.b?esc(r.b.customer||''):esc(r.note||'')}</td>
+      <td class="num">${r.kind==='t'?r.pax:''}</td><td>${r.method||''}${r.kind==='r'&&r.note?`<div style="font-size:11px;opacity:.75">${esc(r.note)}</div>`:''}</td>
+      <td class="num">${r.fare!=null&&r.kind==='t'?money(r.fare):''}</td><td class="num">${r.kind==='t'&&r.fee?money(r.fee):''}</td><td class="num">${r.paid!=null&&r.kind==='t'?money(r.paid):''}</td>
+      <td class="num">${r.due!=null?money(r.due):''}</td><td class="num">${r.own!=null?money(r.own):''}</td>
+      <td class="num" style="color:${r.amt<0?'#1f7a4d':'inherit'}">${money(r.amt)}</td><td class="num" style="font-weight:700;">${money(r.bal)}</td></tr>`).join('')}
+    ${st.rows.length?'':`<tr><td colspan="14" style="text-align:center;opacity:.7;">${ar?'لا توجد حركات في هذي الفترة':'No activity in this period'}</td></tr>`}
+    </tbody></table></div>
+    <p class="note" style="margin-top:6px;">${ar?'"على الفرع" = اللي يزيد أو ينقص من الكاش المطلوب منه: الكاش − ربحه (أو + الناقص)، والإيداع ينقصه. التحويل والشبكة يروحون لبنك الوكالة مباشرة. ✔ مؤكد · ⏳ بانتظار تأكيد المحاسب. الحجوزات بتاريخ الحجز، والاسترجاع بتاريخ اعتماده.':'"Owed Δ" = change in what the branch owes.'}</p>`;
+}
+window.uiFranchiseStatement = function(branchId){
+  const ar = lang==='ar', br = branchById(branchId); if(!br) return;
+  const d = new Date(); const monthStart = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+  showModal(`<div class="modal-head"><h3>🏪 ${ar?'كشف حساب فرع فرانشايز':'Franchise statement'} — ${esc(br.name)}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px;">
+      <div class="field" style="margin:0;"><label>${ar?'من تاريخ':'From'}</label><input type="date" id="frsFrom" value="${monthStart}"></div>
+      <div class="field" style="margin:0;"><label>${ar?'إلى تاريخ':'To'}</label><input type="date" id="frsTo" value="${todayStr()}"></div>
+      <button class="btn btn-ghost btn-sm" id="frsMonth">${ar?'هذا الشهر':'This month'}</button>
+      <button class="btn btn-ghost btn-sm" id="frsAll">${ar?'كل الفترات':'All time'}</button>
+    </div>
+    <div id="frsBody"></div>
+    <div style="display:flex;gap:8px;margin-top:12px;"><button class="btn btn-primary btn-sm" id="frsPrint">🖨️ ${ar?'طباعة':'Print'}</button><button class="btn btn-ghost btn-sm" id="frsExcel">⬇ Excel</button><button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('cancel')}</button></div>`);
+  const mEl = document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='1200px';
+  const fromEl = document.getElementById('frsFrom'), toEl = document.getElementById('frsTo');
+  const draw = ()=>{
+    if(fromEl.value && toEl.value && fromEl.value>toEl.value){ document.getElementById('frsBody').innerHTML = `<div class="login-error">${ar?'تاريخ البداية بعد تاريخ النهاية':'Start date is after end date'}</div>`; return; }
+    document.getElementById('frsBody').innerHTML = franchiseStatementHTML(branchId, fromEl.value||null, toEl.value||null);
+  };
+  fromEl.onchange = draw; toEl.onchange = draw;
+  document.getElementById('frsMonth').onclick = ()=>{ fromEl.value = monthStart; toEl.value = todayStr(); draw(); };
+  document.getElementById('frsAll').onclick = ()=>{ fromEl.value = ''; toEl.value = ''; draw(); };
+  draw();
+  document.getElementById('frsPrint').onclick = ()=>{
+    const f = fromEl.value||null, tt = toEl.value||null;
+    const w = window.open('', '_blank'); if(!w) return;
+    w.document.write(`<!DOCTYPE html><html lang="${lang}" dir="${ar?'rtl':'ltr'}"><head><meta charset="UTF-8"><title>${esc(br.name)} ${f||''} ${tt||''}</title>
+      <style>@page{size:A4 landscape;margin:10mm}body{font-family:Tahoma,Arial,sans-serif;padding:10px;font-size:11px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:4px;text-align:start}th{background:#f2f2f2}.num{direction:ltr;text-align:right;white-space:nowrap}.note{font-size:10px;color:#555}</style></head>
+      <body><h2 style="margin:0 0 4px;">${ar?'كشف حساب فرع فرانشايز':'Franchise statement'} — ${esc(br.name)}</h2>
+      <p style="margin:0 0 8px;">${ar?'الفترة':'Period'}: ${f||'…'} → ${tt||'…'} &nbsp; | &nbsp; ${ar?'الرسوم':'Fee'}: ${money(branchFranchiseFee(branchId))} ${ar?'للشخص (شاملة الضريبة)':'per pax'} &nbsp; | &nbsp; ${ar?'تاريخ الطباعة':'Printed'}: ${todayStr()}</p>
+      ${franchiseStatementHTML(branchId, f, tt)}
+      <div style="display:flex;justify-content:space-between;margin-top:30px;"><div>${ar?'توقيع الفرع':'Branch signature'}: ______________</div><div>${ar?'توقيع المحاسب':'Accountant'}: ______________</div></div></body></html>`);
+    w.document.close(); setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
+  };
+  document.getElementById('frsExcel').onclick = ()=>{
+    const st = franchiseStatement(branchId, fromEl.value||null, toEl.value||null);
+    const data = st.rows.map(r=>({[ar?'التاريخ':'Date']:r.date, [ar?'النوع':'Type']:r.type, [ar?'رقم':'No.']:r.b?r.b.booking_no:'', PNR:r.b?(r.b.pnr||''):'', [ar?'العميل':'Customer']:r.b?(r.b.customer||''):(r.note||''),
+      [ar?'ركاب':'Pax']:r.kind==='t'?r.pax:'', [ar?'الدفع':'Payment']:r.method||'', [ar?'السستم فير':'Fare']:r.kind==='t'&&r.fare!=null?r.fare:'', [ar?'رسوم':'Fee']:r.kind==='t'?r.fee:'',
+      [ar?'المبلغ الفعلي':'Paid']:r.kind==='t'&&r.paid!=null?r.paid:'', [ar?'حق الوكالة':'Agency due']:r.due??'', [ar?'ربح الفرع':'Franchise']:r.own??'', [ar?'على الفرع':'Owed Δ']:r.amt, [ar?'الرصيد':'Balance']:r.bal}));
+    data.unshift({[ar?'التاريخ':'Date']:fromEl.value||'', [ar?'النوع':'Type']:ar?'رصيد سابق':'Opening', [ar?'الرصيد':'Balance']:st.opening});
+    const ws = XLSX.utils.json_to_sheet(data); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Statement');
+    XLSX.writeFile(wb, `franchise-${br.name}-${fromEl.value||'all'}-${toEl.value||todayStr()}.xlsx`);
+  };
+};
 window.uiFranchiseExcel = function(){
   const ar = lang==='ar', rows = window.__frRows || [];
   const data = rows.map(r=>({[ar?'الفرع':'Branch']:r.br.name, [ar?'حجوزات':'Bookings']:r.count, [ar?'ركاب':'Passengers']:r.pax, [ar?'السستم فير':'Fare']:r.fare, [ar?'رسوم الوكالة':'Fees']:r.fees, [ar?'ضريبة 15%':'VAT']:r.vat,
