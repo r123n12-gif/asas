@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G18</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G19</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -3608,7 +3608,7 @@ window.uiDeleteBooking = async function(id){
   try{ await deleteBooking(id); render(); }catch(e){ console.error(e); alert(e && e.message && !e.code ? e.message : t('connError')); }
 };
 window.uiRequestEdit = async function(id){
-  const note = prompt(t('editNotePrompt'))||'';
+  const note = prompt(t('editNotePrompt')); if(note===null) return;   // Cancel = do nothing
   try{ await requestBookingEdit(id, note); render(); }catch(e){ alert(errTextPlain()); }
 };
 
@@ -4697,7 +4697,7 @@ window.uiApproveRefund = function(id){
   };
 };
 window.uiRejectRefund = async function(id){
-  const note = prompt(t('rejectReason'))||'';
+  const note = prompt(t('rejectReason')); if(note===null) return;
   try{ await rejectRefund(id, note); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 function openMiscReceiptModal(){
@@ -4908,7 +4908,7 @@ window.uiCancelMiscReceipt = async function(id){
   try{ await cancelMiscReceipt(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiRejectMiscReceipt = async function(id){
-  const note = prompt(t('refundRejectReasonLabel'))||'';
+  const note = prompt(t('refundRejectReasonLabel')); if(note===null) return;
   try{ await rejectMiscReceipt(id, note); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 function openDepositModal(){
@@ -4970,7 +4970,7 @@ window.uiApproveDeposit = async function(id){
   try{ await approveDeposit(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiRejectDeposit = async function(id){
-  const reason = prompt(t('rejectReason'))||'';
+  const reason = prompt(t('rejectReason')); if(reason===null) return;
   try{ await rejectDeposit(id, reason); render(); }catch(e){ alert(errTextPlain()); }
 };
 window.uiVerifyTransfer = async function(id){
@@ -4989,7 +4989,7 @@ window.uiVerifyTransfer = async function(id){
 };
 window.uiRejectTransfer = async function(id){
   if(!confirm(t('confirmRejectTransfer'))) return;
-  const note = prompt(t('editNotePrompt'))||'';
+  const note = prompt(t('editNotePrompt')); if(note===null) return;   // Cancel on the reason box = nothing is rejected
   __processing.add(id); render();
   try{ await rejectTransfer(id, note); }catch(e){ console.error(e); alert(errTextPlain()); }
   finally{ __processing.delete(id); render(); }
@@ -5234,7 +5234,7 @@ window.uiApproveProfitHandover = async function(id){
   try{ await approveProfitHandover(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiRejectProfitHandover = async function(id){
-  const note = prompt(t('rejectReason'))||'';
+  const note = prompt(t('rejectReason')); if(note===null) return;
   try{ await rejectProfitHandover(id, note); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 /* admin: mark a branch as a franchise — new tickets there owe the agency only system fare + fee */
