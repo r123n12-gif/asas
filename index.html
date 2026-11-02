@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G12</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G16</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -842,15 +842,18 @@ function employeeCashSplit(employeeId){
   const depositDue = +(total - profitDue).toFixed(2);
   const locked = lockedHandoverIds();
   const pendingIds = new Set(profitHandovers.filter(h=>h.employee_id===employeeId && h.status==='pending').flatMap(handoverBookingIds));
-  const transferProfit = +mine.filter(b=>b.payment_method!=='cash' && b.cost_reviewed && !isFranchiseBooking(b) && !(b.refunded && !bookingSupplierRefundKnown(b)) && (!locked.has(b.id) || pendingIds.has(b.id)))
+  const monthStart = todayStr().slice(0,8)+'01';   // informational: this month's transfer/card profit (already in the bank)
+  const transferProfit = +mine.filter(b=>!isCashProfitTicket(b) && b.cost_reviewed && !isFranchiseBooking(b) && String(b.date||'')>=monthStart && !(b.refunded && !bookingSupplierRefundKnown(b)) && (!locked.has(b.id) || pendingIds.has(b.id)))
     .reduce((a,b)=>a+bookingProfitNow(b),0).toFixed(2);
-  return {total, profitDue, profitAll, profitFromBank, awaiting, notRequested, depositDue, transferProfit};
+  const cashTicketProfit = +Math.min(profitAll, mine.filter(b=>b.cost_reviewed && isCashTicket(b) && !(b.refunded && !bookingSupplierRefundKnown(b)) && (!locked.has(b.id) || pendingIds.has(b.id))).reduce((a,b)=>a+bookingProfitNow(b),0)).toFixed(2);
+  return {total, profitDue, profitAll, profitFromBank, awaiting, notRequested, depositDue, transferProfit, cashTicketProfit};
 }
 function cashSplitCards(employeeId){
   const c = employeeCashSplit(employeeId); const ar = lang==='ar';
   return `<div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:10px;">
     <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">💰 ${ar?'كاش الأرباح — يُسلَّم للإدارة':'Profit cash — hand to management'}</div><div class="kpi-value">${money(c.profitDue)}</div>
-      ${c.profitFromBank>0.004?`<div style="font-size:12px;color:#1f7a4d;margin-top:4px;">+ ${ar?'أرباح تحويلات/شبكة تُؤخذ من البنك (مو من الموظف)':'transfer/card profit taken from the bank'}: ${money(c.profitFromBank)}</div>`:''}
+      ${c.profitAll>0.004?`<div style="font-size:11.5px;opacity:.85;margin-top:4px;line-height:1.6;">${ar?'أرباح ما سُلّمت':'Profit not handed'}: ${money(c.profitAll)}<br>• ${ar?'من تذاكر كاش':'cash tickets'}: ${money(c.cashTicketProfit)}<br>• ${ar?'من تذاكر تحويل/شبكة':'transfer/card tickets'}: ${money(+(c.profitAll-c.cashTicketProfit).toFixed(2))}</div>`:''}
+      ${c.profitFromBank>0.004?`<div style="font-size:12px;color:#A8722C;margin-top:4px;">⏭ ${ar?'باقي أرباح أكثر من الكاش اللي عنده — تُسلَّم من كاش التذاكر الجاية':'remaining profit — from the next cash'}: ${money(c.profitFromBank)}</div>`:''}
       ${c.awaiting?`<div style="font-size:12px;color:#A8722C;margin-top:4px;">${ar?'منها بانتظار اعتماد الإدارة':'awaiting approval'}: ${money(c.awaiting)}</div>`:''}</div>
     <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">🏦 ${ar?'كاش التذاكر — يُودَع':'Ticket cash — to deposit'}</div><div class="kpi-value" style="${c.depositDue<0?'color:var(--red)':''}">${money(c.depositDue)}</div>
       ${c.depositDue<0?`<div style="font-size:12px;color:var(--red);margin-top:4px;">${ar?'بالسالب: الموظف دفع (إيداع/استرجاعات/أرباح) أكثر من الكاش المسجل عليه — الوكالة مديونة له بهذا المبلغ، أو فيه تذاكر كاش ما انسجلت':'Negative: employee paid out more than recorded'}</div>`:''}</div>
@@ -1031,6 +1034,16 @@ function bookingSupplierRefundKnown(b){ return b.supplier_refund_amount!=null ||
 function bookingEffectiveCost(b){ return +((Number(b.cost)||0) - bookingSupplierRefund(b)).toFixed(2); }
 function bookingNetSupplierCost(b){ return bookingEffectiveCost(b); }
 function bookingProfitNow(b){ return +((b.refunded || isFranchiseBooking(b)) ? bookingEffectiveSell(b)-bookingEffectiveCost(b) : (Number(b.sell)||0)-(Number(b.cost)||0)).toFixed(2); }
+// profit the employee hands over from his cash = profit of tickets paid in cash. Transfer / card / installment profit is already in the agency bank.
+function bookingCashPart(b){ return b.payment_method==='cash' ? (Number(b.sell)||0) : (b.payment_method==='split' && Array.isArray(b.payment_splits) ? b.payment_splits.filter(x=>x.method==='cash').reduce((a,x)=>a+Number(x.amount||0),0) : 0); }
+function isCashTicket(b){
+  if(!b || isFranchiseBooking(b)) return false;
+  if(b.payment_method==='cash' || isRefundOnly(b)) return true;
+  if(b.payment_method==='split') return bookingCashPart(b) >= Math.max(0, bookingProfitNow(b)) - 0.004 && bookingCashPart(b) > 0.004;
+  return false;
+}
+// the employee hands EVERY ticket's profit in cash (transfer/card profit too — practice of the agency), through the profit report
+function isCashProfitTicket(b){ return !!b && !isFranchiseBooking(b); }
 function handoverBookingIds(h){
   let ids = h.booking_ids;
   if(typeof ids==='string'){ try{ ids = JSON.parse(ids); }catch(e){ ids = ids.replace(/[{}\[\]"]/g,'').split(',').map(x=>x.trim()).filter(Boolean); } }
@@ -1043,7 +1056,7 @@ function lockedHandoverIds(){
 }
 function eligibleProfitBookings(employeeId, dateFrom, dateTo){
   const lockedIds = lockedHandoverIds();
-  return bookings.filter(b=> b.created_by===employeeId && b.cost_reviewed && !isFranchiseBooking(b) && !(b.refunded && !bookingSupplierRefundKnown(b))
+  return bookings.filter(b=> b.created_by===employeeId && b.cost_reviewed && isCashProfitTicket(b) && !(b.refunded && !bookingSupplierRefundKnown(b))
     && !(bookingIsFullRefund(b) && Math.abs(bookingProfitNow(b))<0.005) && !lockedIds.has(b.id)
     && (!dateFrom || b.date>=dateFrom) && (!dateTo || b.date<=dateTo));
 }
@@ -1103,7 +1116,7 @@ async function approveProfitHandover(id){
   if(!h || h.status!=='pending') return;
   // never approve a ticket twice: drop tickets that already sit in another approved/pending handover
   const taken = await freshLockedIds(id, true);
-  const own = handoverBookingIds(h); const keep = own.filter(x=>!taken.has(x));
+  const own = handoverBookingIds(h); const keep = own.filter(x=>!taken.has(x) && isCashProfitTicket(bookings.find(b=>b.id===x)));
   if(own.length && keep.length < own.length){
     if(!keep.length){
       await mustUpdate('profit_handovers', id, {status:'rejected', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()});
@@ -1953,7 +1966,7 @@ function pendingConfirmationAmount(list){
 function pendingProfitHandoverAmount(list){
   const lockedIds = new Set();
   lockedHandoverIds().forEach(id=>lockedIds.add(id));
-  return +list.filter(b=>b.cost_reviewed && !isFranchiseBooking(b) && !(b.refunded && !bookingSupplierRefundKnown(b)) && !lockedIds.has(b.id)).reduce((s,b)=>s+bookingProfitNow(b),0).toFixed(2);
+  return +list.filter(b=>b.cost_reviewed && isCashProfitTicket(b) && !(b.refunded && !bookingSupplierRefundKnown(b)) && !lockedIds.has(b.id)).reduce((s,b)=>s+bookingProfitNow(b),0).toFixed(2);
 }
 function computeTotals(bookingsList, expensesList){
   const active = bookingsList.filter(b=>!bookingIsFullRefund(b));
@@ -2933,6 +2946,122 @@ function openStatementModal(kind, employeeId){
   };
 }
 function openCashStatementModal(employeeId){ openStatementModal('cash', employeeId); }
+/* ===== full employee statement: every ticket with its system fare, profit, cash part, transfer/card part — plus refunds, deposits and profit handovers, with a running cash balance ===== */
+function employeeFullStatement(employeeId, from, to){
+  const ar = lang==='ar';
+  const pmName = m=> m==='cash'?(ar?'كاش':'Cash') : m==='transfer'?(ar?'تحويل':'Transfer') : m==='span'?(ar?'شبكة':'Card') : m==='installment'?(ar?'تمارا/تابي':'Installment') : (m||'—');
+  const all = [];
+  bookings.filter(b=>b.created_by===employeeId).forEach(b=>{
+    const sell = Number(b.sell)||0, cost = Number(b.cost)||0;
+    let cashPart = 0; const nonCash = [];
+    if(b.payment_method==='cash') cashPart = sell;
+    else if(b.payment_method==='split' && Array.isArray(b.payment_splits)) b.payment_splits.forEach(x=>{ if(x.method==='cash') cashPart += Number(x.amount||0); else nonCash.push({m:x.method, a:Number(x.amount||0), ok:!!x.verified}); });
+    else nonCash.push({m:b.payment_method, a:sell, ok:!!b.transfer_verified});
+    const cashRef = (b.refunded && (b.refund_method||'cash')==='cash') ? bookingRefundAmount(b) : 0;
+    const share = franchiseShare(b);
+    const method = b.payment_method==='split' ? [cashPart>0?pmName('cash'):null, ...nonCash.map(x=>pmName(x.m))].filter(Boolean).join(' + ') : pmName(b.payment_method);
+    all.push({date:b.date||'', stamp:b.created_at||'', kind:'t', b, type: isRefundOnly(b)?(ar?'استرجاع (خارج النظام)':'Refund-only'):(isReplacementTicket(b)?(ar?'تذكرة بديلة':'Replacement'):(ar?'تذكرة':'Ticket')),
+      method, sell: isRefundOnly(b)?null:sell, cost: isRefundOnly(b)?null:cost, profit: isRefundOnly(b)?null:+(sell-cost-(isFranchiseBooking(b)?share:0)).toFixed(2),
+      cash: +(cashPart - share).toFixed(2), bank: +nonCash.reduce((a,x)=>a+x.a,0).toFixed(2), bankOk: nonCash.length ? nonCash.every(x=>x.ok) : null,
+      amt: +(cashPart - share).toFixed(2)});
+    if(b.refunded){
+      const rv = refundsReady ? refundRows.find(r=>r.booking_id===b.id && r.status==='approved') : null;
+      const R = bookingRefundAmount(b), air = bookingSupplierRefund(b);
+      all.push({date:String((rv&&rv.reviewed_at)||b.refund_reviewed_at||b.date||'').slice(0,10), stamp:(rv&&rv.reviewed_at)||b.refund_reviewed_at||'', kind:'r', b,
+        type: (ar?'استرجاع':'Refund')+(b.exchange_data&&b.exchange_data.new_id?(ar?' (تغيير)':' (exchange)'):''), method:(b.refund_method||'cash')==='cash'?(ar?'كاش للعميل':'cash'):(ar?'تحويل للعميل':'transfer'),
+        sell: -R, cost: -air, profit: +(air - R).toFixed(2), cash: -cashRef, bank: (b.refund_method||'cash')==='cash' ? 0 : -R, amt: -cashRef});
+    }
+  });
+  miscReceipts.filter(r=>r.employee_id===employeeId && r.status==='confirmed').forEach(r=>all.push({date:(r.created_at||'').slice(0,10), stamp:r.created_at||'', kind:'m', type: ar?'مبلغ بدون تذكرة':'Misc', note:r.note||'', method:pmName(r.method),
+    cash: r.method==='cash'?+Number(r.amount):0, bank: r.method==='cash'?0:+Number(r.amount), amt: r.method==='cash'?+Number(r.amount):0}));
+  deposits.filter(d=>d.submitted_by===employeeId && d.status==='approved').forEach(d=>all.push({date:(d.created_at||'').slice(0,10), stamp:d.created_at||'', kind:'d', type: ar?'إيداع معتمد':'Deposit', note:destLabel(d.destination)+(d.note?` — ${d.note}`:''), amt:-(Number(d.amount)||0), cash:-(Number(d.amount)||0)}));
+  profitHandovers.filter(h=>h.employee_id===employeeId && h.status==='approved').forEach(h=>all.push({date:(h.created_at||'').slice(0,10), stamp:h.created_at||'', kind:'h', type: ar?'أرباح سُلّمت':'Profit handed', note:`${handoverBookingIds(h).length} ${ar?'تذكرة':'tickets'}`, amt:-(Number(h.total_profit)||0), cash:-(Number(h.total_profit)||0), handed:+Number(h.total_profit||0)}));
+  all.sort((a,b)=>a.date.localeCompare(b.date) || String(a.stamp).localeCompare(String(b.stamp)));
+  let bal = 0, opening = 0; const rows = [];
+  all.forEach(r=>{ bal = +(bal + r.amt).toFixed(2); if(from && r.date < from){ opening = bal; return; } if(to && r.date > to) return; r.bal = bal; rows.push(r); });
+  const S = (k, f)=> +rows.filter(f||(()=>true)).reduce((a,r)=>a+(Number(r[k])||0),0).toFixed(2);
+  const tk = rows.filter(r=>r.kind==='t' && r.sell!=null);
+  const T = { tickets: tk.length, sell: S('sell', r=>r.kind==='t'), cost: S('cost', r=>r.kind==='t'), profit: S('profit', r=>r.kind==='t'), refundProfit: S('profit', r=>r.kind==='r'),
+    cashIn: S('cash', r=>r.kind==='t' && r.cash>0) + S('cash', r=>r.kind==='m'), cashRefunds: -S('cash', r=>r.kind==='r'),
+    transfer: S('bank', r=>r.kind==='t' && r.bankOk!==null), transferOk: S('bank', r=>r.kind==='t' && r.bankOk===true), transferPending: S('bank', r=>r.kind==='t' && r.bankOk===false),
+    deposits: -S('amt', r=>r.kind==='d'), handed: S('handed', r=>r.kind==='h'), refunds: rows.filter(r=>r.kind==='r').length };
+  ['span','installment','transfer'].forEach(m=>{ T['by_'+m] = +tk.reduce((a,r)=>{ const b=r.b; if(b.payment_method===m) return a+(Number(b.sell)||0); if(b.payment_method==='split'&&Array.isArray(b.payment_splits)) return a+b.payment_splits.filter(x=>x.method===m).reduce((s,x)=>s+Number(x.amount||0),0); return a; },0).toFixed(2); });
+  T.cashTickets = +tk.reduce((a,r)=>a+(r.b.payment_method==='cash'?(Number(r.b.sell)||0):(r.b.payment_method==='split'&&Array.isArray(r.b.payment_splits)?r.b.payment_splits.filter(x=>x.method==='cash').reduce((s,x)=>s+Number(x.amount||0),0):0)),0).toFixed(2);
+  const closing = rows.length ? rows[rows.length-1].bal : opening;
+  const split = employeeCashSplit(employeeId);
+  return {rows, opening:+opening.toFixed(2), closing:+Number(closing).toFixed(2), T, split};
+}
+function employeeFullStatementHTML(employeeId, from, to){
+  const ar = lang==='ar', st = employeeFullStatement(employeeId, from, to), T = st.T;
+  const kp = (l,v,c,sub)=>`<div style="border:1px solid #ddd;border-radius:8px;padding:8px;min-width:130px;flex:1;"><div style="font-size:11px;opacity:.75;">${l}</div><div class="num" style="font-weight:800;font-size:15px;color:${c||'inherit'};">${typeof v==='number'?money(v):v}</div>${sub?`<div style="font-size:10.5px;opacity:.8;">${sub}</div>`:''}</div>`;
+  const sec = t=>`<div style="font-weight:800;margin:10px 0 4px;">${t}</div>`;
+  const m = v=> v==null||v===''?'':money(v);
+  return `${sec(ar?'🎫 التذاكر والربح':'🎫 Tickets & profit')}<div style="display:flex;flex-wrap:wrap;gap:6px;">
+      ${kp(ar?'عدد التذاكر':'Tickets', String(T.tickets))}${kp(ar?'المبيعات':'Sales', T.sell)}${kp(ar?'السستم فير':'System fare', T.cost)}
+      ${kp(ar?'الربح':'Profit', T.profit, '#1f7a4d')}${T.refunds?kp(ar?`ربح/خسارة الاسترجاع (${T.refunds})`:'Refund result', T.refundProfit, T.refundProfit<0?'#b42318':'#1f7a4d'):''}</div>
+    ${sec(ar?'💳 طريقة الدفع':'💳 Payment')}<div style="display:flex;flex-wrap:wrap;gap:6px;">
+      ${kp(ar?'كاش':'Cash', T.cashTickets)}${kp(ar?'تحويل':'Transfer', T.by_transfer)}${kp(ar?'شبكة (سبان)':'Card (span)', T.by_span)}${kp(ar?'تمارا/تابي':'Installment', T.by_installment)}
+      ${kp(ar?'التحويل/الشبكة مؤكد':'Confirmed', T.transferOk, '#1f7a4d')}${kp(ar?'بانتظار التأكيد':'Pending', T.transferPending, T.transferPending>0.004?'#A8722C':null)}</div>
+    ${sec(ar?'💵 الكاش':'💵 Cash')}<div style="display:flex;flex-wrap:wrap;gap:6px;">
+      ${kp(ar?'رصيد أول الفترة':'Opening', st.opening)}${kp(ar?'+ كاش مستلم':'+ Cash in', T.cashIn)}${kp(ar?'− استرجاع كاش للعملاء':'− Cash refunds', T.cashRefunds)}
+      ${kp(ar?'− إيداعات معتمدة':'− Deposits', T.deposits)}${kp(ar?'− أرباح سُلّمت':'− Profit handed', T.handed)}
+      ${kp(ar?'= الكاش بعهدته آخر الفترة':'= Cash in hand at end', st.closing, st.closing>0.004?'#b42318':'#1f7a4d')}</div>
+    ${!to || to>=todayStr() ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">${kp(ar?'الآن: أرباح يسلّمها':'Now: profit to hand', st.split.profitDue, '#A8722C', st.split.profitAll>0.004?(ar?`كاش ${money(st.split.cashTicketProfit)} + تحويل/شبكة ${money(+(st.split.profitAll-st.split.cashTicketProfit).toFixed(2))}`:''):'')}${kp(ar?'الآن: سستم فير يودعه':'Now: fare to deposit', st.split.depositDue)}</div>`:''}
+    ${sec(ar?'📋 الحركات بالتفصيل':'📋 Movements')}
+    <div style="overflow-x:auto;"><table><thead><tr><th>${ar?'التاريخ':'Date'}</th><th>${ar?'النوع':'Type'}</th><th>${ar?'رقم':'No.'}</th><th>${ar?'العميل / البيان':'Customer'}</th><th>${ar?'الدفع':'Payment'}</th><th>${ar?'سعر البيع':'Sell'}</th><th>${ar?'السستم فير':'Fare'}</th><th>${ar?'الربح':'Profit'}</th><th>${ar?'كاش':'Cash'}</th><th>${ar?'تحويل/شبكة':'Transfer/card'}</th><th>${ar?'رصيد الكاش':'Cash balance'}</th></tr></thead>
+    <tbody>${from?`<tr><td colspan="10" style="font-weight:700;">${ar?'رصيد سابق':'Opening balance'}</td><td class="num" style="font-weight:700;">${money(st.opening)}</td></tr>`:''}
+    ${st.rows.map(r=>`<tr><td>${r.date}</td><td>${r.type}</td><td class="num">${r.b?'#'+r.b.booking_no:''}</td><td>${r.b?esc(r.b.customer||''):esc(r.note||'')}${r.b&&r.b.pnr?` <span style="opacity:.6;font-size:11px;">${esc(r.b.pnr)}</span>`:''}</td>
+      <td>${r.method||''}</td><td class="num">${m(r.sell)}</td><td class="num">${m(r.cost)}</td><td class="num" style="color:${(r.profit||0)<0?'#b42318':'#1f7a4d'}">${m(r.profit)}</td>
+      <td class="num">${r.cash?money(r.cash):''}</td><td class="num">${r.bank?money(r.bank)+(r.bankOk===true?' ✔':r.bankOk===false?' ⏳':''):''}</td><td class="num" style="font-weight:700;">${money(r.bal)}</td></tr>`).join('')}
+    ${st.rows.length?'':`<tr><td colspan="11" style="text-align:center;opacity:.7;">${ar?'لا توجد حركات في هذي الفترة':'No activity'}</td></tr>`}
+    </tbody></table></div>
+    <p class="note" style="margin-top:6px;">${ar?'رصيد الكاش يتحرك بالكاش فقط (التحويل والشبكة تروح للبنك). ✔ مؤكد في البنك · ⏳ بانتظار تأكيد المحاسب. الاسترجاع بتاريخ اعتماده.':'Cash balance moves with cash only.'}</p>`;
+}
+function openFullStatementModal(employeeId){
+  const ar = lang==='ar';
+  const d = new Date(); const monthStart = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+  showModal(`<div class="modal-head"><h3>📒 ${ar?'كشف حساب شامل':'Full statement'} — ${esc(userName(employeeId))}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px;">
+      <div class="field" style="margin:0;"><label>${ar?'من تاريخ':'From'}</label><input type="date" id="fsFrom" value="${monthStart}"></div>
+      <div class="field" style="margin:0;"><label>${ar?'إلى تاريخ':'To'}</label><input type="date" id="fsTo" value="${todayStr()}"></div>
+      <button class="btn btn-ghost btn-sm" id="fsToday">${ar?'اليوم':'Today'}</button>
+      <button class="btn btn-ghost btn-sm" id="fsMonth">${ar?'هذا الشهر':'This month'}</button>
+      <button class="btn btn-ghost btn-sm" id="fsAll">${ar?'كل الفترات':'All time'}</button>
+    </div>
+    <div id="fsBody"></div>
+    <div style="display:flex;gap:8px;margin-top:12px;"><button class="btn btn-primary btn-sm" id="fsPrint">🖨️ ${ar?'طباعة':'Print'}</button><button class="btn btn-ghost btn-sm" id="fsExcel">⬇ Excel</button><button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('cancel')}</button></div>`);
+  const mEl = document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='1200px';
+  const fromEl = document.getElementById('fsFrom'), toEl = document.getElementById('fsTo');
+  const draw = ()=>{
+    if(fromEl.value && toEl.value && fromEl.value>toEl.value){ document.getElementById('fsBody').innerHTML = `<div class="login-error">${ar?'تاريخ البداية بعد تاريخ النهاية':'Start date is after end date'}</div>`; return; }
+    document.getElementById('fsBody').innerHTML = employeeFullStatementHTML(employeeId, fromEl.value||null, toEl.value||null);
+  };
+  fromEl.onchange = draw; toEl.onchange = draw;
+  document.getElementById('fsToday').onclick = ()=>{ fromEl.value = todayStr(); toEl.value = todayStr(); draw(); };
+  document.getElementById('fsMonth').onclick = ()=>{ fromEl.value = monthStart; toEl.value = todayStr(); draw(); };
+  document.getElementById('fsAll').onclick = ()=>{ fromEl.value = ''; toEl.value = ''; draw(); };
+  draw();
+  document.getElementById('fsPrint').onclick = ()=>{
+    const f = fromEl.value||null, tt = toEl.value||null;
+    const w = window.open('', '_blank'); if(!w) return;
+    w.document.write(`<!DOCTYPE html><html lang="${lang}" dir="${ar?'rtl':'ltr'}"><head><meta charset="UTF-8"><title>${esc(userName(employeeId))} ${f||''} ${tt||''}</title>
+      <style>@page{size:A4 landscape;margin:10mm}body{font-family:Tahoma,Arial,sans-serif;padding:10px;font-size:11px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:4px;text-align:start}th{background:#f2f2f2}.num{direction:ltr;text-align:right;white-space:nowrap}.note{font-size:10px;color:#555}</style></head>
+      <body><h2 style="margin:0 0 4px;">${ar?'كشف حساب شامل':'Full statement'} — ${esc(userName(employeeId))} (${esc(branchName((users.find(u=>u.id===employeeId)||{}).branch_id))})</h2>
+      <p style="margin:0 0 8px;">${ar?'الفترة':'Period'}: ${f||'…'} → ${tt||'…'} &nbsp; | &nbsp; ${ar?'تاريخ الطباعة':'Printed'}: ${todayStr()}</p>
+      ${employeeFullStatementHTML(employeeId, f, tt)}
+      <div style="display:flex;justify-content:space-between;margin-top:30px;"><div>${ar?'توقيع الموظف':'Employee'}: ______________</div><div>${ar?'توقيع المحاسب':'Accountant'}: ______________</div></div></body></html>`);
+    w.document.close(); setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 400);
+  };
+  document.getElementById('fsExcel').onclick = ()=>{
+    const st = employeeFullStatement(employeeId, fromEl.value||null, toEl.value||null);
+    const data = st.rows.map(r=>({[ar?'التاريخ':'Date']:r.date, [ar?'النوع':'Type']:r.type, [ar?'رقم':'No.']:r.b?r.b.booking_no:'', [ar?'العميل / البيان':'Customer']:r.b?(r.b.customer||''):(r.note||''), PNR:r.b?(r.b.pnr||''):'',
+      [ar?'الدفع':'Payment']:r.method||'', [ar?'سعر البيع':'Sell']:r.sell??'', [ar?'السستم فير':'Fare']:r.cost??'', [ar?'الربح':'Profit']:r.profit??'', [ar?'كاش':'Cash']:r.cash||'', [ar?'تحويل/شبكة':'Transfer/card']:r.bank||'',
+      [ar?'حالة التحويل':'Status']:r.bankOk===true?(ar?'مؤكد':'confirmed'):r.bankOk===false?(ar?'بانتظار':'pending'):'', [ar?'رصيد الكاش':'Cash balance']:r.bal}));
+    data.unshift({[ar?'التاريخ':'Date']:fromEl.value||'', [ar?'النوع':'Type']:ar?'رصيد سابق':'Opening', [ar?'رصيد الكاش':'Cash balance']:st.opening});
+    const ws = XLSX.utils.json_to_sheet(data); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Statement');
+    XLSX.writeFile(wb, `statement-${userName(employeeId)}-${fromEl.value||'all'}-${toEl.value||todayStr()}.xlsx`);
+  };
+}
 /* Warn when an amount-without-ticket looks like it duplicates transfers already recorded on tickets */
 function miscDuplicateWarning(employeeId, amount, method){
   if(method==='cash') return '';
@@ -4100,7 +4229,7 @@ function renderReports(){
         </div>`; })()}${es.cashOnHand<-0.01?`<div style="font-size:12px;color:var(--red);margin-top:4px;line-height:1.5;">⚠️ ${lang==='ar'?'بالسالب: أودع/سلّم أكثر من الكاش المسجل عليه — غالبًا فيه تذاكر كاش ما انسجلت بالنظام':'Negative: deposited more than recorded cash — likely unrecorded cash tickets'}</div>`:''}</div>
         <div class="kpi" style="--accent:var(--red)"><div class="kpi-label">${t('efsCharges')}</div><div class="kpi-value">${money(es.charges)}</div></div>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">${isAdmin()||isAccountant()?`<button class="btn btn-primary btn-sm" id="addChargeBtn">${t('addChargeBtn')}</button>`:''}<button class="btn btn-ghost btn-sm" id="cashStmtBtn">${lang==='ar'?'📄 كشف الكاش التفصيلي':'📄 Detailed cash statement'}</button><button class="btn btn-ghost btn-sm" id="trStmtBtn">${lang==='ar'?'🏦 كشف التحويلات التفصيلي':'🏦 Detailed transfers statement'}</button></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">${isAdmin()||isAccountant()?`<button class="btn btn-primary btn-sm" id="addChargeBtn">${t('addChargeBtn')}</button>`:''}<button class="btn btn-primary btn-sm" id="fullStmtBtn">${lang==='ar'?'📒 كشف حساب شامل (تذاكر، سستم فير، ربح، كاش، تحويل)':'📒 Full statement'}</button><button class="btn btn-ghost btn-sm" id="cashStmtBtn">${lang==='ar'?'📄 كشف الكاش التفصيلي':'📄 Detailed cash statement'}</button><button class="btn btn-ghost btn-sm" id="trStmtBtn">${lang==='ar'?'🏦 كشف التحويلات التفصيلي':'🏦 Detailed transfers statement'}</button></div>
       ${myCharges.length>0?`<div style="overflow-x:auto;margin-top:10px;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colAmount')}</th><th>${t('fieldChargeReason')}</th><th>${t('colDepositStatus')}</th>${isAdmin()||isAccountant()?'<th></th>':''}</tr></thead>
       <tbody>${myCharges.map(ch=>`<tr ${ch.payment_claimed && !ch.settled?'style="background:#FFF7E0;"':''}><td>${(ch.created_at||'').slice(0,10)}</td><td class="num">${money(ch.amount)}</td><td>${esc(ch.reason||'—')}</td>
         <td><span class="tag ${ch.settled?'collected':ch.payment_claimed?'pending':'pending'}">${ch.settled?t('chargeSettledTag'):ch.payment_claimed?`🔔 ${t('claimPendingTag')} (${ch.claimed_method==='cash'?t('payCash'):t('payTransfer')})`:(ch.acknowledged?t('acknowledgedTag'):t('chargeUnseenTag'))}</span></td>
@@ -4159,6 +4288,7 @@ function renderReports(){
   document.getElementById('reportPrintBtnTop').onclick = ()=>printBranchEmployeeReport(rows, groupBy, nameHeader);
   if(document.getElementById('efsPrintBtn')) document.getElementById('efsPrintBtn').onclick = ()=>printEmployeeFinancialSummary(reportEmployeeFilter);
   if(document.getElementById('addChargeBtn')) document.getElementById('addChargeBtn').onclick = ()=>openAddChargeModal(reportEmployeeFilter);
+  if(document.getElementById('fullStmtBtn')) document.getElementById('fullStmtBtn').onclick = ()=>openFullStatementModal(reportEmployeeFilter);
   if(document.getElementById('cashStmtBtn')) document.getElementById('cashStmtBtn').onclick = ()=>openCashStatementModal(reportEmployeeFilter);
   if(document.getElementById('trStmtBtn')) document.getElementById('trStmtBtn').onclick = ()=>openStatementModal('transfer', reportEmployeeFilter);
   document.getElementById('reportExcelBtnTop').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
@@ -5353,7 +5483,11 @@ async function exportFullBackup(){
     const payload = {
       exported_at: new Date().toISOString(),
       agency: 'ASAS Travel & Tourism - أساس للسفر والسياحة',
-      branches, users, bookings, journal, manual_expenses: manualExpenses, cash_deposits: deposits
+      app_version: (document.body.innerHTML.match(/v 25\.\d+-G\d+/)||[''])[0],
+      branches, users: users.map(u=>{ const c = {...u}; delete c.password; delete c.password_hash; delete c.pass; return c; }),
+      bookings, journal, manual_expenses: manualExpenses, cash_deposits: deposits,
+      profit_handovers: profitHandovers, employee_charges: employeeCharges, misc_receipts: miscReceipts,
+      refunds: (typeof refundRows!=='undefined' ? refundRows : []), refunds_ready: (typeof refundsReady!=='undefined' ? !!refundsReady : false)
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
     const url = URL.createObjectURL(blob);
