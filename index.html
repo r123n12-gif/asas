@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G22</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G23</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -860,6 +860,8 @@ function cashSplitCards(employeeId){
     <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">🏦 ${ar?'كاش التذاكر — يُودَع':'Ticket cash — to deposit'}</div><div class="kpi-value" style="${c.depositDue<0?'color:var(--red)':''}">${money(c.depositDue)}</div>
       ${c.depositDue<0?`<div style="font-size:12px;color:var(--red);margin-top:4px;">${ar?'بالسالب: الموظف دفع (إيداع/استرجاعات/أرباح) أكثر من الكاش المسجل عليه — الوكالة مديونة له بهذا المبلغ، أو فيه تذاكر كاش ما انسجلت':'Negative: employee paid out more than recorded'}</div>`:''}</div>
     <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${ar?'المجموع بعهدته':'Total in hand'}</div><div class="kpi-value">${money(c.total)}</div>
+      ${(()=>{ const dl = bookings.filter(b=>b.created_by===employeeId && !b.refunded && bookingDueAmount(b)>0.004); const da = +dl.reduce((a,b)=>a+bookingDueAmount(b),0).toFixed(2);
+        return dl.length ? `<div style="font-size:12px;color:var(--red);margin-top:4px;">⏳ ${ar?`باقي على عملائه: ${money(da)} (${dl.length} حجز) — ما هو بعهدته`:`Due from customers: ${money(da)}`}</div>` : ''; })()}
       ${(()=>{ const pr = (typeof refundRows!=='undefined'?refundRows:[]).filter(r=>r.employee_id===employeeId && r.status==='pending' && r.method!=='transfer'); const amt = +pr.reduce((a,r)=>a+Number(r.customer_amount||0),0).toFixed(2);
         return pr.length ? `<div style="font-size:12px;color:#A8722C;margin-top:4px;">⏳ ${ar?`${pr.length} استرجاع كاش ينتظر اعتماد المحاسب (${money(amt)}) — لو دفعها للعميل فكاشه الفعلي أقل بهالمبلغ`:`${pr.length} cash refunds awaiting approval (${money(amt)})`}</div>` : ''; })()}</div>
   </div>`;
@@ -1048,7 +1050,72 @@ function isCashTicket(b){
 }
 // the employee hands EVERY ticket's profit in cash (transfer/card profit too — practice of the agency), through the profit report
 // a transfer/card part not yet confirmed by the accountant keeps the ticket's profit waiting: no profit is handed on money that has not reached the bank
-function profitAwaitsConfirmation(b){ return !!b && transferParts(b).some(p=>p.status==='pending'); }
+/* the customer pays (part of) what is left: the 'due' part turns into a real payment (cash = straight into the employee's cash; transfer/card = to the accountant to confirm) */
+async function collectDue(bookingId, amount, method, bankName){
+  const ar = lang==='ar';
+  const {data:b, error:e0} = await sb.from('bookings').select('*').eq('id', bookingId).single(); if(e0) throw e0;
+  const splits = Array.isArray(b.payment_splits) ? b.payment_splits.map(x=>({...x})) : [];
+  const di = splits.findIndex(x=>x.method==='due' && Number(x.amount)>0.004);
+  if(di<0) throw new Error(ar?'ما فيه مبلغ باقي على هذا الحجز.':'Nothing is due on this booking.');
+  amount = +Number(amount).toFixed(2); const left = +Number(splits[di].amount).toFixed(2);
+  if(!(amount>0)) throw new Error(t('invalidNumber'));
+  if(amount > left + 0.004) throw new Error(ar?`المبلغ أكبر من الباقي (${money(left)}).`:`More than what is due (${money(left)}).`);
+  if(!['cash','transfer','span','installment'].includes(method)) throw new Error('method');
+  const part = {method, amount, bankName: bankName||null, verified: method==='cash', collected_at: new Date().toISOString(), collected_by: currentUser()?.id||null};
+  if(Math.abs(amount-left)<0.005) splits[di] = part;                       // all of it: the due part becomes the payment (indexes stay the same)
+  else { splits[di] = {...splits[di], amount:+(left-amount).toFixed(2)}; splits.push(part); }
+  const allSettled = splits.every(x=>x.method==='cash' || x.verified);
+  await mustUpdate('bookings', b.id, {payment_splits:splits, payment_status: allSettled?'paid':'pending', transfer_verified: allSettled});
+  Object.assign(b, {payment_splits:splits, payment_status: allSettled?'paid':'pending', transfer_verified: allSettled});
+  const i = bookings.findIndex(x=>x.id===b.id); if(i>-1) bookings[i] = b; else bookings.unshift(b);
+  // sale entries follow the parts (cash part = till, anything else = receivable) — same rule as the ticket repair
+  const old = journal.filter(j=>j.booking_id===b.id && j.desc_key==='jSale');
+  const args = [b.booking_no, b.airline||'-', b.customer];
+  const rows = splits.filter(x=>Number(x.amount)>0.004).map(x=>({date:b.date, branch_id:b.branch_id, booking_id:b.id, desc_key:'jSale', desc_args:args,
+    debit_key: x.method==='cash'?'accCashOnHand':'accCustomers', credit_key:'accSalesRev', amount:+Number(x.amount).toFixed(2)}));
+  const {data:ins, error:e1} = await sb.from('journal').insert(rows).select(); if(e1) throw e1;
+  if(old.length){ const {error:e2} = await sb.from('journal').delete().in('id', old.map(j=>j.id)); if(e2){ await sb.from('journal').delete().in('id', ins.map(j=>j.id)); throw e2; } }
+  const d = new Set(old.map(j=>j.id)); journal = journal.filter(j=>!d.has(j.id)); journal.unshift(...ins.reverse());
+  return b;
+}
+// a refunded ticket: whatever the customer never paid is cancelled (it is no longer owed) — the refund then covers what was really paid
+async function writeOffDue(b){
+  const due = bookingDueAmount(b); if(!(due>0.004)) return b;
+  const splits = b.payment_splits.filter(x=>x.method!=='due').map(x=>({...x}));
+  const sell = +(Number(b.sell) - due).toFixed(2), profit = +(sell - (Number(b.cost)||0)).toFixed(2);
+  const allSettled = splits.every(x=>x.method==='cash' || x.verified);
+  const one = splits.length===1 ? splits[0] : null;
+  const upd = one ? {sell, profit_amount:profit, margin:profit, net_profit:profit, payment_method:one.method, payment_splits:null, bank_name: one.bankName||null, payment_status: allSettled?'paid':'pending', transfer_verified: allSettled}
+                  : {sell, profit_amount:profit, margin:profit, net_profit:profit, payment_splits:splits, payment_status: allSettled?'paid':'pending', transfer_verified: allSettled};
+  await mustUpdate('bookings', b.id, upd); Object.assign(b, upd);
+  const old = journal.filter(j=>j.booking_id===b.id && j.desc_key==='jSale'); const args = [b.booking_no, b.airline||'-', b.customer];
+  const parts = one ? [{method:one.method, amount:sell}] : splits;
+  const {data:ins, error} = await sb.from('journal').insert(parts.filter(x=>Number(x.amount)>0.004).map(x=>({date:b.date, branch_id:b.branch_id, booking_id:b.id, desc_key:'jSale', desc_args:args,
+    debit_key: x.method==='cash'?'accCashOnHand':'accCustomers', credit_key:'accSalesRev', amount:+Number(x.amount).toFixed(2)}))).select(); if(error) throw error;
+  if(old.length){ const {error:e2} = await sb.from('journal').delete().in('id', old.map(j=>j.id)); if(e2) throw e2; }
+  const d = new Set(old.map(j=>j.id)); journal = journal.filter(j=>!d.has(j.id)); journal.unshift(...ins.reverse());
+  return b;
+}
+window.uiCollectDue = function(id){
+  const b = bookings.find(x=>x.id===id); if(!b) return; const ar = lang==='ar'; const left = bookingDueAmount(b);
+  showModal(`<div class="modal-head"><h3>💰 ${ar?'تحصيل المتبقي':'Collect what is due'} — #${b.booking_no}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <p class="note">${esc(b.customer||'')} — ${ar?'سعر التذكرة':'ticket'} ${money(b.sell)} — <b>${ar?'الباقي على العميل':'due'}: ${money(left)}</b></p>
+    <div class="grid-2">
+      <div class="field"><label>${ar?'المبلغ اللي وصل':'Amount received'}</label><input type="number" step="0.01" min="0.01" id="cdAmt" value="${left}"></div>
+      <div class="field"><label>${t('fieldPaymentMethod')}</label><select id="cdMethod"><option value="transfer">${t('payTransfer')}</option><option value="cash">${t('payCash')}</option><option value="span">${t('paySpan')}</option><option value="installment">${t('payInstallment')}</option></select></div>
+    </div>
+    <div class="field" id="cdBankBox"><label>${t('fieldBankName')}</label><select id="cdBank"><option value="RAJHI">${t('bankRajhi')}</option><option value="AHLI">${t('bankAhli')}</option><option value="OTHER">${t('bankOther')}</option></select></div>
+    <p class="note">${ar?'كاش: ينضاف على كاشك مباشرة. تحويل/شبكة: يروح للمحاسب يأكده، وبعد التأكيد ينقص الباقي.':'Cash goes into your cash now; transfer/card goes to the accountant to confirm.'}</p>
+    <div id="cdErr"></div>
+    <div style="display:flex;gap:8px;margin-top:12px;"><button class="btn btn-primary" id="cdOk">${ar?'حفظ':'Save'}</button><button class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>`);
+  document.getElementById('cdMethod').onchange = e=>{ document.getElementById('cdBankBox').style.display = (e.target.value==='transfer'||e.target.value==='installment') ? '' : 'none'; };
+  document.getElementById('cdOk').onclick = async ()=>{
+    const bt = document.getElementById('cdOk'); bt.disabled = true;
+    try{ await collectDue(id, parseAmount(document.getElementById('cdAmt').value), document.getElementById('cdMethod').value, document.getElementById('cdBank').value); closeModal(); render(); }
+    catch(e){ console.error(e); document.getElementById('cdErr').innerHTML = `<div class="login-error">${e && e.message && !e.code ? e.message : errText()}</div>`; bt.disabled = false; }
+  };
+};
+function profitAwaitsConfirmation(b){ return !!b && transferParts(b).some(p=>p.status==='pending'||p.status==='due'); }
 function isCashProfitTicket(b){ return !!b && !isFranchiseBooking(b) && !profitAwaitsConfirmation(b); }
 function handoverBookingIds(h){
   let ids = h.booking_ids;
@@ -1352,6 +1419,7 @@ async function approveRefundV2(id, edits){
     await mustUpdate('refunds', id, {booking_id:b.id}); r.booking_id = b.id;
   }
   if(!(Number(b.sell)>0) && !(Number(b.cost)>0)) b.refund_status = b.refund_status || 'approved';   // refund-only ticket
+  if(bookingDueAmount(b)>0.004){ await writeOffDue(b); if(Number(r.customer_amount) > Number(b.sell)+0.004){ await mustUpdate('refunds', id, {customer_amount:+Number(b.sell).toFixed(2)}); r = await freshRefund(id); } }
   // franchise: a cash refund / exchange is the branch's own business with its customer — the agency books the whole ticket value back (only the airline amount changes the agency's due)
   if(isFranchiseBooking(b) && !isRefundOnly(b) && r.method!=='transfer' && Math.abs(Number(r.customer_amount) - (Number(b.sell)||0))>0.004){
     await mustUpdate('refunds', id, {customer_amount:+(Number(b.sell)||0).toFixed(2)}); r = await freshRefund(id);
@@ -1972,6 +2040,8 @@ function transferParts(b){
     b.payment_splits.forEach((p,i)=>{
       if(p.method==='cash') return;
       push(i, +(Number(p.amount)||0).toFixed(2), p.method, p.bankName||null, !!p.verified, p.verified_amount, p.verified_at||null);
+      // still owed by the customer (partial payment): a receivable, not a bank transfer to confirm
+      if(p.method==='due'){ const last = out[out.length-1]; if(last && last.status==='pending') last.status = 'due'; }
     });
   }else if(b.payment_method!=='cash'){
     const sell = +(Number(b.sell)||0).toFixed(2);
@@ -1981,7 +2051,13 @@ function transferParts(b){
   }
   return out;
 }
-function bookingPendingAmount(b){ return +transferParts(b).filter(p=>p.status==='pending').reduce((s,p)=>s+p.counted,0).toFixed(2); }
+function bookingPendingAmount(b){ return +transferParts(b).filter(p=>p.status==='pending'||p.status==='due').reduce((s,p)=>s+p.counted,0).toFixed(2); }
+function bookingDueAmount(b){ return +transferParts(b).filter(p=>p.status==='due').reduce((s,p)=>s+p.counted,0).toFixed(2); }
+// cash the customer paid later on a partly-paid ticket — shown on the day it was collected
+function collectedCashParts(b){ return (b && b.payment_method==='split' && Array.isArray(b.payment_splits)) ? b.payment_splits.filter(x=>x.method==='cash' && x.collected_at && Number(x.amount)>0.004).map(x=>({date:String(x.collected_at).slice(0,10), stamp:x.collected_at, amount:+Number(x.amount).toFixed(2)})) : []; }
+function dueSince(b){ return b.date || String(b.created_at||'').slice(0,10); }
+function dueDays(b){ return Math.max(0, Math.round((new Date(todayStr()) - new Date(dueSince(b)))/864e5)); }
+function splitMethodName(m){ const ar = lang==='ar'; return m==='cash'?t('payCash') : m==='transfer'?t('payTransfer') : m==='span'?t('paySpan') : m==='installment'?t('payInstallment') : m==='due'?(ar?'باقي على العميل':'Due from customer') : (m||'—'); }
 function employeeFinancialSummary(employeeId){
   const mine = bookings.filter(b=>b.created_by===employeeId);
   const totalSales = +mine.reduce((s,b)=>s+bookingEffectiveSell(b),0).toFixed(2);
@@ -1997,7 +2073,7 @@ function employeeFinancialSummary(employeeId){
   return {totalSales, totalDeposited, totalTransferred, pendingAmt, pendingTransfers, cashOnHand, charges, profitDue};
 }
 function pendingConfirmationAmount(list){
-  return +list.flatMap(transferParts).filter(p=>p.status==='pending').reduce((s,p)=>s+p.counted,0).toFixed(2);
+  return +list.flatMap(transferParts).filter(p=>p.status==='pending'||p.status==='due').reduce((s,p)=>s+p.counted,0).toFixed(2);
 }
 function pendingProfitHandoverAmount(list){
   const lockedIds = new Set();
@@ -2496,8 +2572,10 @@ function bookingsTableInner(list, mode){
           <td>${b.payment_method==='transfer'?`${t('payTransfer')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
             :b.payment_method==='span'?`${t('paySpan')}<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
             :b.payment_method==='installment'?`${t('payInstallment')} (${bankLabel(b.bank_name)})<br><span class="tag ${b.transfer_verified?'collected':'pending'}">${b.transfer_verified?t('verifiedTag'):t('transferPending')}</span>`
+            :b.payment_method==='split' && Array.isArray(b.payment_splits) ? b.payment_splits.filter(x=>Number(x.amount)>0.004).map(x=>`${splitMethodName(x.method)} ${money(x.amount)}${x.method==='cash'?'':x.method==='due'?'':(x.verified?' ✔':' ⏳')}`).join('<br>') + (bookingDueAmount(b)>0.004?`<br><span class="tag ${dueDays(b)>7?'rejected':'pending'}">${lang==='ar'?'باقي':'due'} ${money(bookingDueAmount(b))}</span>`:'')
             :t('payCash')}</td>
           ${showActions?`<td style="display:flex;gap:5px;flex-wrap:wrap;">
+            ${bookingDueAmount(b)>0.004 && !b.refunded && (mode!=='none')?`<button class="btn btn-gold btn-sm" onclick="uiCollectDue('${b.id}')">💰 ${lang==='ar'?'تحصيل المتبقي':'Collect'}</button>`:''}
             ${isAdmin() && !b.cost_reviewed?`<button class="btn btn-gold btn-sm" onclick="uiReviewCost('${b.id}')">${t('reviewCostBtn')}</button>`:''}
             
             ${mode==='manage' && Number(b.cost)>0 && !b.supplier_settled?`<button class="btn btn-gold btn-sm" onclick="uiSettleSupplier('${b.id}')">${t('settleSupplierBtn')}</button>`:''}
@@ -2846,7 +2924,8 @@ function employeeCashStatement(employeeId, from, to){
   bookings.filter(b=>b.created_by===employeeId).forEach(b=>{
     // with the refunds table: the sale and the refund are separate lines (like deposits)
     if(refundsReady && b.refunded && (b.refund_method||'cash')==='cash'){
-      const cashRef = bookingRefundAmount(b), cashIn0 = +(bookingCashNet(b) + cashRef).toFixed(2);
+      const later = collectedCashParts(b); later.forEach(c=>all.push({date:c.date, stamp:c.stamp, type: ar?'تحصيل متبقي':'Collected', desc:`#${b.booking_no} ${b.customer||''}`, note: ar?'كاش من العميل (الباقي من الحجز)':'cash collected later', amt:c.amount}));
+      const cashRef = bookingRefundAmount(b), cashIn0 = +(bookingCashNet(b) + cashRef - later.reduce((a,c)=>a+c.amount,0)).toFixed(2);
       const rv = refundRows.find(r=>r.booking_id===b.id && r.status==='approved');
       if(Math.abs(cashIn0)>0.004){
         const sell0 = Number(b.sell)||0;
@@ -2862,7 +2941,8 @@ function employeeCashStatement(employeeId, from, to){
                 : (ar?`كاش للعميل${isRefundOnly(b)?' — تذكرة غير مسجلة بالنظام':''}`:'cash to customer'), amt:-cashRef});
       return;
     }
-    const amt = bookingCashNet(b);
+    const later = collectedCashParts(b); later.forEach(c=>all.push({date:c.date, stamp:c.stamp, type: ar?'تحصيل متبقي':'Collected', desc:`#${b.booking_no} ${b.customer||''}`, note: ar?'كاش من العميل (الباقي من الحجز)':'cash collected later', amt:c.amount}));
+    const amt = +(bookingCashNet(b) - later.reduce((a,c)=>a+c.amount,0)).toFixed(2);
     if(Math.abs(amt)<0.005) return;
     const sell = Number(b.sell)||0;
     const cashIn = b.payment_method==='cash' ? sell : (Array.isArray(b.payment_splits) ? b.payment_splits.filter(x=>x.method==='cash').reduce((a,x)=>a+Number(x.amount||0),0) : 0);
@@ -2992,11 +3072,15 @@ function employeeFullStatement(employeeId, from, to){
     const sell = Number(b.sell)||0, cost = Number(b.cost)||0;
     let cashPart = 0; const nonCash = [];
     if(b.payment_method==='cash') cashPart = sell;
-    else if(b.payment_method==='split' && Array.isArray(b.payment_splits)) b.payment_splits.forEach(x=>{ if(x.method==='cash') cashPart += Number(x.amount||0); else nonCash.push({m:x.method, a:Number(x.amount||0), ok:!!x.verified}); });
+    let dueAmt = 0;
+    if(b.payment_method==='split' && Array.isArray(b.payment_splits)) b.payment_splits.forEach(x=>{ if(x.method==='cash') cashPart += Number(x.amount||0); else if(x.method==='due') dueAmt += Number(x.amount||0); else nonCash.push({m:x.method, a:Number(x.amount||0), ok:!!x.verified}); });
     else nonCash.push({m:b.payment_method, a:sell, ok:!!b.transfer_verified});
     const cashRef = (b.refunded && (b.refund_method||'cash')==='cash') ? bookingRefundAmount(b) : 0;
     const share = franchiseShare(b);
-    const method = b.payment_method==='split' ? [cashPart>0?pmName('cash'):null, ...nonCash.map(x=>pmName(x.m))].filter(Boolean).join(' + ') : pmName(b.payment_method);
+    const method = (b.payment_method==='split' ? [cashPart>0?pmName('cash'):null, ...nonCash.map(x=>pmName(x.m))].filter(Boolean).join(' + ') : pmName(b.payment_method)) + (dueAmt>0.004 ? (ar?` — باقي على العميل ${money(dueAmt)}`:` — due ${money(dueAmt)}`) : '');
+    const later = collectedCashParts(b), laterSum = +later.reduce((a,c)=>a+c.amount,0).toFixed(2);
+    later.forEach(c=>all.push({date:c.date, stamp:c.stamp, kind:'c', b, type: ar?'تحصيل متبقي':'Collected', method: pmName('cash'), cash:c.amount, amt:c.amount}));
+    cashPart = +(cashPart - laterSum).toFixed(2);
     all.push({date:b.date||'', stamp:b.created_at||'', kind:'t', b, type: isRefundOnly(b)?(ar?'استرجاع (خارج النظام)':'Refund-only'):(isReplacementTicket(b)?(ar?'تذكرة بديلة':'Replacement'):(ar?'تذكرة':'Ticket')),
       method, sell: isRefundOnly(b)?null:sell, cost: isRefundOnly(b)?null:cost, profit: isRefundOnly(b)?null:+(sell-cost-(isFranchiseBooking(b)?share:0)).toFixed(2),
       cash: +(cashPart - share).toFixed(2), bank: +nonCash.reduce((a,x)=>a+x.a,0).toFixed(2), bankOk: nonCash.length ? nonCash.every(x=>x.ok) : null,
@@ -3449,7 +3533,7 @@ function openBookingModal(existing){
         </div>
       </div>
       <div class="grid-2" id="singleMethodBox" style="display:${(v.payment_splits&&v.payment_splits.length>1)?'none':''};">
-        <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="paymentMethod" id="paymentMethodSel" ${v.transfer_verified?'disabled':''}><option value="cash" ${v.payment_method==='cash'?'selected':''}>${t('payCash')}</option><option value="transfer" ${v.payment_method==='transfer'?'selected':''}>${t('payTransfer')}</option><option value="span" ${v.payment_method==='span'?'selected':''}>${t('paySpan')}</option><option value="installment" ${v.payment_method==='installment'?'selected':''}>${t('payInstallment')}</option></select>
+        <div class="field"><label>${t('fieldPaymentMethod')}</label><select name="paymentMethod" id="paymentMethodSel" ${v.transfer_verified?'disabled':''}><option value="cash" ${v.payment_method==='cash'?'selected':''}>${t('payCash')}</option><option value="transfer" ${v.payment_method==='transfer'?'selected':''}>${t('payTransfer')}</option><option value="span" ${v.payment_method==='span'?'selected':''}>${t('paySpan')}</option><option value="installment" ${v.payment_method==='installment'?'selected':''}>${t('payInstallment')}</option><option value="partial">${lang==='ar'?'💰 مدفوع جزئي (والباقي على العميل)':'Partly paid (rest due)'}</option></select>
           ${v.transfer_verified?`<p class="note">${t('paymentMethodLockedNote')}</p><input type="hidden" name="paymentMethod" value="${v.payment_method}">`:''}</div>
         <div class="field" id="bankNameField" style="display:${v.payment_method==='transfer'?'':'none'};"><label>${t('fieldBankName')}</label><select name="bankName">
           <option value="RAJHI" ${v.bank_name==='RAJHI'?'selected':''}>${t('bankRajhi')}</option><option value="AHLI" ${v.bank_name==='AHLI'?'selected':''}>${t('bankAhli')}</option><option value="OTHER" ${v.bank_name==='OTHER'?'selected':''}>${t('bankOther')}</option>
@@ -3475,6 +3559,13 @@ function openBookingModal(existing){
       </div>
     </form>`);
   document.getElementById('paymentMethodSel').onchange = (e)=>{
+    if(e.target.value==='partial'){   // partly paid: open the split box with a payment row and a "due" row
+      e.target.value = 'transfer';
+      const tg = document.getElementById('splitPaymentToggle'); tg.checked = true;
+      splitRows = [{method:'transfer', amount:'', bankName:'RAJHI'}, {method:'due', amount:''}];
+      document.getElementById('singleMethodBox').style.display='none'; document.getElementById('splitPaymentBox').style.display='';
+      renderSplitRows(); updateSplitTotal(); return;
+    }
     document.getElementById('bankNameField').style.display = e.target.value==='transfer' ? '' : 'none';
     document.getElementById('spanNoteBox').style.display = e.target.value==='span' ? '' : 'none';
     document.getElementById('installmentProviderField').style.display = e.target.value==='installment' ? '' : 'none';
@@ -3490,6 +3581,7 @@ function openBookingModal(existing){
           <option value="transfer" ${row.method==='transfer'?'selected':''}>${t('payTransfer')}</option>
           <option value="span" ${row.method==='span'?'selected':''}>${t('paySpan')}</option>
           <option value="installment" ${row.method==='installment'?'selected':''}>${t('payInstallment')}</option>
+          <option value="due" ${row.method==='due'?'selected':''}>${lang==='ar'?'⏳ باقي على العميل':'Due from customer'}</option>
         </select></div>
         <div class="field"><label>${t('fieldSplitAmount')}</label><input type="number" step="0.01" class="splitAmountInput" data-idx="${i}" value="${row.amount}" ${row.verified?'disabled':''}></div>
         ${row.method==='transfer'?`<div class="field"><label>${t('fieldBankName')}</label><select class="splitBankSel" data-idx="${i}" ${row.verified?'disabled':''}>
@@ -3506,6 +3598,10 @@ function openBookingModal(existing){
   };
   const updateSplitTotal = ()=>{
     const sellVal = Number(document.getElementById('sellPriceInput').value)||0;
+    // the "due" row always takes whatever is not paid
+    { const di = splitRows.findIndex(r=>r.method==='due' && !r.verified);
+      if(di>-1){ const paid = splitRows.reduce((a,r,k)=>a+(k===di?0:(Number(r.amount)||0)),0); const v = +Math.max(0, sellVal-paid).toFixed(2); splitRows[di].amount = v ? String(v) : '';
+        const inp = document.querySelector ? document.querySelector(`.splitAmountInput[data-idx="${di}"]`) : null; if(inp && inp.value!==splitRows[di].amount) inp.value = splitRows[di].amount; } }
     const total = +splitRows.reduce((s,r)=>s+(Number(r.amount)||0),0).toFixed(2);
     const diff = +(sellVal-total).toFixed(2);
     const note = document.getElementById('splitTotalNote');
@@ -3586,8 +3682,11 @@ function openBookingModal(existing){
       paymentMethod:isSplit?'split':f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider'), note:f.get('note') };
     if(isSplit){
       const sellVal = Number(f.get('sell'))||0;
-      const cleanSplits = splitRows.map(r=>({method:r.method, amount:+Number(r.amount||0).toFixed(2), bankName:r.bankName||null,
-        verified: !!r.verified, verified_by: r.verified_by||null, verified_at: r.verified_at||null})).filter(r=>r.amount>0);
+      const cleanSplits = splitRows.map(r=>({...r, method:r.method, amount:+Number(r.amount||0).toFixed(2), bankName:r.bankName||null,
+        verified: r.method==='due' ? false : !!r.verified, verified_by: r.verified_by||null, verified_at: r.verified_at||null})).filter(r=>r.amount>0);
+      { const due = cleanSplits.filter(r=>r.method==='due').reduce((a,r)=>a+r.amount,0);
+        if(due>0.004 && cleanSplits.length<2){ document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">${lang==='ar'?'اكتب المبلغ اللي دفعه العميل الحين.':'Enter what the customer paid now.'}</div>`; btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking'); return; }
+        if(due > sellVal*0.5 + 0.004 && !confirm(lang==='ar'?`الباقي على العميل ${money(due)} — أكثر من نص سعر التذكرة. متأكد؟`:`More than half (${money(due)}) is still due. Sure?`)){ btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking'); return; } }
       const total = +cleanSplits.reduce((s,r)=>s+r.amount,0).toFixed(2);
       if(cleanSplits.length<2 || Math.abs(total-sellVal)>=0.01){
         document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">${t('splitMismatchError')}</div>`;
@@ -4377,7 +4476,14 @@ function renderTransfers(){
   scopedBookings.filter(b=>b.payment_method==='split' && Array.isArray(b.payment_splits)).forEach(b=>{
     transferParts(b).forEach(p=>{ if(p.status==='pending') pendingSplitRows.push({b, s:b.payment_splits[p.part], i:p.part}); });
   });
-  let html = `<div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingVerifyTitle')}</h3></div>
+  const dueRows = scopedBookings.filter(b=>bookingDueAmount(b)>0.004 && !b.refunded).sort((a,b2)=>dueDays(b2)-dueDays(a));
+  const dueTotal = +dueRows.reduce((a,b)=>a+bookingDueAmount(b),0).toFixed(2);
+  let html = `<div class="panel"><div class="panel-head"><h3 class="panel-title">⏳ ${lang==='ar'?'مبالغ باقية على العملاء (مدفوع جزئي)':'Due from customers (partly paid)'} — ${money(dueTotal)}</h3></div>
+      ${dueRows.length===0?`<div class="empty">${lang==='ar'?'ما فيه مبالغ باقية.':'Nothing due.'}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${lang==='ar'?'سعر التذكرة':'Ticket'}</th><th>${lang==='ar'?'الباقي':'Due'}</th><th>${lang==='ar'?'من كم يوم':'Days'}</th><th></th></tr></thead>
+      <tbody>${dueRows.map(b=>`<tr style="${dueDays(b)>7?'background:#FDECEC;':''}"><td class="num">${b.booking_no}</td><td>${b.date||''}</td><td>${esc(b.customer||'')}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td><td class="num">${money(b.sell)}</td><td class="num" style="font-weight:700;color:var(--red)">${money(bookingDueAmount(b))}</td><td class="num">${dueDays(b)}${dueDays(b)>7?' ⚠️':''}</td>
+        <td><button class="btn btn-gold btn-sm" onclick="uiCollectDue('${b.id}')">💰 ${lang==='ar'?'تحصيل':'Collect'}</button></td></tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('pendingVerifyTitle')}</h3></div>
       ${pendingTransfers.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${t('colFee')}</th><th></th></tr></thead>
       <tbody>${pendingTransfers.map(b=>`<tr><td class="num">${b.booking_no}</td><td style="white-space:nowrap">${b.date||''}</td><td>${esc(b.customer)}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
         <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payTransfer')}</td>
@@ -4393,7 +4499,7 @@ function renderTransfers(){
       <p class="note">${t('pendingSplitNote')}</p>
       ${pendingSplitRows.length===0?`<div class="empty">${t('noPendingTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('jDate')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${t('originalAmountLabel')}</th><th></th></tr></thead>
       <tbody>${pendingSplitRows.map(({b,s,i})=>`<tr><td class="num">${b.booking_no}</td><td style="white-space:nowrap">${b.date||''}</td><td>${esc(b.customer)}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
-        <td>${s.method==='span'?t('paySpan'):s.method==='installment'?t('payInstallment'):t('payTransfer')}</td>
+        <td>${s.method==='span'?t('paySpan'):s.method==='installment'?t('payInstallment'):t('payTransfer')}${s.collected_at?`<div style="font-size:11px;color:#5b6b7f;">${lang==='ar'?'تحصيل متبقي':'collected later'} ${String(s.collected_at).slice(0,10)}</div>`:''}</td>
         <td>${s.method==='span'?'—':bankLabel(s.bankName)}</td>
         <td class="num" style="font-weight:600">${money((transferParts(b).find(p=>p.part===i)||{}).counted ?? s.amount)}${b.refunded?`<div style="font-size:11px;color:#A8722C;">${lang==='ar'?'بعد استرجاع جزئي':'after partial refund'}</div>`:''}</td>
         <td class="num">${money(b.sell)}</td>
@@ -4570,7 +4676,7 @@ function openUnifiedRefundModal(prefillId, refundId){
       if(!prefillId) document.getElementById('urCustomer').value = linked.customer||'';
       box.innerHTML = isRefundOnly(linked)
         ? `✔ #${linked.booking_no} — ${ar?'تذكرة مسجلة للاسترجاع فقط (مو مباعة بالنظام)':'refund-only ticket'} — ${esc(userName(linked.created_by))}`
-        : `✔ ${ar?'التذكرة موجودة بالنظام':'Ticket found'}: #${linked.booking_no} — ${ar?'البيع':'sale'} ${money(linked.sell)} — ${ar?'التكلفة':'cost'} ${money(linked.cost)} — ${esc(userName(linked.created_by))}`;
+        : (bookingDueAmount(linked)>0.004 ? `⏳ ${ar?`على هذا الحجز باقي ${money(bookingDueAmount(linked))} ما دفعه العميل — بيتلغى مع الاسترجاع (المسترد = اللي دفعه فعلًا بس).`:'The unpaid part is cancelled with the refund.'}<br>` : '') + `✔ ${ar?'التذكرة موجودة بالنظام':'Ticket found'}: #${linked.booking_no} — ${ar?'البيع':'sale'} ${money(linked.sell)} — ${ar?'التكلفة':'cost'} ${money(linked.cost)} — ${esc(userName(linked.created_by))}`;
     }else box.innerHTML = normTkt(document.getElementById('urTicket').value).length>=5 ? `ℹ️ ${ar?'التذكرة مو مسجلة بالنظام — بتنسجل كاسترجاع فقط (بدون بيع)، والربح = المسترد من الطيران − المسترد للعميل':'Not in the system — recorded as refund only'}` : '';
     const pb = document.getElementById('urProfit');
     // franchise ticket: the customer's refund is the branch's business — only the airline amount matters to the agency
@@ -5718,7 +5824,7 @@ function runPosReconcile(scoped){
     let best = null, bestScore = 1e9;
     scoped.forEach(b=>{
       if(usedCand.has(b.id) || bookingIsFullRefund(b) || b.payment_method==='span') return;
-      const amts = b.payment_method==='split' && Array.isArray(b.payment_splits) ? b.payment_splits.filter(p=>p.method!=='span').map(p=>Number(p.amount)||0) : [Number(b.sell)||0];
+      const amts = b.payment_method==='split' && Array.isArray(b.payment_splits) ? b.payment_splits.filter(p=>p.method!=='span'&&p.method!=='due').map(p=>Number(p.amount)||0) : [Number(b.sell)||0];
       if(!amts.some(a=>Math.abs(a-tx.amt)<0.01)) return;
       const dd = dayDiff(b.date, tx.date); if(dd<-1 || dd>2) return;
       const sc = Math.abs(dd)*10 + (b.payment_method==='cash'?0:1);
