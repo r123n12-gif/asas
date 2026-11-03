@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G19</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G22</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -845,19 +845,23 @@ function employeeCashSplit(employeeId){
   const monthStart = todayStr().slice(0,8)+'01';   // informational: this month's transfer/card profit (already in the bank)
   const transferProfit = +mine.filter(b=>!isCashProfitTicket(b) && b.cost_reviewed && !isFranchiseBooking(b) && String(b.date||'')>=monthStart && !(b.refunded && !bookingSupplierRefundKnown(b)) && (!locked.has(b.id) || pendingIds.has(b.id)))
     .reduce((a,b)=>a+bookingProfitNow(b),0).toFixed(2);
+  const awaitingConfirm = +mine.filter(b=>b.cost_reviewed && !isFranchiseBooking(b) && profitAwaitsConfirmation(b) && !locked.has(b.id)).reduce((a,b)=>a+bookingProfitNow(b),0).toFixed(2);
   const cashTicketProfit = +Math.min(profitAll, mine.filter(b=>b.cost_reviewed && isCashTicket(b) && !(b.refunded && !bookingSupplierRefundKnown(b)) && (!locked.has(b.id) || pendingIds.has(b.id))).reduce((a,b)=>a+bookingProfitNow(b),0)).toFixed(2);
-  return {total, profitDue, profitAll, profitFromBank, awaiting, notRequested, depositDue, transferProfit, cashTicketProfit};
+  return {total, profitDue, profitAll, profitFromBank, awaiting, notRequested, depositDue, transferProfit, cashTicketProfit, awaitingConfirm};
 }
 function cashSplitCards(employeeId){
   const c = employeeCashSplit(employeeId); const ar = lang==='ar';
   return `<div class="kpi-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:10px;">
     <div class="kpi" style="--accent:var(--gold)"><div class="kpi-label">💰 ${ar?'كاش الأرباح — يُسلَّم للإدارة':'Profit cash — hand to management'}</div><div class="kpi-value">${money(c.profitDue)}</div>
       ${c.profitAll>0.004?`<div style="font-size:11.5px;opacity:.85;margin-top:4px;line-height:1.6;">${ar?'أرباح ما سُلّمت':'Profit not handed'}: ${money(c.profitAll)}<br>• ${ar?'من تذاكر كاش':'cash tickets'}: ${money(c.cashTicketProfit)}<br>• ${ar?'من تذاكر تحويل/شبكة':'transfer/card tickets'}: ${money(+(c.profitAll-c.cashTicketProfit).toFixed(2))}</div>`:''}
+      ${c.awaitingConfirm>0.004?`<div style="font-size:12px;color:#5b6b7f;margin-top:4px;">⏳ ${ar?'أرباح تحويلات تنتظر تأكيد المحاسب (تدخل بعد التأكيد)':'transfer profit awaiting confirmation'}: ${money(c.awaitingConfirm)}</div>`:''}
       ${c.profitFromBank>0.004?`<div style="font-size:12px;color:#A8722C;margin-top:4px;">⏭ ${ar?'باقي أرباح أكثر من الكاش اللي عنده — تُسلَّم من كاش التذاكر الجاية':'remaining profit — from the next cash'}: ${money(c.profitFromBank)}</div>`:''}
       ${c.awaiting?`<div style="font-size:12px;color:#A8722C;margin-top:4px;">${ar?'منها بانتظار اعتماد الإدارة':'awaiting approval'}: ${money(c.awaiting)}</div>`:''}</div>
     <div class="kpi" style="--accent:var(--teal)"><div class="kpi-label">🏦 ${ar?'كاش التذاكر — يُودَع':'Ticket cash — to deposit'}</div><div class="kpi-value" style="${c.depositDue<0?'color:var(--red)':''}">${money(c.depositDue)}</div>
       ${c.depositDue<0?`<div style="font-size:12px;color:var(--red);margin-top:4px;">${ar?'بالسالب: الموظف دفع (إيداع/استرجاعات/أرباح) أكثر من الكاش المسجل عليه — الوكالة مديونة له بهذا المبلغ، أو فيه تذاكر كاش ما انسجلت':'Negative: employee paid out more than recorded'}</div>`:''}</div>
-    <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${ar?'المجموع بعهدته':'Total in hand'}</div><div class="kpi-value">${money(c.total)}</div></div>
+    <div class="kpi" style="--accent:var(--navy)"><div class="kpi-label">${ar?'المجموع بعهدته':'Total in hand'}</div><div class="kpi-value">${money(c.total)}</div>
+      ${(()=>{ const pr = (typeof refundRows!=='undefined'?refundRows:[]).filter(r=>r.employee_id===employeeId && r.status==='pending' && r.method!=='transfer'); const amt = +pr.reduce((a,r)=>a+Number(r.customer_amount||0),0).toFixed(2);
+        return pr.length ? `<div style="font-size:12px;color:#A8722C;margin-top:4px;">⏳ ${ar?`${pr.length} استرجاع كاش ينتظر اعتماد المحاسب (${money(amt)}) — لو دفعها للعميل فكاشه الفعلي أقل بهالمبلغ`:`${pr.length} cash refunds awaiting approval (${money(amt)})`}</div>` : ''; })()}</div>
   </div>`;
 }
 function employeeCashBreakdownHTML(){
@@ -1043,7 +1047,9 @@ function isCashTicket(b){
   return false;
 }
 // the employee hands EVERY ticket's profit in cash (transfer/card profit too — practice of the agency), through the profit report
-function isCashProfitTicket(b){ return !!b && !isFranchiseBooking(b); }
+// a transfer/card part not yet confirmed by the accountant keeps the ticket's profit waiting: no profit is handed on money that has not reached the bank
+function profitAwaitsConfirmation(b){ return !!b && transferParts(b).some(p=>p.status==='pending'); }
+function isCashProfitTicket(b){ return !!b && !isFranchiseBooking(b) && !profitAwaitsConfirmation(b); }
 function handoverBookingIds(h){
   let ids = h.booking_ids;
   if(typeof ids==='string'){ try{ ids = JSON.parse(ids); }catch(e){ ids = ids.replace(/[{}\[\]"]/g,'').split(',').map(x=>x.trim()).filter(Boolean); } }
@@ -1121,7 +1127,7 @@ async function approveProfitHandover(id){
     if(!keep.length){
       await mustUpdate('profit_handovers', id, {status:'rejected', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()});
       h.status = 'rejected';
-      throw new Error(lang==='ar'?'هذا الطلب مكرر — كل تذاكره مسلّم ربحها في طلب ثاني. انرفض تلقائيًا.':'Duplicate handover — rejected automatically.');
+      throw new Error(lang==='ar'?'ما بقى في الطلب تذاكر جاهزة: تذاكره إما مسلّم ربحها في طلب ثاني، أو تحويلاتها ما أكدها المحاسب للحين. انرفض تلقائيًا — يرسله الموظف من جديد بعد التأكيد.':'Nothing ready in this handover (already handed, or transfers not confirmed yet) — rejected automatically.');
     }
     await mustUpdate('profit_handovers', id, {booking_ids:keep}); h.booking_ids = keep;
   }
@@ -1659,6 +1665,13 @@ function bankLabel(b){ return b==='RAJHI'?t('bankRajhi'):b==='AHLI'?t('bankAhli'
 
 /* ===================== ACCOUNTING ENGINE (Supabase-backed) ===================== */
 async function addBooking(data){
+  if(!data.refundLink){
+    const dup = data.isReshu ? null : findDuplicateTicket(data, null);
+    if(dup) throw new Error(duplicateMsg(dup));
+    const twice = findDoubleSave(data, null, data.createdBy || currentUser()?.id);
+    if(twice) throw new Error(lang==='ar' ? `⛔ نفس الحجز انحفظ قبل شوي: #${twice.booking_no} — ${twice.customer} (${money(twice.sell)}). ما ينحفظ مرتين.` : `Same booking already saved: #${twice.booking_no}.`);
+    if(data.isReshu) data = {...data, note: withReshuMarker(data.note, true)};
+  }
   const frPax = cleanPax(data.pax);
   if(isFranchiseBranch(data.branchId) && !data.refundLink && Number(data.cost)>=0){
     // franchise ticket: the agency's price = system fare + fee × passengers (the customer's price is the franchise's business)
@@ -1710,6 +1723,9 @@ async function addBooking(data){
 }
 async function updateBooking(id, data){
   { const p0 = bookings.find(b=>b.id===id);
+    if(p0 && !isReplacementTicket(p0) && !(data.isReshu!==undefined ? data.isReshu : isReshu(p0)) && data.ticketNo!==undefined){
+      const dup = findDuplicateTicket({...data, customer: data.customer||p0.customer}, id); if(dup) throw new Error(duplicateMsg(dup)); } }
+  { const p0 = bookings.find(b=>b.id===id);
     if(isFranchiseBranch(data.branchId) || isFranchiseBooking(p0)){
       const keepRate = isFranchiseBooking(p0) && p0.branch_id===data.branchId;
       const pax = cleanPax(data.pax!=null ? data.pax : (p0 && p0.pax));
@@ -1753,7 +1769,7 @@ async function updateBooking(id, data){
     bank_name: method==='transfer' ? (data.bankName||null) : method==='installment' ? (data.installmentProvider||null) : null,
     payment_splits: isSplit ? data.paymentSplits.map(s=>({...s, verified: s.method==='cash' ? true : !!s.verified})) : null,
     transfer_verified: isSplit ? allSettled : (method==='cash' || alreadyConfirmed),
-    edit_requested:false, edit_note:null, note: keepReplacementMarker(prevB, data.note!==undefined ? (data.note||null) : (prevB ? prevB.note : null))
+    edit_requested:false, edit_note:null, note: withReshuMarker(keepReplacementMarker(prevB, data.note!==undefined ? (data.note||null) : (prevB ? prevB.note : null)), data.isReshu!==undefined ? !!data.isReshu : isReshu(prevB))
   };
   if(data.__frFee!==undefined){ row.franchise_fee = data.__frFee; if(data.__frFee!=null) row.pax = data.pax; }
   const {data:updated, error} = await sb.from('bookings').update(row).eq('id', id).select().single();
@@ -1822,6 +1838,26 @@ function keepReplacementMarker(prevB, note){
   if(!m || String(note||'').includes(m[0])) return note;
   return (note ? String(note).replace(/(?:تذكرة بديلة عن|Replacement for) #\d+(?:\s*\[EX:[a-z0-9]+\])?/g,'').trim()+' — ' : '') + m[0];
 }
+/* ===== reissue (ريشو) + duplicate protection ===== */
+function isReshu(b){ return !!b && /\[RESHU\]/.test(String(b.note||'')); }
+function withReshuMarker(note, on){ const clean = String(note||'').replace(/\s*—?\s*🔁 ريشو \[RESHU\]/g,'').trim(); return on ? (clean ? clean+' — ' : '')+'🔁 ريشو [RESHU]' : (clean||null); }
+function ticketTokens(v){ return String(v||'').toUpperCase().replace(/AS\s+(\d)/g,'AS$1').split(/[^A-Z0-9]+/).filter(t=>t.length>=6); }
+function custKey(s){ return String(s||'').toUpperCase().replace(/\b(MR|MRS|MS|MISS|MSTR|FNU|MD)\b/g,'').replace(/[^A-Z؀-ۿ]/g,''); }
+function sameCustomer(a, b){ const x = custKey(a), y = custKey(b); return x.length>=3 && y.length>=3 && (x===y || x.includes(y) || y.includes(x)); }
+// an existing live ticket with the same ticket number AND the same passenger (a group PNR with other passengers is fine)
+function findDuplicateTicket(data, excludeId){
+  const tk = ticketTokens(data.ticketNo); if(!tk.length) return null;
+  return bookings.find(b=> b.id!==excludeId && !isRefundOnly(b) && !b.refunded && !isReshu(b) && ticketTokens(b.ticket_no).some(t=>tk.includes(t)) && sameCustomer(b.customer, data.customer)) || null;
+}
+// the same employee saving the very same ticket twice (double tap / re-entry) within 24h
+function findDoubleSave(data, excludeId, userId){
+  const now = Date.now();
+  return bookings.find(b=> b.id!==excludeId && b.created_by===userId && !isRefundOnly(b) && !b.refunded && Math.abs((Number(b.cost)||0)-(Number(data.cost)||0))<0.01
+    && Math.abs((Number(b.sell)||0)-(Number(data.sell)||0))<1.01 && sameCustomer(b.customer, data.customer) && (now - new Date(b.created_at||0).getTime()) < 24*3600e3 && !isReshu(b) && !data.isReshu) || null;
+}
+function duplicateMsg(b){ return lang==='ar'
+  ? `⛔ هذي التذكرة مسجلة من قبل: #${b.booking_no} — ${b.customer||''} (${b.date}، ${money(b.sell)}، سجلها ${userName(b.created_by)}).\nإذا هذا تغيير تاريخ/اسم علّم على "ريشو". وإذا العميل استرجع، سوّ طلب استرجاع للتذكرة #${b.booking_no}.`
+  : `This ticket is already recorded: #${b.booking_no} — ${b.customer||''}. Mark it as a reissue if it is one.`; }
 function replacementOf(b){ const m = String(b&&b.note||'').match(/(?:بديلة عن|Replacement for) #(\d+)/); return m ? m[1] : ''; }
 function replacementLockMsg(b){ return lang==='ar'
   ? `هذي تذكرة بديلة عن استرجاع #${replacementOf(b)} — سعرها وطريقة دفعها مربوطة بالاسترجاع، فتعديلها من هنا يخرّب كاش الموظف.\nللتصحيح: الاسترجاعات ← السجل ← ✏️ تعديل على #${replacementOf(b)} ← ↩ إرجاع للموظف، والموظف يصحح التذكرة البديلة ويرسلها من جديد.`
@@ -3388,7 +3424,8 @@ function openBookingModal(existing){
       </div>
       <div class="field"><label>${t('fieldCustomer')}</label><input name="customer" required value="${v.customer||''}"></div>
       <div class="grid-2">
-        <div class="field"><label>${t('fieldTicketNo')}</label><input name="ticketNo" value="${v.ticket_no||''}"></div>
+        <div class="field"><label>${t('fieldTicketNo')} *</label><input name="ticketNo" required value="${v.ticket_no||''}">
+          ${isReplacementTicket(existing)?'':`<label style="display:flex;gap:6px;align-items:center;margin-top:4px;font-size:12.5px;"><input type="checkbox" id="reshuChk" style="width:auto;" ${isReshu(existing)?'checked':''}> 🔁 ${lang==='ar'?'ريشو (تغيير تاريخ/اسم لتذكرة موجودة)':'Reissue of an existing ticket'}</label>`}</div>
         <div class="field"><label>${t('fieldInvoiceNo')}</label><input name="invoiceNo" value="${v.invoice_no||''}"></div>
       </div>
       <div class="field"><label>PNR ${lang==='ar'?'(رقم الحجز — مهم للمطابقة مع طيران الخليج NDC وأكبر)':'(booking reference — needed to match Gulf Air NDC and Akbar)'}</label><input name="pnr" dir="ltr" autocomplete="off" style="text-transform:uppercase" placeholder="ESRAVR" value="${esc(v.pnr||'')}"></div>
@@ -3531,6 +3568,12 @@ function openBookingModal(existing){
   { const pm = document.getElementById('paymentMethodSel'), pm0 = pm.onchange; pm.onchange = (e)=>{ if(pm0) pm0(e); applyFranchise(); };
     const sp = document.getElementById('splitPaymentToggle'), sp0 = sp.onchange; sp.onchange = (e)=>{ if(sp0) sp0(e); applyFranchise(); }; }
   updateProfitPreview(); applyFranchise();
+  { const rc = document.getElementById('reshuChk');
+    const applyReshu = ()=>{ if(!rc) return; const on = rc.checked, ar = lang==='ar';
+      if(!frOn()) document.getElementById('sellPriceLabel').textContent = on ? (ar?'المبلغ اللي أخذه من العميل للريشو':'Charged to customer') : t('fieldSellPrice');
+      const cl = document.getElementById('costPriceInput').closest ? document.getElementById('costPriceInput').closest('.field') : null; const lb = cl && cl.querySelector ? cl.querySelector('label') : null;
+      if(lb) lb.textContent = on ? (ar?'رسوم الريشو من الطيران (فرق السعر + الغرامة)':'Airline reissue charge') : t('fieldSystemFare'); };
+    if(rc){ rc.onchange = applyReshu; applyReshu(); } }
   document.getElementById('bookingForm').onsubmit = async (e)=>{
     e.preventDefault();
     const btn = document.getElementById('bookingSaveBtn'); btn.disabled=true; btn.textContent=t('saving');
@@ -3538,6 +3581,7 @@ function openBookingModal(existing){
     const isSplit = document.getElementById('splitPaymentToggle').checked && !(frOn() && !frFixedPrice());
     const payload = { airline:f.get('airline'), branchId:f.get('branchId'), customer:f.get('customer'),
       ticketNo:f.get('ticketNo'), pnr:f.get('pnr'), invoiceNo:f.get('invoiceNo'), flightRoute:f.get('flightRoute'), source:f.get('source'), date:f.get('date'),
+      isReshu: !!(document.getElementById('reshuChk') && document.getElementById('reshuChk').checked),
       sell:(frOn() && !frFixedPrice() && frCashOnly()) ? (+(Number(f.get('cost')||0)+frRate()*frPax()).toFixed(2)) : f.get('sell'), cost:f.get('cost'), pax: frOn() ? frPax() : undefined, isOpenTicket: false,
       paymentMethod:isSplit?'split':f.get('paymentMethod'), bankName:f.get('bankName'), installmentProvider:f.get('installmentProvider'), note:f.get('note') };
     if(isSplit){
@@ -3573,6 +3617,11 @@ function openBookingModal(existing){
         document.getElementById('bookingErrorBox').innerHTML = `<div class="login-error">⛔ ${lang==='ar'
           ? `لا يمكن حفظ تذكرة بخسارة: التكلفة ${money(_cost)} أكبر من سعر البيع ${money(_sell)} (−${money(_cost-_sell)}).<br>تأكد إنك ما عكست سعر البيع والسستم فير. لو الخسارة حقيقية، اطلب من المحاسب يسجلها.`
           : `A loss ticket cannot be saved: cost ${money(_cost)} is higher than the sale price ${money(_sell)}. Ask the accountant if the loss is real.`}</div>`;
+        btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking'); return;
+      }
+      if(!payload.isReshu && (_cost===0 || (_cost>0 && _cost < _sell*0.5)) && !confirm(lang==='ar'
+          ? `⚠️ السستم فير ${money(_cost)} ${_cost===0?'صفر':'أقل من نص سعر البيع'} ${money(_sell)} — يعني الربح ${money(_sell-_cost)}.\n\nغالبًا السستم فير انكتب غلط. متأكد؟ (لو هو ريشو علّم على "ريشو")`
+          : `System fare ${money(_cost)} looks too low for price ${money(_sell)}. Sure?`)){
         btn.disabled=false; btn.textContent=isEdit?t('saveChanges'):t('saveBooking'); return;
       }
       // only an extreme ratio (price 3× the fare or more) is treated as a likely typo (extra zero) — just a confirmation, nobody is blocked
@@ -4458,7 +4507,8 @@ function openUnifiedRefundModal(prefillId, refundId){
       <div class="field"><label>${ar?'طريقة الاسترجاع للعميل':'Refund method'}</label><select name="refundMethod" id="urMethod">
         <option value="cash" ${L.refund_method!=='transfer'?'selected':''}>${ar?'كاش — ينخصم من كاشك بعد اعتماد المحاسب':'Cash — from your cash after approval'}</option>
         <option value="transfer" ${L.refund_method==='transfer'?'selected':''}>${ar?'تحويل — من البنك بعد اعتماد المحاسب':'Transfer — from the bank after approval'}</option></select></div>
-      <label style="display:flex;gap:8px;align-items:center;margin:6px 0;font-weight:600;"><input type="checkbox" id="urExch" ${L.exchange_data?'checked':''}> 🔁 ${ar?'سوّى للعميل تذكرة بديلة (تغيير تذكرة)':'Customer took a replacement ticket'}</label>
+      <div class="note" style="background:#EEF3F8;padding:8px;border-radius:8px;${L.exchange_data?'display:none;':''}">ℹ️ ${ar?'لو العميل أخذ تذكرة جديدة: سوّ هذا الاسترجاع للتذكرة القديمة، وبعدها سجّل التذكرة الجديدة كحجز عادي (أو ريشو لو نفس التذكرة).':'If the customer takes a new ticket: refund the old one here, then record the new ticket as a normal booking.'}</div>
+      <label style="${L.exchange_data?'display:flex;':'display:none;'}gap:8px;align-items:center;margin:6px 0;font-weight:600;"><input type="checkbox" id="urExch" ${L.exchange_data?'checked':''}> 🔁 ${ar?'سوّى للعميل تذكرة بديلة (تغيير تذكرة)':'Customer took a replacement ticket'}</label>
       <div id="urExchBox" style="display:none;border:1px dashed var(--line,#ddd);border-radius:10px;padding:10px;margin-bottom:8px;">
         <div class="note">${ar?'قيمة التذكرة القديمة (المسترد للعميل فوق) تدفع ثمن الجديدة، والفرق بس يتحرك كاش. التذكرة الجديدة تنسجل تلقائيًا لما يعتمد المحاسب.':'The old ticket value pays for the new one; only the difference moves in cash.'}</div>
         <div class="grid-2">
@@ -4486,8 +4536,18 @@ function openUnifiedRefundModal(prefillId, refundId){
     if(!k) return null;
     const pool = scope.filter(b=>!b.refunded && b.refund_status!=='pending' && !(refundsReady && openRefundFor(b.id)));
     const exact = pool.filter(b=>normTkt(b.ticket_no)===k);
-    const hits = exact.length ? exact : (k.length>=6 ? pool.filter(b=>normTkt(b.ticket_no).includes(k)) : []);
+    let hits = exact.length ? exact : (k.length>=6 ? pool.filter(b=>normTkt(b.ticket_no).includes(k)) : []);
+    // a group PNR holds several passengers: the passenger's name picks the right one
+    if(hits.length>1){ const c = document.getElementById('urCustomer').value; let byName = hits.filter(b=>sameCustomer(b.customer, c)); if(byName.length>1) byName = byName.filter(b=>!isReshu(b)); if(byName.length===1) return byName[0]; }
     return hits.length===1 ? hits[0] : null;
+  };
+  const ambiguousTicket = ()=>{
+    if(prefillId) return [];
+    const k = normTkt(document.getElementById('urTicket').value); if(!k) return [];
+    const pool = scope.filter(b=>!b.refunded && b.refund_status!=='pending' && !(refundsReady && openRefundFor(b.id)));
+    const exact = pool.filter(b=>normTkt(b.ticket_no)===k);
+    const hits = exact.length ? exact : (k.length>=6 ? pool.filter(b=>normTkt(b.ticket_no).includes(k)) : []);
+    return hits.length>1 && !findTicket() ? hits : [];
   };
   const blockedTicket = ()=>{
     if(prefillId) return null;
@@ -4502,6 +4562,10 @@ function openUnifiedRefundModal(prefillId, refundId){
       box.innerHTML = `<span style="color:var(--red);font-weight:700">⛔ ${ar?`التذكرة #${blk.booking_no} ${blk.refunded?'مسترجعة مسبقًا':'عليها طلب استرجاع مفتوح'} — ما يصير تسوي لها استرجاع ثاني. لو فيه خطأ، المحاسب يعدّل الاسترجاع الأول.`:'Already refunded / open refund.'}</span>`;
       document.getElementById('urProfit').innerHTML=''; return; }
     document.getElementById('urSupplierBox').style.display = linked ? 'none' : '';
+    { const amb = !linked ? ambiguousTicket() : [];
+      if(amb.length){ document.getElementById('urSupplierBox').style.display = 'none';
+        box.innerHTML = `<span style="color:#A8722C;font-weight:700">⚠️ ${ar?'هذي التذكرة مسجلة لأكثر من راكب — اكتب اسم الراكب بالضبط:':'Several passengers on this ticket — type the passenger name:'}</span><br>${amb.map(b=>`#${b.booking_no} — ${esc(b.customer||'')} (${money(b.sell)})`).join('<br>')}`;
+        document.getElementById('urProfit').innerHTML=''; return; } }
     if(linked){
       if(!prefillId) document.getElementById('urCustomer').value = linked.customer||'';
       box.innerHTML = isRefundOnly(linked)
@@ -4542,7 +4606,7 @@ function openUnifiedRefundModal(prefillId, refundId){
     box.innerHTML = !n ? '' : d>0.004 ? `💵 ${ar?'يرجع للعميل كاش':'Give back in cash'}: ${money(d)} ${ar?'— وهذا بس اللي ينخصم من كاشك':''}`
       : d<-0.004 ? `💰 ${ar?'العميل يدفع زيادة':'Customer pays extra'}: ${money(-d)}` : `✔ ${ar?'نفس القيمة — ما في فرق كاش':'No difference'}`;
   };
-  ['urTicket','urSup','urCust'].forEach(id=>document.getElementById(id).oninput = ()=>{ draw(); drawExch(); }); draw();
+  ['urTicket','urSup','urCust','urCustomer'].forEach(id=>document.getElementById(id).oninput = ()=>{ draw(); drawExch(); }); draw();
   ['urNSell','urNCost'].forEach(id=>document.getElementById(id).oninput = drawExch);
   document.getElementById('urExch').onchange = drawExch; drawExch();
   document.getElementById('urMethod').onchange = ()=>{ draw(); drawExch(); };
@@ -4554,6 +4618,7 @@ function openUnifiedRefundModal(prefillId, refundId){
     let cust = +(parseAmount(f.get('refundAmount'))||0).toFixed(2);
     const supRaw = f.get('supplierRefund'); const sup = (supRaw===''||supRaw===null||supRaw===undefined) ? null : +(parseAmount(supRaw)||0).toFixed(2);
     linked = findTicket();
+    { const amb = !linked ? ambiguousTicket() : []; if(amb.length) return err(ar?`التذكرة مسجلة لأكثر من راكب (${amb.map(b=>'#'+b.booking_no+' '+esc(b.customer||'')).join('، ')}) — اكتب اسم الراكب بالضبط.`:'Several passengers on this ticket — type the passenger name.'); }
     const frT = linked && isFranchiseBooking(linked) && !isRefundOnly(linked);
     if(frT && (document.getElementById('urExch').checked || f.get('refundMethod')!=='transfer')) cust = +(Number(linked.sell)||0).toFixed(2);
     { const blk = !linked ? blockedTicket() : null; if(blk) return err(ar?`التذكرة #${blk.booking_no} ${blk.refunded?'مسترجعة مسبقًا':'عليها طلب استرجاع مفتوح'}.`:'Already refunded.'); }
@@ -5230,7 +5295,16 @@ window.uiApproveProfitHandover = async function(id){
   const ar = lang==='ar'; const now = handoverCurrentTotal(h), old = +Number(h.total_profit||0).toFixed(2);
   const diffMsg = handoverBookingIds(h).length && Math.abs(now-old)>0.009
     ? (ar?`\n\n⚠️ تغيّرت أرباح تذاكر هذا الطلب بعد ما أرسله الموظف (تعديل تكلفة أو استرجاع):\nالمبلغ في الطلب: ${money(old)}\nالمبلغ الصحيح الآن: ${money(now)}\nبيُعتمد المبلغ الصحيح.`:`\n\nAmount changed since submission: ${money(old)} → ${money(now)}. The current amount will be approved.`) : '';
-  if(!confirm((ar?`اعتماد استلام أرباح ${userName(h.employee_id)} بمبلغ ${money(handoverBookingIds(h).length?now:old)} كاش؟`:`Approve profit handover of ${money(now)}?`) + diffMsg)) return;
+  // the employee pays this in cash: warn when it is more than the cash he holds (e.g. only transfer/card tickets) — approving would take his balance below zero
+  const amt = handoverBookingIds(h).length ? now : old;
+  const cashNow = employeeCashOnHand(h.employee_id);
+  const tks = handoverBookingIds(h).map(i=>bookings.find(b=>b.id===i)).filter(Boolean);
+  const bankPart = +tks.filter(b=>!isCashTicket(b)).reduce((a,b)=>a+bookingProfitNow(b),0).toFixed(2);
+  const overMsg = amt > Math.max(0,cashNow) + 0.009
+    ? (ar?`\n\n⛔ انتبه: الكاش اللي عند الموظف الآن ${money(cashNow)} فقط${bankPart>0.004?`، و${money(bankPart)} من هذا الطلب أرباح تذاكر تحويل/شبكة (فلوسها في البنك)`:''}.\nلو اعتمدته يصير رصيده ${money(+(cashNow-amt).toFixed(2))} (بالسالب = الوكالة مديونة له).\nاعتمد فقط إذا استلمت منه ${money(amt)} كاش فعلًا — وإلا اضغط إلغاء وخلّه يسلّمها لما يكون عنده كاش.`
+        : `\n\nWarning: employee holds only ${money(cashNow)} cash; approving takes him to ${money(+(cashNow-amt).toFixed(2))}.`)
+    : '';
+  if(!confirm((ar?`اعتماد استلام أرباح ${userName(h.employee_id)} بمبلغ ${money(amt)} كاش؟`:`Approve profit handover of ${money(amt)}?`) + diffMsg + overMsg)) return;
   try{ await approveProfitHandover(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
 window.uiRejectProfitHandover = async function(id){
