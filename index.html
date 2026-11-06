@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G24</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G25</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -895,6 +895,11 @@ async function submitDeposit(data){
 async function approveDeposit(id){
   const d0 = deposits.find(x=>x.id===id);
   if(!d0 || d0.status==='approved') return;
+  // fresh read: another screen / a double click may have approved it already
+  const {data:fresh} = await sb.from('cash_deposits').select('status').eq('id', id).maybeSingle();
+  if(fresh && fresh.status==='approved'){ d0.status='approved'; return; }
+  const {data:already} = await sb.from('journal').select('*').eq('deposit_id', id).eq('desc_key','jDeposit');
+  if(already && already.length){ await mustUpdate('cash_deposits', id, {status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}); d0.status='approved'; already.forEach(j=>{ if(!journal.some(x=>x.id===j.id)) journal.unshift(j); }); return; }
   // entry first, then status — if the status update fails the entry is removed, so nothing is half-done
   const {data:jIns, error:jErr} = await sb.from('journal').insert({ date:todayStr(), branch_id:d0.branch_id, deposit_id:id,
     desc_key:'jDeposit', desc_args:[destLabel(d0.destination)], debit_key: isSupplierDest(d0.destination) ? 'accSuppliers' : 'accBank', credit_key:'accCashOnHand', amount:d0.amount }).select().single();
@@ -3064,6 +3069,7 @@ function openStatementModal(kind, employeeId){
 }
 function openCashStatementModal(employeeId){ openStatementModal('cash', employeeId); }
 /* ===== full employee statement: every ticket with its system fare, profit, cash part, transfer/card part — plus refunds, deposits and profit handovers, with a running cash balance ===== */
+function bankPendOf(b){ return +transferParts(b).filter(p=>p.status==='pending').reduce((a,p)=>a+(Number(p.amount)||0),0).toFixed(2); }
 function employeeFullStatement(employeeId, from, to){
   const ar = lang==='ar';
   const pmName = m=> m==='cash'?(ar?'كاش':'Cash') : m==='transfer'?(ar?'تحويل':'Transfer') : m==='span'?(ar?'شبكة':'Card') : m==='installment'?(ar?'تمارا/تابي':'Installment') : (m||'—');
@@ -3083,7 +3089,8 @@ function employeeFullStatement(employeeId, from, to){
     cashPart = +(cashPart - laterSum).toFixed(2);
     all.push({date:b.date||'', stamp:b.created_at||'', kind:'t', b, type: isRefundOnly(b)?(ar?'استرجاع (خارج النظام)':'Refund-only'):(isReplacementTicket(b)?(ar?'تذكرة بديلة':'Replacement'):(ar?'تذكرة':'Ticket')),
       method, sell: isRefundOnly(b)?null:sell, cost: isRefundOnly(b)?null:cost, profit: isRefundOnly(b)?null:+(sell-cost-(isFranchiseBooking(b)?share:0)).toFixed(2),
-      cash: +(cashPart - share).toFixed(2), bank: +nonCash.reduce((a,x)=>a+x.a,0).toFixed(2), bankOk: nonCash.length ? nonCash.every(x=>x.ok) : null,
+      cash: +(cashPart - share).toFixed(2), bank: +nonCash.reduce((a,x)=>a+x.a,0).toFixed(2), bankPend: bankPendOf(b),
+      bankOk: !nonCash.length ? null : (bankPendOf(b)>0.004 ? false : (nonCash.every(x=>x.ok) ? true : 'ref')),
       amt: +(cashPart - share).toFixed(2)});
     if(b.refunded){
       const rv = refundsReady ? refundRows.find(r=>r.booking_id===b.id && r.status==='approved') : null;
@@ -3104,7 +3111,7 @@ function employeeFullStatement(employeeId, from, to){
   const tk = rows.filter(r=>r.kind==='t' && r.sell!=null);
   const T = { tickets: tk.length, sell: S('sell', r=>r.kind==='t'), cost: S('cost', r=>r.kind==='t'), profit: S('profit', r=>r.kind==='t'), refundProfit: S('profit', r=>r.kind==='r'),
     cashIn: S('cash', r=>r.kind==='t' && r.cash>0) + S('cash', r=>r.kind==='m'), cashRefunds: -S('cash', r=>r.kind==='r'),
-    transfer: S('bank', r=>r.kind==='t' && r.bankOk!==null), transferOk: S('bank', r=>r.kind==='t' && r.bankOk===true), transferPending: S('bank', r=>r.kind==='t' && r.bankOk===false),
+    transfer: S('bank', r=>r.kind==='t' && r.bankOk!==null), transferOk: S('bank', r=>r.kind==='t' && r.bankOk===true), transferPending: S('bankPend', r=>r.kind==='t'),
     deposits: -S('amt', r=>r.kind==='d'), handed: S('handed', r=>r.kind==='h'), refunds: rows.filter(r=>r.kind==='r').length };
   ['span','installment','transfer'].forEach(m=>{ T['by_'+m] = +tk.reduce((a,r)=>{ const b=r.b; if(b.payment_method===m) return a+(Number(b.sell)||0); if(b.payment_method==='split'&&Array.isArray(b.payment_splits)) return a+b.payment_splits.filter(x=>x.method===m).reduce((s,x)=>s+Number(x.amount||0),0); return a; },0).toFixed(2); });
   T.cashTickets = +tk.reduce((a,r)=>a+(r.b.payment_method==='cash'?(Number(r.b.sell)||0):(r.b.payment_method==='split'&&Array.isArray(r.b.payment_splits)?r.b.payment_splits.filter(x=>x.method==='cash').reduce((s,x)=>s+Number(x.amount||0),0):0)),0).toFixed(2);
@@ -3133,7 +3140,7 @@ function employeeFullStatementHTML(employeeId, from, to){
     <tbody>${from?`<tr><td colspan="${P?10:9}" style="font-weight:700;">${ar?'رصيد سابق':'Opening balance'}</td><td class="num" style="font-weight:700;">${money(st.opening)}</td></tr>`:''}
     ${st.rows.map(r=>`<tr><td>${r.date}</td><td>${!P&&r.kind==='h'?(ar?'تسليم للإدارة':'Handed'):r.type}</td><td class="num">${r.b?'#'+r.b.booking_no:''}</td><td>${r.b?esc(r.b.customer||''):esc(r.note||'')}${r.b&&r.b.pnr?` <span style="opacity:.6;font-size:11px;">${esc(r.b.pnr)}</span>`:''}</td>
       <td>${r.method||''}</td><td class="num">${m(r.sell)}</td><td class="num">${m(r.cost)}</td>${P?`<td class="num" style="color:${(r.profit||0)<0?'#b42318':'#1f7a4d'}">${m(r.profit)}</td>`:''}
-      <td class="num">${r.cash?money(r.cash):''}</td><td class="num">${r.bank?money(r.bank)+(r.bankOk===true?' ✔':r.bankOk===false?' ⏳':''):''}</td><td class="num" style="font-weight:700;">${money(r.bal)}</td></tr>`).join('')}
+      <td class="num">${r.cash?money(r.cash):''}</td><td class="num">${r.bank?money(r.bank)+(r.bankOk===true?' ✔':r.bankOk===false?' ⏳':r.bankOk==='ref'?' ↩':''):''}</td><td class="num" style="font-weight:700;">${money(r.bal)}</td></tr>`).join('')}
     ${st.rows.length?'':`<tr><td colspan="${P?11:10}" style="text-align:center;opacity:.7;">${ar?'لا توجد حركات في هذي الفترة':'No activity'}</td></tr>`}
     </tbody></table></div>
     <p class="note" style="margin-top:6px;">${ar?'رصيد الكاش يتحرك بالكاش فقط (التحويل والشبكة تروح للبنك). ✔ مؤكد في البنك · ⏳ بانتظار تأكيد المحاسب. الاسترجاع بتاريخ اعتماده.':'Cash balance moves with cash only.'}</p>`;
@@ -3177,7 +3184,7 @@ function openFullStatementModal(employeeId){
     const st = employeeFullStatement(employeeId, fromEl.value||null, toEl.value||null);
     const data = st.rows.map(r=>({[ar?'التاريخ':'Date']:r.date, [ar?'النوع':'Type']:r.type, [ar?'رقم':'No.']:r.b?r.b.booking_no:'', [ar?'العميل / البيان':'Customer']:r.b?(r.b.customer||''):(r.note||''), PNR:r.b?(r.b.pnr||''):'',
       [ar?'الدفع':'Payment']:r.method||'', [ar?'سعر البيع':'Sell']:r.sell??'', [ar?'السستم فير':'Fare']:r.cost??'', ...(isAdmin()?{[ar?'الربح':'Profit']:r.profit??''}:{}), [ar?'كاش':'Cash']:r.cash||'', [ar?'تحويل/شبكة':'Transfer/card']:r.bank||'',
-      [ar?'حالة التحويل':'Status']:r.bankOk===true?(ar?'مؤكد':'confirmed'):r.bankOk===false?(ar?'بانتظار':'pending'):'', [ar?'رصيد الكاش':'Cash balance']:r.bal}));
+      [ar?'حالة التحويل':'Status']:r.bankOk===true?(ar?'مؤكد':'confirmed'):r.bankOk===false?(ar?'بانتظار':'pending'):r.bankOk==='ref'?(ar?'مسترجع':'refunded'):'', [ar?'رصيد الكاش':'Cash balance']:r.bal}));
     data.unshift({[ar?'التاريخ':'Date']:fromEl.value||'', [ar?'النوع':'Type']:ar?'رصيد سابق':'Opening', [ar?'رصيد الكاش':'Cash balance']:st.opening});
     const ws = XLSX.utils.json_to_sheet(data); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Statement');
     XLSX.writeFile(wb, `statement-${userName(employeeId)}-${fromEl.value||'all'}-${toEl.value||todayStr()}.xlsx`);
@@ -5138,7 +5145,9 @@ window.uiApproveDeposit = async function(id){
   const d = deposits.find(x=>x.id===id); if(!d) return;
   const ar = lang==='ar';
   if(!confirm(ar?`اعتماد إيداع ${money(d.amount)} من ${userName(d.submitted_by)} إلى ${destLabel(d.destination)}؟\n\nتأكد إن المبلغ وصل فعلًا${isSupplierDest(d.destination)?' لحساب المورد':' للبنك'} قبل الاعتماد.`:`Approve deposit of ${money(d.amount)}?`)) return;
+  if(window.__depBusy && window.__depBusy.has(id)) return; (window.__depBusy = window.__depBusy || new Set()).add(id);
   try{ await approveDeposit(id); render(); }catch(e){ console.error(e); alert(errTextPlain()); }
+  finally{ window.__depBusy.delete(id); }
 };
 window.uiRejectDeposit = async function(id){
   const reason = prompt(t('rejectReason')); if(reason===null) return;
