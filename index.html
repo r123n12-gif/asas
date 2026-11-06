@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G26</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G27</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -623,6 +623,64 @@ function applyFetched({b, u, bk, jr, ex, dp, ph, ec, mr, rf}){
   bookings.sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.created_at||'').localeCompare(a.created_at||''));
   refundsReady = !rf.error; refundRows = rf.error ? [] : (rf.data||[]);
   refundRows.sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+}
+/* ===================== LIGHT SYNC (G27) =====================
+   After the first full download, every refresh asks the database only for rows added/changed since the last one
+   (one small request: asas_changes). Row counts come back too: if anything was deleted, or once an hour, a full
+   download runs again. Without the SQL (no updated_at / no asas_changes) it falls back to a full download. */
+let __deltaCursor = null, __deltaOK = null, __lastFull = 0, __lastFullTry = 0, __deltaFailAt = 0;
+const FULL_EVERY = 60*60*1000;
+const DELTA_TABLES = ['branches','app_users','bookings','journal','manual_expenses','cash_deposits','profit_handovers','employee_charges','misc_receipts','refunds'];
+function __tbl(name){ switch(name){ case 'branches':return branches; case 'app_users':return users; case 'bookings':return bookings; case 'journal':return journal;
+  case 'manual_expenses':return manualExpenses; case 'cash_deposits':return deposits; case 'profit_handovers':return profitHandovers; case 'employee_charges':return employeeCharges;
+  case 'misc_receipts':return miscReceipts; case 'refunds':return refundsReady?refundRows:null; } return null; }
+function __maxStamp(){ let m = null; DELTA_TABLES.forEach(t=>{ (__tbl(t)||[]).forEach(r=>{ if(r && r.updated_at && (!m || r.updated_at>m)) m=r.updated_at; }); }); return m; }
+function afterFullFetch(){
+  __lastFull = Date.now();
+  const probe = bookings[0] || journal[0];
+  if(probe && !Object.prototype.hasOwnProperty.call(probe,'updated_at')){ __deltaOK = false; __deltaCursor = null; return; }
+  if(__deltaOK===false && Date.now()-__deltaFailAt > 10*60*1000) __deltaOK = null;   // a network blip: try the light way again after 10 minutes
+  __deltaCursor = __maxStamp() || new Date().toISOString();
+}
+function __mergeRows(arr, rows){
+  if(!arr || !Array.isArray(rows) || !rows.length) return 0;
+  const idx = new Map(arr.map((r,i)=>[r.id,i])); let n = 0;
+  rows.forEach(r=>{ if(!r || r.id==null) return; const i = idx.get(r.id);
+    if(i===undefined){ arr.push(r); idx.set(r.id, arr.length-1); n++; }
+    else if(JSON.stringify(arr[i])!==JSON.stringify(r)){ const o = arr[i]; Object.keys(o).forEach(k=>{ if(!(k in r)) delete o[k]; }); Object.assign(o, r); n++; } });
+  return n;
+}
+// 'ok' | 'full' (needs a full download) | 'skip' (a save is running, try next time)
+async function pollDelta(){
+  if(__deltaOK===false || !__deltaCursor) return 'full';
+  const since = new Date(new Date(__deltaCursor).getTime() - 3*60*1000).toISOString();   // 3-minute overlap: a slow save is never missed
+  const m0 = __mutations;
+  const {data, error} = await sb.rpc('asas_changes', {since});
+  if(error || !data || typeof data!=='object'){ if(error) console.warn('asas_changes unavailable, full download', error.message||error); __deltaOK = false; __deltaFailAt = Date.now(); return 'full'; }
+  __deltaOK = true;
+  if(m0!==__mutations || __busy.size) return 'skip';
+  let changed = 0;
+  DELTA_TABLES.forEach(t=>{ const arr = __tbl(t); if(arr) changed += __mergeRows(arr, data[t]); });
+  if(changed){
+    const byCreated = a=>a.sort((x,y)=>String(y.created_at||'').localeCompare(String(x.created_at||'')) || String(x.id).localeCompare(String(y.id)));
+    bookings.sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.created_at||'').localeCompare(a.created_at||''));
+    [journal, manualExpenses, deposits, profitHandovers, employeeCharges, miscReceipts].forEach(byCreated);
+    if(refundsReady) refundRows.sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+    const byCreatedAsc = a=>a.sort((x,y)=>String(x.created_at||'').localeCompare(String(y.created_at||'')) || String(x.id).localeCompare(String(y.id)));
+    byCreatedAsc(branches); byCreatedAsc(users);
+  }
+  if(data.now) __deltaCursor = data.now;
+  const cnt = data.counts || {};
+  for(const t of DELTA_TABLES){ const arr = __tbl(t); if(arr && cnt[t]!=null && Number(cnt[t])!==arr.length) return 'full'; }
+  return 'ok';
+}
+async function syncData(force){
+  if(force || __deltaOK===false || !__deltaCursor || Date.now()-__lastFull > FULL_EVERY){
+    if(__deltaOK===false && !force && Date.now()-__lastFullTry < 3*60*1000) return;   // SQL not installed yet: full download at most every 3 minutes
+    __lastFullTry = Date.now(); await fetchAll(); afterFullFetch(); return;
+  }
+  const r = await pollDelta();
+  if(r==='full'){ __lastFullTry = Date.now(); await fetchAll(); afterFullFetch(); }
 }
 /* ===================== CASH DEPOSITS ===================== */
 /* ===================== MISC RECEIPTS (payment without a ticket) ===================== */
@@ -1709,7 +1767,7 @@ function lockify(fn, name){
         busyBadge(false);
         // pull the latest data once everything is saved, so the screen never shows a half-updated state
         clearTimeout(__syncTimer);
-        __syncTimer = setTimeout(async ()=>{ if(__busy.size) return; try{ const before = dataSignature(); await fetchAll(); const sig = dataSignature(); __lastSig = sig; const ov = document.getElementById('overlay'); if(sig!==before && !(ov && ov.classList.contains('show'))) render(); }catch(e){ console.error('sync failed', e); } }, 1500);
+        __syncTimer = setTimeout(async ()=>{ if(__busy.size) return; try{ const before = dataSignature(); await syncData(__deltaOK===false); const sig = dataSignature(); __lastSig = sig; const ov = document.getElementById('overlay'); if(sig!==before && !(ov && ov.classList.contains('show'))) render(); }catch(e){ console.error('sync failed', e); } }, 1500);
       }
     }
   };
@@ -2161,7 +2219,7 @@ async function boot(){
   if(!session){ renderLogin(app); return; }
   app.innerHTML = `<div class="login-wrap" style="color:#EDE7D6;">Loading... / جاري التحميل...</div>`;
   try{
-    await fetchAll();
+    await fetchAll(); afterFullFetch();
     const me = users.find(x=>x.id===session.id);
     if(!me || me.active===false){ localStorage.removeItem('asas_session'); renderLogin(app);
       setTimeout(()=>{ const box = document.getElementById('loginErrorBox'); if(box) box.innerHTML = `<div class="login-error">${lang==='ar'?'هذا الحساب موقوف أو محذوف. راجع المدير.':'This account is disabled.'}</div>`; }, 0); return; }
@@ -2186,11 +2244,18 @@ function startAutoRefresh(){
     const typing = ae && ['INPUT','SELECT','TEXTAREA'].includes(ae.tagName);
     if(route==='reconcile') return;
     try{
-      await fetchAll();
+      await syncData();
       const sig = dataSignature();
       if(sig !== __lastSig && !typing){ __lastSig = sig; render(); }
     }catch(e){ console.error('auto-refresh failed', e); }
-  }, 45000);
+  }, 60000);
+  // back on the screen after a while: refresh right away (at most every 20 s)
+  document.addEventListener('visibilitychange', async ()=>{
+    if(document.hidden || !getSession() || __busy.size || route==='reconcile') return;
+    if(Date.now() - (window.__lastVisSync||0) < 20000) return; window.__lastVisSync = Date.now();
+    const ov = document.getElementById('overlay'); const ae = document.activeElement;
+    try{ await syncData(); const sig = dataSignature(); if(sig !== __lastSig && !(ov && ov.classList.contains('show')) && !(ae && ['INPUT','SELECT','TEXTAREA'].includes(ae.tagName))){ __lastSig = sig; render(); } }catch(e){ console.error('sync failed', e); }
+  });
 }
 function stopAutoRefresh(){
   if(autoRefreshInterval){ clearInterval(autoRefreshInterval); autoRefreshInterval=null; }
