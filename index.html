@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G27</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G28</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1467,6 +1467,14 @@ function refundJournalRows(r, b){
     rows.push({...base, desc_key:'jSupplierRefund', debit_key:'accSuppliers', credit_key:'accCogs', amount:+Number(r.airline_amount).toFixed(2)});
   return rows;
 }
+// a supplier-refund line posted on its own (old "record supplier refund" button) next to the refund's own line = counted twice
+async function dropLegacySupplierRefund(b){
+  const {data, error} = await sb.from('journal').select('id').eq('booking_id', b.id).eq('desc_key','jSupplierRefund').is('refund_id', null);
+  if(error) throw error;
+  const ids = (data||[]).map(x=>x.id); if(!ids.length) return;
+  const {error:e2} = await sb.from('journal').delete().in('id', ids); if(e2) throw e2;
+  const d = new Set(ids); journal = journal.filter(j=>!d.has(j.id));
+}
 async function syncRefundJournal(refundId){
   const {data, error} = await sb.from('journal').select('*').eq('refund_id', refundId);
   if(error) throw error;
@@ -1480,6 +1488,7 @@ async function approveRefundV2(id, edits){
     const patch = {};
     if(edits.customerAmount!=null) patch.customer_amount = +Number(edits.customerAmount).toFixed(2);
     if(edits.airlineAmount!==undefined) patch.airline_amount = (edits.airlineAmount===null||edits.airlineAmount==='') ? null : +Number(edits.airlineAmount).toFixed(2);
+    if(patch.airline_amount!=null) checkAirlineCap(r.booking_id, patch.airline_amount);
     if(edits.method && r.method!=='exchange') patch.method = edits.method;
     if(edits.proofUrl) patch.proof_url = edits.proofUrl;
     if(Object.keys(patch).length){ await mustUpdate('refunds', id, patch); r = await freshRefund(id); }
@@ -1512,6 +1521,7 @@ async function approveRefundV2(id, edits){
   if(r.method==='exchange') mirror.exchange_data = {...(r.new_ticket||{}), key:id};
   await mustUpdate('bookings', b.id, mirror); Object.assign(b, mirror);
   // 3) journal — each line at most once (database-enforced)
+  if(r.airline_amount!=null && Number(r.airline_amount)>0) await dropLegacySupplierRefund(b);
   for(const row of refundJournalRows(r, b)) await insertOnce('journal', row);
   await syncRefundJournal(id);
   // 4) replacement ticket — at most once (database-enforced)
@@ -1578,11 +1588,13 @@ async function editApprovedRefundV2(id, edits){
     if(edits && edits.customerAmount!=null) patch.customer_amount = +Number(edits.customerAmount).toFixed(2);
     if(isFranchiseBooking(b) && !isRefundOnly(b)) patch.customer_amount = +(Number(b.sell)||0).toFixed(2);   // franchise exchange: always the ticket value
     if(edits && edits.airlineAmount!==undefined) patch.airline_amount = (edits.airlineAmount===null||edits.airlineAmount==='') ? null : +Number(edits.airlineAmount).toFixed(2);
+    if(patch.airline_amount!=null) checkAirlineCap(b.id, patch.airline_amount);
     if(Object.keys(patch).length) await mustUpdate('refunds', id, patch);
     const r = await freshRefund(id);
     const {error:e1} = await sb.from('journal').delete().eq('refund_id', id); if(e1) throw e1; journal = journal.filter(j=>j.refund_id!==id);
     const mirror = { refund_amount:+Number(r.customer_amount).toFixed(2), supplier_refund_amount: r.airline_amount==null ? null : +Number(r.airline_amount).toFixed(2) };
     await mustUpdate('bookings', b.id, mirror); Object.assign(b, mirror);
+    if(r.airline_amount!=null && Number(r.airline_amount)>0) await dropLegacySupplierRefund(b);
     for(const row of refundJournalRows(r, b)) await insertOnce('journal', row);
     await syncRefundJournal(id);
     return r;
@@ -1590,9 +1602,14 @@ async function editApprovedRefundV2(id, edits){
   await undoRefundV2(id, 'reopen');
   return await approveRefundV2(id, edits);
 }
+function checkAirlineCap(bookingId, S){
+  const b = bookingId ? bookings.find(x=>x.id===bookingId) : null;
+  if(b && !isRefundOnly(b) && S!=null && S > (Number(b.cost)||0)+0.01) throw new Error(lang==='ar'?`المسترد من الطيران أكبر من التكلفة (${money(b.cost)}).`:'More than the cost.');
+}
 async function setAirlineAmountV2(id, amount){
   const r = await freshRefund(id);
   const S = +Number(amount).toFixed(2); if(!(S>=0)) throw new Error(t('invalidRefundAmount'));
+  checkAirlineCap(r.booking_id, S);
   await mustUpdate('refunds', id, {airline_amount:S});
   if(r.status==='approved') return await approveRefundV2(id);   // posts the missing supplier line (once)
   return await freshRefund(id);
@@ -1628,6 +1645,9 @@ async function migrateLegacyRefunds(){
 async function recordSupplierRefund(bookingId, amount){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) throw new Error('booking not found');
+  // the ticket has a refund request (R-number): the airline amount belongs on it — never a second, separate line
+  const rv = refundsReady ? refundRows.find(r=>r.booking_id===bookingId && r.status==='approved') : null;
+  if(rv){ if(rv.airline_amount!=null && Number(rv.airline_amount)>0) throw new Error(lang==='ar'?'مسترد المورد مسجل مسبقًا لهذه التذكرة.':'Supplier refund already recorded.'); return await setAirlineAmountV2(rv.id, amount); }
   if(!b.refunded) throw new Error(lang==='ar'?'التذكرة غير مسترجعة.':'Ticket is not refunded.');
   if(bookingSupplierRefundKnown(b)) throw new Error(lang==='ar'?'مسترد المورد مسجل مسبقًا لهذه التذكرة.':'Supplier refund already recorded.');
   const amt = +Number(amount).toFixed(2);
@@ -3965,6 +3985,13 @@ function integrityIssues(){
   miscReceipts.filter(r=>r.status==='confirmed').forEach(r=>{
     if(!miscReceiptJournalRow(r)) issues.push({b:null, fix:{kind:'misc', id:r.id}, issue: ar?`مبلغ بدون تذكرة معتمد بدون قيد — ${userName(r.employee_id)}`:`Confirmed misc receipt without entry — ${userName(r.employee_id)}`, expected:+Number(r.amount).toFixed(2), actual:0});
   });
+  if(refundsReady) refundRows.filter(r=>r.status==='approved' && r.booking_id).forEach(r=>{
+    const legacy = journal.filter(j=>j.booking_id===r.booking_id && j.desc_key==='jSupplierRefund' && !j.refund_id);
+    const own = journal.filter(j=>j.refund_id===r.id && j.desc_key==='jSupplierRefund');
+    if(legacy.length && own.length){ const bk = bookings.find(x=>x.id===r.booking_id);
+      issues.push({b:null, fix:{kind:'dupSupplierRefund', id:r.booking_id}, issue: ar?`مسترد المورد مسجّل مرتين — ${refundLabel(r)} حجز #${bk?bk.booking_no:'?'} (${r.customer||''})`:`Supplier refund posted twice — ${refundLabel(r)} #${bk?bk.booking_no:'?'}`,
+        expected:+own.reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2), actual:+own.concat(legacy).reduce((a,j)=>a+Number(j.amount||0),0).toFixed(2)}); }
+  });
   const orphans = journal.filter(j=>j.booking_id && !ids.has(j.booking_id));
   if(refundsReady) refundRows.forEach(r=>{
     const lines = journal.filter(j=>j.refund_id===r.id);
@@ -4058,6 +4085,9 @@ async function repairOther(fix){
     const p = +((Number(b.sell)||0)-(Number(b.cost)||0)).toFixed(2);
     const {error} = await sb.from('bookings').update({profit_amount:p, margin:p, net_profit:p}).eq('id', b.id); if(error) throw error;
     b.profit_amount = p; b.margin = p; b.net_profit = p;
+  }else if(fix.kind==='dupSupplierRefund'){
+    const b = bookings.find(x=>x.id===fix.id); if(!b) return;
+    await dropLegacySupplierRefund(b);
   }else if(fix.kind==='orphans'){
     const ids = new Set(bookings.map(b=>b.id));
     const del = journal.filter(j=>j.booking_id && !ids.has(j.booking_id)).map(j=>j.id);
@@ -5063,7 +5093,7 @@ window.openBulkHandoverModal = function(){
 };
 window.uiRepairOther = async function(fixJson){
   const fix = JSON.parse(fixJson); const ar = lang==='ar';
-  const msg = fix.kind==='orphans' ? (ar?'حذف القيود المرتبطة بتذاكر محذوفة؟':'Delete entries linked to deleted tickets?') : (ar?'تسجيل القيد الناقص؟':'Post the missing entry?');
+  const msg = fix.kind==='orphans' ? (ar?'حذف القيود المرتبطة بتذاكر محذوفة؟':'Delete entries linked to deleted tickets?') : fix.kind==='dupSupplierRefund' ? (ar?'حذف قيد مسترد المورد الزايد (القديم) والإبقاء على قيد الاسترجاع؟':'Remove the extra (old) supplier-refund entry?') : (ar?'تسجيل القيد الناقص؟':'Post the missing entry?');
   if(!confirm(msg)) return;
   try{ await repairOther(fix); alert(ar?'✔ تم الإصلاح':'Fixed'); openIntegrityModal(); }catch(e){ console.error(e); alert(errTextPlain()); }
 };
