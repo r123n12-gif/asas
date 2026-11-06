@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G25</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G26</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -874,11 +874,28 @@ function employeeCashBreakdownHTML(){
   return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('colUserName')}</th><th>${t('fieldBranch')}</th><th>💰 ${ar?'أرباح للإدارة':'Profit'}</th><th>🏦 ${ar?'يُودَع':'To deposit'}</th><th>${ar?'المجموع':'Total'}</th></tr></thead>
     <tbody>${rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${r.branch}</td><td class="num">${money(r.c.profitDue)}</td><td class="num" style="font-weight:600;${r.c.depositDue<0?'color:var(--red)':''}">${money(r.c.depositDue)}</td><td class="num">${money(r.c.total)}</td></tr>`).join('')}</tbody></table></div>`;
 }
+/* shrink phone photos before upload (3–5 MB → ~150–300 KB). PDFs and anything the browser can't draw are uploaded as they are. */
+async function compressImage(file, maxDim=1600, quality=0.72){
+  try{
+    if(!file || !/^image\/(jpeg|jpg|png|webp|bmp)$/i.test(file.type||'') ) return file;
+    if((file.size||0) < 250*1024) return file;
+    const url = URL.createObjectURL(file);
+    const img = await new Promise((ok,bad)=>{ const i=new Image(); i.onload=()=>ok(i); i.onerror=bad; i.src=url; });
+    const k = Math.min(1, maxDim/Math.max(img.naturalWidth||img.width, img.naturalHeight||img.height));
+    const c = document.createElement('canvas'); c.width=Math.round((img.naturalWidth||img.width)*k); c.height=Math.round((img.naturalHeight||img.height)*k);
+    const g = c.getContext('2d'); g.fillStyle='#fff'; g.fillRect(0,0,c.width,c.height); g.drawImage(img,0,0,c.width,c.height);
+    URL.revokeObjectURL(url);
+    const blob = await new Promise(ok=>c.toBlob(ok,'image/jpeg',quality));
+    if(!blob || blob.size >= file.size) return file;
+    return new File([blob], String(file.name||'receipt').replace(/\.[^.]+$/,'')+'.jpg', {type:'image/jpeg'});
+  }catch(e){ return file; }
+}
 async function uploadReceiptFile(file){
+  file = await compressImage(file);
   const extMatch = /\.([a-zA-Z0-9]+)$/.exec(file.name||'');
   const ext = extMatch ? extMatch[1].toLowerCase() : 'jpg';
   const path = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
-  const {error} = await sb.storage.from(RECEIPTS_BUCKET).upload(path, file);
+  const {error} = await sb.storage.from(RECEIPTS_BUCKET).upload(path, file, file.type?{contentType:file.type}:undefined);
   if(error) throw error;
   const {data} = sb.storage.from(RECEIPTS_BUCKET).getPublicUrl(path);
   return data.publicUrl;
@@ -5629,8 +5646,15 @@ function renderSettings(){
       <p class="note">${t('backupNote')}</p>
       <button class="btn btn-primary btn-sm" id="exportBackupBtn">${t('exportBackupBtn')}</button>
     </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">🗜️ ${lang==='ar'?'ضغط صور الإيصالات القديمة':'Compress old receipt photos'}</h3></div>
+      <p class="note">${lang==='ar'?'يصغّر صور الإيصالات المرفوعة سابقًا (نفس الرابط، ما يتغير شي بالحجوزات) عشان توفر مساحة واستهلاك Supabase. ملفات الـ PDF ما تنلمس. الصور الجديدة تنضغط تلقائيًا قبل الرفع. خذ نسخة احتياطية قبل.':'Shrinks receipt photos already uploaded (same link). PDFs untouched. New photos are compressed automatically.'}</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-ghost btn-sm" id="scanImgBtn">🔎 ${lang==='ar'?'احسب الحجم':'Measure'}</button><button class="btn btn-gold btn-sm" id="compressImgBtn">🗜️ ${lang==='ar'?'ابدأ الضغط':'Compress now'}</button></div>
+      <div id="compressImgOut" class="note" style="margin-top:8px;white-space:pre-line;"></div>
+    </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('resetTitle')}</h3></div><p class="note">${t('resetNote')}</p></div>`;
   document.getElementById('exportBackupBtn').onclick = exportFullBackup;
+  document.getElementById('scanImgBtn').onclick = ()=>uiCompressOldReceipts(false);
+  document.getElementById('compressImgBtn').onclick = ()=>uiCompressOldReceipts(true);
   document.getElementById('addBranchBtn').onclick = ()=>{
     showModal(`
       <div class="modal-head"><h3>${t('modalNewBranch')}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
@@ -5668,6 +5692,41 @@ window.uiRemoveBranch = async function(id){
     render();
   }catch(e){ alert(t('branchDeleteError')); }
 };
+async function listReceiptFiles(){
+  const all = []; let offset = 0;
+  for(;;){ const {data, error} = await sb.storage.from(RECEIPTS_BUCKET).list('', {limit:1000, offset, sortBy:{column:'name', order:'asc'}});
+    if(error) throw error; const rows=(data||[]).filter(x=>x && x.name && x.metadata); all.push(...rows); if(!data || data.length<1000) break; offset += 1000; }
+  return all;
+}
+const fmtMB = n=>(n/1048576).toFixed(1)+' MB';
+async function uiCompressOldReceipts(run){
+  if(!isAdmin()) return;
+  const out = document.getElementById('compressImgOut'), ar = lang==='ar';
+  const b1 = document.getElementById('scanImgBtn'), b2 = document.getElementById('compressImgBtn'); b1.disabled=b2.disabled=true;
+  try{
+    out.textContent = ar?'⏳ أقرأ قائمة الملفات…':'Listing…';
+    const files = await listReceiptFiles();
+    const size = f=>Number(f.metadata.size||0), isImg = f=>/^image\/(jpeg|jpg|png|webp|bmp)$/i.test(f.metadata.mimetype||'') || /\.(jpe?g|png|webp|bmp)$/i.test(f.name);
+    const imgs = files.filter(isImg), big = imgs.filter(f=>size(f)>=250*1024);
+    const total = files.reduce((a,f)=>a+size(f),0), bigSum = big.reduce((a,f)=>a+size(f),0);
+    out.textContent = (ar?`الملفات: ${files.length} — الحجم الكلي ${fmtMB(total)}\nصور: ${imgs.length} — منها ${big.length} كبيرة (${fmtMB(bigSum)}) تنضغط`:`${files.length} files, ${fmtMB(total)} — ${big.length} big photos (${fmtMB(bigSum)})`);
+    if(!run || !big.length) return;
+    if(!confirm(ar?`ضغط ${big.length} صورة (${fmtMB(bigSum)})؟\n\nالصورة الأصلية تنستبدل بنسخة أصغر بنفس الرابط. تأكد إنك أخذت نسخة احتياطية. لا تسكر الصفحة لين يخلص.`:`Compress ${big.length} photos?`)) return;
+    let done=0, saved=0, failed=0, skipped=0;
+    for(const f of big){
+      try{
+        const {data:blob, error} = await sb.storage.from(RECEIPTS_BUCKET).download(f.name); if(error) throw error;
+        const src = new File([blob], f.name, {type: blob.type || f.metadata.mimetype || 'image/jpeg'});
+        const small = await compressImage(src);
+        if(small===src || small.size >= src.size*0.9){ skipped++; }
+        else { const {error:upErr} = await sb.storage.from(RECEIPTS_BUCKET).upload(f.name, small, {upsert:true, contentType:'image/jpeg', cacheControl:'3600'}); if(upErr) throw upErr; saved += src.size - small.size; done++; }
+      }catch(e){ failed++; console.error('compress', f.name, e); }
+      out.textContent = ar?`⏳ ${done+skipped+failed}/${big.length} — انضغطت ${done}، وفّرنا ${fmtMB(saved)}${failed?` — فشل ${failed}`:''}`:`${done+skipped+failed}/${big.length}`;
+    }
+    out.textContent = ar?`✅ خلص — انضغطت ${done} صورة، وفّرنا ${fmtMB(saved)}${skipped?`\nما احتاجت ضغط: ${skipped}`:''}${failed?`\n⚠️ فشل ${failed} (غالبًا صلاحية التعديل بالتخزين مقفلة)`:''}`:`Done: ${done}, saved ${fmtMB(saved)}, failed ${failed}`;
+  }catch(e){ console.error(e); out.textContent = (ar?'⚠️ ما قدرت أقرأ الملفات: ':'Error: ')+(e.message||e); }
+  finally{ b1.disabled=b2.disabled=false; }
+}
 async function exportFullBackup(){
   const btn = document.getElementById('exportBackupBtn');
   btn.disabled = true; btn.textContent = t('saving');
