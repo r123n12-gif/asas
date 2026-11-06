@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G23</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G24</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -3074,7 +3074,7 @@ function employeeFullStatement(employeeId, from, to){
     if(b.payment_method==='cash') cashPart = sell;
     let dueAmt = 0;
     if(b.payment_method==='split' && Array.isArray(b.payment_splits)) b.payment_splits.forEach(x=>{ if(x.method==='cash') cashPart += Number(x.amount||0); else if(x.method==='due') dueAmt += Number(x.amount||0); else nonCash.push({m:x.method, a:Number(x.amount||0), ok:!!x.verified}); });
-    else nonCash.push({m:b.payment_method, a:sell, ok:!!b.transfer_verified});
+    else if(b.payment_method!=='cash') nonCash.push({m:b.payment_method, a:sell, ok:!!b.transfer_verified});
     const cashRef = (b.refunded && (b.refund_method||'cash')==='cash') ? bookingRefundAmount(b) : 0;
     const share = franchiseShare(b);
     const method = (b.payment_method==='split' ? [cashPart>0?pmName('cash'):null, ...nonCash.map(x=>pmName(x.m))].filter(Boolean).join(' + ') : pmName(b.payment_method)) + (dueAmt>0.004 ? (ar?` — باقي على العميل ${money(dueAmt)}`:` — due ${money(dueAmt)}`) : '');
