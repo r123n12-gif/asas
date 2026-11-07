@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G32</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G33</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -2359,7 +2359,7 @@ function render(){
    Late ≤ grace (15 min) is not deducted; above it every late minute is. Early leave, gaps and absent shifts are deducted.
    A forgotten check-out is closed at the shift end and shown in red. The penalty table (repeat lateness) is only
    suggested — the admin approves each one. Times come from the server; only the admin can correct them (manual). */
-let attRows = [], attMonth = null, attUser = 'all', attCfg = null, attSalary = {}, attPen = [], attFirst = {}, attWarn = '', attExc = [];
+let attToday = [], attRows = [], attMonth = null, attUser = 'all', attCfg = null, attSalary = {}, attPen = [], attFirst = {}, attWarn = '', attExc = [];
 const ATT_TZ = 'Asia/Riyadh';
 const ATT_DEFAULT = { shifts:[{from:'09:00',to:'12:00'},{from:'16:30',to:'21:30'}], grace:15, off:[5] };   // 5 = Friday
 function attDay(ts){ const d = ts ? new Date(ts) : new Date(); return (isNaN(d) ? new Date() : d).toLocaleDateString('en-CA',{timeZone:ATT_TZ}); }
@@ -2419,7 +2419,8 @@ function attComputeDay(uid, day, recs, nowMs){
   });
   const worked = off ? Math.round(ents.reduce((t,e)=>t+Math.max(0,(e.b-e.a)/60000),0)) : shifts.reduce((t,s)=>t+s.inside,0);
   const ded = shifts.reduce((t,s)=>t+s.ded,0);
-  return { uid, day, off, excused, shifts, worked, ded, required: off ? 0 : attDayMinutes(), money: +(ded*attMinuteWage(uid)).toFixed(2), recs };
+  const required = off ? 0 : shifts.reduce((t,s)=>t+(s.ended && !s.excOk ? s.len : 0),0);   // excused shifts and shifts not over yet are not "required"
+  return { uid, day, off, excused, shifts, worked, ded, required, requiredFull: off ? 0 : attDayMinutes(), money: +(ded*attMinuteWage(uid)).toFixed(2), recs };
 }
 /* repeat-lateness penalty table (percent of the day wage), counted within the month */
 const ATT_TIERS = [ {min:15,max:30,pct:[10,15,25,50],ar:'تأخير 15–30 دقيقة'}, {min:30,max:60,pct:[25,50,75,100],ar:'تأخير 30–60 دقيقة'}, {min:60,max:1e9,pct:[0,100,200,300],ar:'تأخير أكثر من ساعة'} ];
@@ -2461,6 +2462,10 @@ async function loadAttendance(){
   let q = sb.from('attendance').select('*').gte('check_in', from.toISOString()).lt('check_in', to.toISOString()).order('check_in',{ascending:false});
   if(!isAdmin()) q = q.eq('user_id', currentUser().id);
   const {data, error} = await q; if(error) throw error; attRows = data||[];
+  const tk = attDay(new Date().toISOString());
+  if(tk.slice(0,7)===m) attToday = attRows.filter(r=>attDay(r.check_in)===tk);
+  else { let q2 = sb.from('attendance').select('*').gte('check_in', new Date(`${tk}T00:00:00+03:00`).toISOString()).lt('check_in', new Date(new Date(`${tk}T00:00:00+03:00`).getTime()+864e5).toISOString());
+    if(!isAdmin()) q2 = q2.eq('user_id', currentUser().id); const {data:d2, error:e0} = await q2; if(e0) throw e0; attToday = d2||[]; }
   attWarn = '';
   const ids = isAdmin() ? users.filter(u=>u.role==='accountant').map(u=>u.id) : [currentUser().id];
   try{ const {data:cfg, error:e1} = await sb.from('app_settings').select('value').eq('key','attendance').maybeSingle(); if(e1) throw e1; attCfg = cfg ? cfg.value : null; if(!cfg) attWarn += ' • app_settings: '+(lang==='ar'?'ما انقرأت الإعدادات (صلاحية القراءة)':'no row visible'); }catch(e){ attCfg = null; attWarn += ' • app_settings: '+(e.message||e); }
@@ -2592,7 +2597,7 @@ async function renderAttendance(silent){
   const sqlNote = attWarn && isAdmin() ? `<div class="login-error">${ar?'⚠️ النظام ما قدر يقرأ إعدادات الحضور — صوّر هذي الرسالة:':'⚠️ Attendance settings could not be read:'}<div dir="ltr" style="font-size:11.5px;margin-top:4px;">${esc(attWarn)}</div></div>` : '';
   let html = sqlNote;
   if(!isAdmin()){
-    const me = currentUser().id, S = attSummary(me, month, now), td = S.days.find(d=>d.day===todayKey) || attComputeDay(me, todayKey, attRows.filter(r=>r.user_id===me && attDay(r.check_in)===todayKey), now);
+    const me = currentUser().id, S = attSummary(me, month, now), td = attComputeDay(me, todayKey, attToday.filter(r=>r.user_id===me), now);
     html += `<div class="panel" style="text-align:center;">
       <div style="font-size:14px;color:var(--ink-soft);">${new Date().toLocaleDateString(ar?'ar-SA-u-ca-gregory':'en-GB',{timeZone:ATT_TZ,weekday:'long',day:'numeric',month:'long'})}</div>
       <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:12px 0;">
@@ -2600,7 +2605,7 @@ async function renderAttendance(silent){
           <div style="font-weight:700">${ar?(s.i===0?'الفترة الأولى':'الفترة الثانية'):'Shift '+(s.i+1)} <span style="font-weight:400;font-size:12px">${s.from}–${s.to}</span></div>
           <div style="margin-top:6px">${attShiftCell(s, td)}</div></div>`).join('')}
       </div>
-      <div style="font-size:15px;margin:6px 0 12px;">${ar?'ساعات اليوم':'Today'}: <b>${fmtMin(td.worked)}</b> ${td.off?'':`${ar?'من':'of'} ${fmtMin(td.required)}`}</div>
+      <div style="font-size:15px;margin:6px 0 12px;">${ar?'ساعات اليوم':'Today'}: <b>${fmtMin(td.worked)}</b> ${td.off?'':`${ar?'من':'of'} ${fmtMin(td.requiredFull)}`}</div>
       <button class="btn ${open?'btn-ghost':'btn-gold'}" id="attActionBtn" style="min-width:200px;padding:14px 20px;font-size:16px;" onclick="uiAttendance('${open?'out':'in'}')">${open?(ar?'تسجيل انصراف':'Check out'):(ar?'تسجيل حضور':'Check in')}</button>
       <div id="attMsg" style="margin-top:10px;"></div>
       <p class="note" style="margin-top:8px;">${ar?`الوقت يُسجَّل من السيرفر. سجّل حضور وانصراف لكل فترة. التأخير ${attC().grace} دقيقة وأقل ما ينخصم.`:'Time is taken from the server.'}</p>
@@ -2621,7 +2626,7 @@ async function renderAttendance(silent){
       </tbody></table></div></div>`;
     html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'حضور اليوم':'Today'}</h3></div>
       ${accountants.length?`<div style="overflow-x:auto;"><table><thead><tr><th>${ar?'المحاسب':'Accountant'}</th>${attC().shifts.map((s,i)=>`<th>${ar?(i===0?'الفترة الأولى':'الفترة الثانية'):'Shift '+(i+1)} <span style="font-weight:400;font-size:11px">${s.from}–${s.to}</span></th>`).join('')}<th>${ar?'ساعات اليوم':'Hours'}</th></tr></thead><tbody>
-      ${accountants.map(u=>{ const d = attComputeDay(u.id, todayKey, attRows.filter(r=>r.user_id===u.id && attDay(r.check_in)===todayKey), now);
+      ${accountants.map(u=>{ const d = attComputeDay(u.id, todayKey, attToday.filter(r=>r.user_id===u.id), now);
         return `<tr><td style="font-weight:600">${esc(u.name)}</td>${d.shifts.map(s=>`<td>${attShiftCell(s,d)}</td>`).join('')}<td class="num">${fmtMin(d.worked)}</td></tr>`; }).join('')}</tbody></table></div>`
       :`<div class="empty">${ar?'ما فيه مستخدمين بدور محاسب.':'No accountants.'}</div>`}</div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'ملخص الشهر — المحاسبين':'Month — accountants'}</h3>
