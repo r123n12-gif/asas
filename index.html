@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G30</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G32</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -2218,7 +2218,7 @@ function navItems(){
     items.push({route:'reports', label:t('navReports'), icon:'▤'});
     items.push({route:'reconcile', label:t('navReconcile'), icon:'🔍'});
     items.push({route:'refunds', label:t('navRefunds'), icon:'↩️'});
-    items.push({route:'attendance', label:(lang==='ar'?'الحضور والانصراف':'Attendance'), icon:'🕘'});
+    items.push({route:'attendance', label:(lang==='ar'?'الحضور والانصراف':'Attendance') + (isAdmin() && window.__excPending ? ` (${window.__excPending})` : ''), icon:'🕘'});
   }
   if(isAdmin()){
     items.push({route:'profits', label:t('navProfits'), icon:'💎'});
@@ -2262,7 +2262,12 @@ function startAutoRefresh(){
     // and any form field the user is typing in keep their state — data refreshes, the screen does not
     const ae = document.activeElement;
     const typing = ae && ['INPUT','SELECT','TEXTAREA'].includes(ae.tagName);
+    // admin: new excuses waiting? (one tiny request every 5 minutes) → number next to "Attendance" in the menu
+    if(isAdmin() && Date.now()-(window.__excCheck||0) > 300000){ window.__excCheck = Date.now();
+      try{ const {data, error} = await sb.from('attendance_excuses').select('id').eq('status','pending'); if(!error){ const n = (data||[]).length; if(n!==(window.__excPending||0)){ window.__excPending = n; if(route!=='attendance' && route!=='reconcile' && !typing) render(); } } }catch(e){} }
     if(route==='reconcile') return;
+    // attendance page: refresh its own table quietly every 2 minutes (no "loading" flash)
+    if(route==='attendance'){ if(!typing && Date.now()-(window.__attLast||0) > 120000) renderAttendance(true); return; }
     try{
       await syncData();
       const sig = dataSignature();
@@ -2271,7 +2276,7 @@ function startAutoRefresh(){
   }, 60000);
   // back on the screen after a while: refresh right away (at most every 20 s)
   document.addEventListener('visibilitychange', async ()=>{
-    if(document.hidden || !getSession() || __busy.size || route==='reconcile') return;
+    if(document.hidden || !getSession() || __busy.size || route==='reconcile' || route==='attendance') return;
     if(Date.now() - (window.__lastVisSync||0) < 20000) return; window.__lastVisSync = Date.now();
     const ov = document.getElementById('overlay'); const ae = document.activeElement;
     try{ await syncData(); const sig = dataSignature(); if(sig !== __lastSig && !(ov && ov.classList.contains('show')) && !(ae && ['INPUT','SELECT','TEXTAREA'].includes(ae.tagName))){ __lastSig = sig; render(); } }catch(e){ console.error('sync failed', e); }
@@ -2354,7 +2359,7 @@ function render(){
    Late ≤ grace (15 min) is not deducted; above it every late minute is. Early leave, gaps and absent shifts are deducted.
    A forgotten check-out is closed at the shift end and shown in red. The penalty table (repeat lateness) is only
    suggested — the admin approves each one. Times come from the server; only the admin can correct them (manual). */
-let attRows = [], attMonth = null, attUser = 'all', attCfg = null, attSalary = {}, attPen = [], attFirst = {}, attWarn = '';
+let attRows = [], attMonth = null, attUser = 'all', attCfg = null, attSalary = {}, attPen = [], attFirst = {}, attWarn = '', attExc = [];
 const ATT_TZ = 'Asia/Riyadh';
 const ATT_DEFAULT = { shifts:[{from:'09:00',to:'12:00'},{from:'16:30',to:'21:30'}], grace:15, off:[5] };   // 5 = Friday
 function attDay(ts){ const d = ts ? new Date(ts) : new Date(); return (isNaN(d) ? new Date() : d).toLocaleDateString('en-CA',{timeZone:ATT_TZ}); }
@@ -2372,6 +2377,10 @@ function attDayMinutes(){ return attC().shifts.reduce((a,s)=>a+attHm(s.to)-attHm
 function attDayWage(uid){ return (Number(attSalary[uid])||0)/30; }
 function attMinuteWage(uid){ const m = attDayMinutes(); return m ? attDayWage(uid)/m : 0; }
 function attShiftOf(r){ const sh = attC().shifts, m = attHM(r.check_in); const i = sh.findIndex(s=>m < attHm(s.to)); return i<0 ? sh.length-1 : i; }
+// the accountant's statement (إفادة) for one shift: approved → that shift is not deducted and gets no penalty
+function attExcFor(uid, day, i){ const l = attExc.filter(e=>e.user_id===uid && String(e.day).slice(0,10)===day && Number(e.shift)===i);
+  return l.find(e=>e.status==='approved') || l.find(e=>e.status==='pending') || l.sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at)))[0] || null; }
+const ATT_EXC_KINDS = {absent:'غياب', late:'تأخير', early:'خروج مبكر', forgot:'نسيان الانصراف'};
 function attExcused(uid, day){ return attPen.some(p=>p.user_id===uid && p.kind==='excuse' && String(p.day).slice(0,10)===day); }
 const AR_DAYS = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
 
@@ -2399,13 +2408,13 @@ function attComputeDay(uid, day, recs, nowMs){
     const late = firstIn!=null ? Math.max(0, Math.round((firstIn-start)/60000)) : 0;
     const early = ended && lastOut!=null && !forgot && !open ? Math.max(0, Math.round((end-lastOut)/60000)) : 0;
     const absent = ended && !mine.length;
-    let missed = 0, ded = 0;
+    let missed = 0, ded = 0; const exc = attExcFor(uid, day, i), excOk = !!(exc && exc.status==='approved');
     if(!off){
       if(ended){ missed = Math.max(0, Math.round(len - inside)); const forgiven = late>0 && late<=C.grace ? late : 0; ded = Math.max(0, missed - forgiven); }
       else if(started && late > C.grace) ded = late;   // shift still running: only the lateness so far
-      if(excused) ded = 0;
+      if(excused || excOk) ded = 0;
     }
-    return { i, from:s.from, to:s.to, start, end, len, recs:mine.map(e=>e.r), firstIn, lastOut, carriedIn: firstIn!=null && firstIn < start-30*60000, carriedOut: lastOut!=null && lastOut > end+30*60000,
+    return { i, exc, excOk, from:s.from, to:s.to, start, end, len, recs:mine.map(e=>e.r), firstIn, lastOut, carriedIn: firstIn!=null && firstIn < start-30*60000, carriedOut: lastOut!=null && lastOut > end+30*60000,
              inside:Math.round(inside), late, early, missed, ded, absent, forgot, open, ended, started };
   });
   const worked = off ? Math.round(ents.reduce((t,e)=>t+Math.max(0,(e.b-e.a)/60000),0)) : shifts.reduce((t,s)=>t+s.inside,0);
@@ -2417,7 +2426,7 @@ const ATT_TIERS = [ {min:15,max:30,pct:[10,15,25,50],ar:'تأخير 15–30 دق
 function attPenaltySuggestions(uid, days){
   const n = [0,0,0], out = [];
   days.slice().sort((a,b)=>a.day.localeCompare(b.day)).forEach(d=>{ if(d.off || d.excused) return; d.shifts.forEach(s=>{
-    if(!(s.late > attC().grace)) return; const ti = ATT_TIERS.findIndex(t=>s.late>t.min && s.late<=t.max); if(ti<0) return;
+    if(!(s.late > attC().grace) || s.excOk) return; const ti = ATT_TIERS.findIndex(t=>s.late>t.min && s.late<=t.max); if(ti<0) return;
     const k = Math.min(n[ti],3); n[ti]++; const pct = ATT_TIERS[ti].pct[k]; const ref = `${d.day}|${s.i}`;
     const done = attPen.find(p=>p.user_id===uid && p.kind==='penalty' && p.ref===ref);
     out.push({ uid, day:d.day, shift:s.i, ref, late:s.late, tier:ATT_TIERS[ti].ar, time:k+1, pct, amount:+(pct/100*attDayWage(uid)).toFixed(2), approved:!!done, row:done||null });
@@ -2436,7 +2445,8 @@ function attSummary(uid, month, nowMs){
   const sum = { days, present:0, workDays:0, required:0, worked:0, late:0, lateCount:0, early:0, absentShifts:0, forgot:0, ded:0 };
   days.forEach(d=>{ if(!d.off){ sum.workDays++; sum.required += d.excused?0:d.required; }
     if(d.recs.length && !d.off) sum.present++; sum.worked += d.worked; sum.ded += d.ded;
-    d.shifts.forEach(s=>{ if(d.off) return; if(s.late>attC().grace){ sum.lateCount++; sum.late+=s.late; } sum.early+=s.early; if(s.absent && !d.excused) sum.absentShifts++; if(s.forgot) sum.forgot++; }); });
+    d.shifts.forEach(s=>{ if(d.off || s.excOk) return; if(s.late>attC().grace){ sum.lateCount++; sum.late+=s.late; } sum.early+=s.early; if(s.absent && !d.excused) sum.absentShifts++; if(s.forgot) sum.forgot++; }); });
+  sum.excPending = attExc.filter(e=>e.user_id===uid && e.status==='pending' && String(e.day).slice(0,7)===month).length;
   const salary = Number(attSalary[uid])||0;
   sum.salary = salary; sum.minuteWage = attMinuteWage(uid); sum.dedMoney = +(sum.ded*sum.minuteWage).toFixed(2);
   sum.suggest = attPenaltySuggestions(uid, days);
@@ -2456,7 +2466,10 @@ async function loadAttendance(){
   try{ const {data:cfg, error:e1} = await sb.from('app_settings').select('value').eq('key','attendance').maybeSingle(); if(e1) throw e1; attCfg = cfg ? cfg.value : null; if(!cfg) attWarn += ' • app_settings: '+(lang==='ar'?'ما انقرأت الإعدادات (صلاحية القراءة)':'no row visible'); }catch(e){ attCfg = null; attWarn += ' • app_settings: '+(e.message||e); }
   attSalary = {};   // salaries are loaded for the admin only — accountants never receive them
   if(isAdmin()){ try{ const {data:sal, error:e2} = await sb.from('app_users').select('id,salary').in('id', ids); if(e2) throw e2; (sal||[]).forEach(x=>attSalary[x.id]=x.salary); }catch(e){ attWarn += ' • salary: '+(e.message||e); } }
-  try{ const {data:pen, error:e3} = await sb.from('attendance_penalties').select('*').gte('day', `${m}-01`).lte('day', `${m}-31`); if(e3) throw e3; attPen = (pen||[]).filter(p=>ids.includes(p.user_id)); }catch(e){ attPen = []; attWarn += ' • attendance_penalties: '+(e.message||e); }
+  const nextM = (()=>{ const [y,mo] = m.split('-').map(Number); return mo===12 ? `${y+1}-01-01` : `${y}-${String(mo+1).padStart(2,'0')}-01`; })();
+  try{ const {data:pen, error:e3} = await sb.from('attendance_penalties').select('*').gte('day', `${m}-01`).lt('day', nextM); if(e3) throw e3; attPen = (pen||[]).filter(p=>ids.includes(p.user_id)); }catch(e){ attPen = []; attWarn += ' • attendance_penalties: '+(e.message||e); }
+  try{ const {data:ex, error:e4} = await sb.from('attendance_excuses').select('*').gte('day', `${m}-01`).lt('day', nextM); if(e4) throw e4; attExc = (ex||[]).filter(x=>ids.includes(x.user_id)); }catch(e){ attExc = []; attWarn += ' • attendance_excuses: '+(e.message||e); }
+  if(isAdmin()) window.__excPending = attExc.filter(x=>x.status==='pending').length;
   // the first day each accountant ever checked in: days before it are not counted as absence
   for(const id of ids){ if(attFirst[id]) continue;
     const {data:f} = await sb.from('attendance').select('check_in').eq('user_id', id).order('check_in',{ascending:true}).limit(1);
@@ -2500,7 +2513,7 @@ function attShiftCell(s, d){
   const ar = lang==='ar', G = attC().grace;
   if(d.off) return '<span class="note">—</span>';
   if(!s.started) return `<span class="note">${ar?'لم تبدأ':'Not started'}</span>`;
-  if(!s.recs.length) return s.ended ? `<span class="tag rejected">${ar?'غياب':'Absent'}</span>` : `<span class="tag pending">${ar?'لم يحضر بعد':'Not in yet'}</span>`;
+  if(!s.recs.length) return s.ended ? `<span class="tag rejected">${ar?'غياب':'Absent'}</span>${attExcBadge(s,d,'absent')}` : `<span class="tag pending">${ar?'لم يحضر بعد':'Not in yet'}</span>`;
   const outTxt = s.open ? `<b style="color:#1f7a4d">${ar?'داخل':'In'}</b>` : s.forgot ? `<span style="color:var(--red);font-weight:700">${ar?'ما سجّل انصراف':'No check-out'}</span>` : attTime(new Date(s.lastOut).toISOString());
   const tags = [];
   if(s.late>G) tags.push(`<span class="tag pending">${ar?'تأخير':'Late'} ${s.late} ${ar?'د':'m'}</span>`); else if(s.late>0) tags.push(`<span class="tag" title="${ar?'ضمن السماح':'within grace'}">${s.late} ${ar?'د سماح':'m grace'}</span>`);
@@ -2508,7 +2521,18 @@ function attShiftCell(s, d){
   if(s.recs.length>1) tags.push(`<span class="tag">${s.recs.length} ${ar?'دخول':'entries'}</span>`);
   const tm = ts=>`<span dir="ltr">${attTime(new Date(ts).toISOString())}</span>`;
   const outCell = s.open ? outTxt : s.forgot ? outTxt : s.carriedOut ? `${tm(s.lastOut)} <span class="note">(${ar?'ما طلع بين الفترتين':'stayed'})</span>` : tm(s.lastOut);
+  const issue = s.forgot ? 'forgot' : (s.late>G ? 'late' : (s.early>0 ? 'early' : null));
+  if(issue) tags.push(attExcBadge(s, d, issue));
   return `<div style="white-space:nowrap">${ar?'دخول':'In'} ${s.carriedIn ? `<span class="note">${ar?'مستمر من':'since'}</span> ${tm(s.firstIn)}` : tm(s.firstIn)}</div><div style="white-space:nowrap">${ar?'خروج':'Out'} ${outCell}</div><div style="font-size:11.5px;color:var(--ink-soft)">${ar?'ساعات الفترة':'Hours'} <b>${fmtMin(s.inside)}</b> ${ar?'من':'of'} ${fmtMin(s.len)}</div>${tags.join(' ')}`;
+}
+function attExcBadge(s, d, issue){
+  const ar = lang==='ar', e = s.exc;
+  if(e){ const st = e.status==='approved' ? `<span class="tag collected">✅ ${ar?'إفادة مقبولة':'Excuse approved'}</span>` : e.status==='pending' ? `<span class="tag pending">⏳ ${ar?'إفادة بانتظار الاعتماد':'Excuse pending'}</span>` : `<span class="tag rejected" title="${esc(e.review_note||'')}">❌ ${ar?'إفادة مرفوضة':'Excuse rejected'}${e.review_note?': '+esc(e.review_note):''}</span>`;
+    const again = e.status==='rejected' && !isAdmin() && currentUser() && d.uid===currentUser().id ? ` <button class="btn btn-ghost btn-sm" onclick="uiAttExcuse('${d.day}',${s.i},'${issue}')">📝 ${ar?'إفادة جديدة':'New'}</button>` : '';
+    return `<div style="margin-top:4px">${st}${again}</div>`; }
+  if(!s.ended && issue!=='late') return '';
+  if(!isAdmin() && currentUser() && d.uid===currentUser().id) return `<div style="margin-top:4px"><button class="btn btn-ghost btn-sm" onclick="uiAttExcuse('${d.day}',${s.i},'${issue}')">📝 ${ar?'تقديم إفادة':'Submit excuse'}</button></div>`;
+  return '';
 }
 function attSummaryCards(S){
   const ar = lang==='ar'; S = isAdmin() ? S : {...S, salary:0};   // no money on the accountant's screen
@@ -2553,15 +2577,16 @@ function attPenaltyPanel(S, uid){
     </tbody></table></div></div>`;
 }
 
-async function renderAttendance(){
-  const ar = lang==='ar';
+async function renderAttendance(silent){
+  const ar = lang==='ar'; window.__attLast = Date.now();
   document.getElementById('pageSub').textContent = ar ? 'تسجيل الحضور والانصراف — الوقت يُسجَّل من السيرفر' : 'Check in and out — time is taken from the server';
   const box = document.getElementById('content');
-  box.innerHTML = `<div class="panel"><div class="empty">${ar?'جاري التحميل…':'Loading…'}</div></div>`;
+  if(!silent || !box.querySelector('#attMonthInput')) box.innerHTML = `<div class="panel"><div class="empty">${ar?'جاري التحميل…':'Loading…'}</div></div>`;
   let open = null;
   try{ await loadAttendance(); if(!isAdmin()){ const o0 = await attOpenRow(); open = await attCloseIfOver(o0); if(o0 && !open) await loadAttendance(); } }
   catch(e){ console.error(e); box.innerHTML = `<div class="panel"><div class="login-error">${errText()}<br>${ar?'تأكد إنك شغّلت كود SQL الخاص بالحضور في Supabase.':'Make sure the attendance SQL was run in Supabase.'}</div></div>`; return; }
   if(route!=='attendance') return;
+  if(silent){ const ov = document.getElementById('overlay'); if(ov && ov.classList.contains('show')) return; }
   const month = attMonth || todayStr().slice(0,7), now = Date.now(), todayKey = attDay(new Date(now).toISOString());
   const accountants = users.filter(u=>u.role==='accountant' && u.active!==false);
   const sqlNote = attWarn && isAdmin() ? `<div class="login-error">${ar?'⚠️ النظام ما قدر يقرأ إعدادات الحضور — صوّر هذي الرسالة:':'⚠️ Attendance settings could not be read:'}<div dir="ltr" style="font-size:11.5px;margin-top:4px;">${esc(attWarn)}</div></div>` : '';
@@ -2586,6 +2611,14 @@ async function renderAttendance(){
   }else{
     const sums = accountants.map(u=>({u, S:attSummary(u.id, month, now)}));
     const sel = attUser!=='all' && accountants.some(u=>u.id===attUser) ? attUser : (accountants[0]||{}).id;
+    const pend = attExc.filter(e=>e.status==='pending').sort((a,b)=>String(a.day).localeCompare(String(b.day)));
+    if(pend.length) html += `<div class="panel" style="border:2px solid var(--gold);"><div class="panel-head"><h3 class="panel-title">📝 ${ar?`إفادات بانتظار الاعتماد (${pend.length})`:`Pending excuses (${pend.length})`}</h3></div>
+      <div style="overflow-x:auto;"><table><thead><tr><th>${ar?'المحاسب':'Accountant'}</th><th>${t('fieldDate')}</th><th>${ar?'الفترة':'Shift'}</th><th>${ar?'النوع':'Type'}</th><th>${ar?'السبب':'Reason'}</th><th>${ar?'المرفق':'File'}</th><th></th></tr></thead><tbody>
+      ${pend.map(e=>`<tr><td style="font-weight:600">${esc(userName(e.user_id))}</td><td>${String(e.day).slice(0,10)}<div style="font-size:11px;color:var(--ink-soft)">${AR_DAYS[attDow(String(e.day).slice(0,10))]}</div></td><td>${Number(e.shift)+1}</td>
+        <td>${ATT_EXC_KINDS[e.kind]||esc(e.kind)}${e.kind==='forgot'&&e.out_time?`<div style="font-size:11.5px">${ar?'طلع الساعة':'left at'} <b dir="ltr">${esc(e.out_time)}</b></div>`:''}</td><td style="max-width:320px">${esc(e.note||'')}</td>
+        <td>${e.file_url?`<a href="${esc(e.file_url)}" target="_blank" rel="noopener">📎 ${ar?'عرض':'View'}</a>`:'—'}</td>
+        <td style="white-space:nowrap"><button class="btn btn-gold btn-sm" onclick="uiAttExcReview('${e.id}',true)">✅ ${ar?'قبول':'Approve'}</button> <button class="btn btn-ghost btn-sm" onclick="uiAttExcReview('${e.id}',false)">❌ ${ar?'رفض':'Reject'}</button></td></tr>`).join('')}
+      </tbody></table></div></div>`;
     html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'حضور اليوم':'Today'}</h3></div>
       ${accountants.length?`<div style="overflow-x:auto;"><table><thead><tr><th>${ar?'المحاسب':'Accountant'}</th>${attC().shifts.map((s,i)=>`<th>${ar?(i===0?'الفترة الأولى':'الفترة الثانية'):'Shift '+(i+1)} <span style="font-weight:400;font-size:11px">${s.from}–${s.to}</span></th>`).join('')}<th>${ar?'ساعات اليوم':'Hours'}</th></tr></thead><tbody>
       ${accountants.map(u=>{ const d = attComputeDay(u.id, todayKey, attRows.filter(r=>r.user_id===u.id && attDay(r.check_in)===todayKey), now);
@@ -2605,7 +2638,7 @@ async function renderAttendance(){
       ${attPenaltyPanel(cur.S, cur.u.id)}
       <div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'السجل اليومي':'Daily log'} — ${esc(cur.u.name)}</h3></div>${attDailyTable(cur.S, cur.u.id)}</div>`;
   }
-  box.innerHTML = html;
+  const keepY = window.scrollY; box.innerHTML = html; if(silent && typeof window.scrollTo==="function") window.scrollTo(0, keepY);
   document.getElementById('attMonthInput').onchange = e=>{ attMonth = e.target.value || null; renderAttendance(); };
   if(document.getElementById('attSetBtn')) document.getElementById('attSetBtn').onclick = uiAttSettings;
   if(document.getElementById('attExcelBtn')) document.getElementById('attExcelBtn').onclick = ()=>{
@@ -2681,6 +2714,49 @@ window.uiAttEditDay = function(uid, day){
       closeModal(); renderAttendance();
     }catch(err){ console.error(err); document.getElementById('attEdErr').innerHTML = `<div class="login-error">${err && err.code ? errText() : esc(err.message||String(err))}</div>`; bt.disabled = false; }
   };
+};
+window.uiAttExcuse = function(day, shift, issue){
+  const ar = lang==='ar', sh = attC().shifts[shift];
+  showModal(`<div class="modal-head"><h3>📝 ${ar?'تقديم إفادة':'Submit an excuse'} — ${day}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <p class="note">${ar?`الفترة ${shift+1} (${sh.from}–${sh.to}). إذا قبلها المدير ما ينخصم عليك في هالفترة.`:''}</p>
+    <form id="attExForm">
+      <div class="field"><label>${ar?'نوع الإفادة':'Type'}</label><select name="kind">${Object.entries(ATT_EXC_KINDS).map(([k,v])=>`<option value="${k}" ${k===issue?'selected':''}>${ar?v:k}</option>`).join('')}</select></div>
+      <div class="field" id="attExOut" style="${issue==='forgot'?'':'display:none'}"><label>${ar?'الساعة اللي طلعت فيها فعلًا':'Actual leave time'}</label><input type="time" name="out"></div>
+      <div class="field"><label>${ar?'السبب':'Reason'}</label><textarea name="note" rows="3" required style="width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line);font-family:inherit;" placeholder="${ar?'مثال: مراجعة مستشفى — مرفق التقرير':''}"></textarea></div>
+      <div class="field"><label>${ar?'مرفق (اختياري): تقرير طبي أو إثبات':'Attachment (optional)'}</label><input type="file" name="file" accept="image/*,application/pdf"></div>
+      <div id="attExErr"></div>
+      <div style="margin-top:12px;display:flex;gap:10px;"><button type="submit" class="btn btn-primary" id="attExSave">${ar?'إرسال':'Send'}</button><button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>
+    </form>`);
+  const f = document.getElementById('attExForm');
+  f.kind.onchange = ()=>{ document.getElementById('attExOut').style.display = f.kind.value==='forgot' ? '' : 'none'; };
+  f.onsubmit = async e=>{ e.preventDefault(); const bt = document.getElementById('attExSave'); bt.disabled = true;
+    try{
+      const note = f.note.value.trim(); if(!note) throw new Error(ar?'اكتب السبب.':'Write the reason.');
+      if(f.kind.value==='forgot' && !f.out.value) throw new Error(ar?'اكتب الساعة اللي طلعت فيها.':'Enter the leave time.');
+      const fl = f.file.files && f.file.files[0]; if(fl && fl.size > 10*1024*1024) throw new Error(ar?'المرفق أكبر من 10 ميجا.':'File too large.');
+      const file_url = fl ? await uploadReceiptFile(fl) : null;
+      const {error} = await sb.from('attendance_excuses').insert({user_id:currentUser().id, day, shift, kind:f.kind.value, note, file_url, out_time:f.kind.value==='forgot'?f.out.value:null, status:'pending'});
+      if(error) throw error;
+      closeModal(); renderAttendance();
+    }catch(err){ console.error(err); document.getElementById('attExErr').innerHTML = `<div class="login-error">${err && err.code==='23505' ? (ar?'فيه إفادة لهالفترة من قبل.':'Already submitted.') : err && err.code ? errText() : esc(err.message||String(err))}</div>`; bt.disabled = false; }
+  };
+};
+window.uiAttExcReview = async function(id, approve){
+  const ar = lang==='ar', e = attExc.find(x=>x.id===id); if(!e) return;
+  try{
+    let review_note = null;
+    if(approve){ if(!confirm(ar?`قبول الإفادة؟ ما ينخصم على ${userName(e.user_id)} في الفترة ${Number(e.shift)+1} يوم ${String(e.day).slice(0,10)}.`:'Approve?')) return; }
+    else { review_note = prompt(ar?'سبب الرفض:':'Reason:'); if(review_note===null) return; }
+    // forgot to check out + approved: record the leave time he gave on that entry
+    if(approve && e.kind==='forgot' && e.out_time){
+      const day = String(e.day).slice(0,10), out = new Date(`${day}T${e.out_time}:00+03:00`).toISOString();
+      const rec = attRows.filter(r=>r.user_id===e.user_id && attDay(r.check_in)===day && attShiftOf(r)===Number(e.shift)).sort((a,b)=>b.check_in.localeCompare(a.check_in))[0];
+      if(rec && new Date(out) > new Date(rec.check_in)){ const {error} = await sb.from('attendance').update({check_out:out, manual:true, auto_closed:false, note:(ar?'إفادة مقبولة: ':'Excuse: ')+(e.note||''), edited_by:currentUser().id}).eq('id', rec.id); if(error) throw error; }
+    }
+    const {error} = await sb.from('attendance_excuses').update({status:approve?'approved':'rejected', review_note, reviewed_by:currentUser().id, reviewed_at:new Date().toISOString()}).eq('id', id);
+    if(error) throw error;
+    renderAttendance();
+  }catch(err){ console.error(err); alert(err && err.code ? errTextPlain() : (err.message||String(err))); }
 };
 window.uiAttPenalty = async function(uid, ref, p){
   const ar = lang==='ar';
