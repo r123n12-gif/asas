@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G29</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G30</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -2378,18 +2378,26 @@ const AR_DAYS = ['الأحد','الاثنين','الثلاثاء','الأربع�
 /* one person, one day → per shift: in, out, minutes inside the shift, late, early, missed, deducted minutes */
 function attComputeDay(uid, day, recs, nowMs){
   const C = attC(), off = attIsOff(day), excused = attExcused(uid, day);
+  const lastEnd = attTs(day, C.shifts[C.shifts.length-1].to);
+  // each entry: real in/out. A check-out hours after the day's last shift / next day, or none after its shift ended = forgot:
+  // it then counts only up to the end of the shift it started in.
+  const ents = recs.slice().sort((a,b)=>a.check_in.localeCompare(b.check_in)).map(r=>{
+    const a = new Date(r.check_in).getTime(), own = C.shifts[attShiftOf(r)], ownEnd = attTs(day, own.to);
+    let b, forgot = false, open = false;
+    if(r.check_out){ b = new Date(r.check_out).getTime(); if(r.auto_closed || b > lastEnd + 3*3600000 || attDay(r.check_out)!==day){ forgot = true; b = Math.min(b, ownEnd); } }
+    else if(nowMs >= ownEnd){ b = ownEnd; forgot = true; } else { b = nowMs; open = true; }
+    return { r, a, b, forgot, open };
+  });
   const shifts = C.shifts.map((s,i)=>{
     const start = attTs(day, s.from), end = attTs(day, s.to), len = (end-start)/60000;
-    const mine = recs.filter(r=>attShiftOf(r)===i).sort((a,b)=>a.check_in.localeCompare(b.check_in));
-    let inside = 0, forgot = false, lastOut = null, open = false;
-    mine.forEach(r=>{ const a = new Date(r.check_in).getTime(); let b;
-      if(r.check_out){ b = new Date(r.check_out).getTime(); if(r.auto_closed || b > end + 3*3600000) forgot = true; }   // checked out hours later / next day = forgot
-      else if(nowMs >= end){ b = end; forgot = true; } else { b = nowMs; open = true; }
-      inside += Math.max(0, Math.min(b,end) - Math.max(a,start))/60000; lastOut = b; });
-    const firstIn = mine.length ? new Date(mine[0].check_in).getTime() : null;
+    // every entry that overlaps this shift counts here — one long entry across the break counts in both shifts
+    const mine = ents.filter(e=>e.a < end && e.b > start);
+    const inside = mine.reduce((t,e)=>t + Math.max(0, Math.min(e.b,end) - Math.max(e.a,start))/60000, 0);
+    const forgot = mine.some(e=>e.forgot && e.b<=end+60000 && e.b>=start), open = mine.some(e=>e.open);
+    const firstIn = mine.length ? Math.min(...mine.map(e=>e.a)) : null, lastOut = mine.length ? Math.max(...mine.map(e=>e.b)) : null;
     const ended = nowMs >= end, started = nowMs >= start;
     const late = firstIn!=null ? Math.max(0, Math.round((firstIn-start)/60000)) : 0;
-    const early = ended && lastOut!=null && !forgot ? Math.max(0, Math.round((end-lastOut)/60000)) : 0;
+    const early = ended && lastOut!=null && !forgot && !open ? Math.max(0, Math.round((end-lastOut)/60000)) : 0;
     const absent = ended && !mine.length;
     let missed = 0, ded = 0;
     if(!off){
@@ -2397,10 +2405,11 @@ function attComputeDay(uid, day, recs, nowMs){
       else if(started && late > C.grace) ded = late;   // shift still running: only the lateness so far
       if(excused) ded = 0;
     }
-    return { i, from:s.from, to:s.to, len, recs:mine, firstIn, lastOut, inside:Math.round(inside), late, early, missed, ded, absent, forgot, open, ended, started };
+    return { i, from:s.from, to:s.to, start, end, len, recs:mine.map(e=>e.r), firstIn, lastOut, carriedIn: firstIn!=null && firstIn < start-30*60000, carriedOut: lastOut!=null && lastOut > end+30*60000,
+             inside:Math.round(inside), late, early, missed, ded, absent, forgot, open, ended, started };
   });
-  const worked = off ? Math.round(recs.reduce((a,r)=>a+Math.max(0,((r.check_out?new Date(r.check_out).getTime():Math.min(nowMs,new Date(r.check_in).getTime()+12*3600000))-new Date(r.check_in).getTime())/60000),0)) : shifts.reduce((a,s)=>a+s.inside,0);
-  const ded = shifts.reduce((a,s)=>a+s.ded,0);
+  const worked = off ? Math.round(ents.reduce((t,e)=>t+Math.max(0,(e.b-e.a)/60000),0)) : shifts.reduce((t,s)=>t+s.inside,0);
+  const ded = shifts.reduce((t,s)=>t+s.ded,0);
   return { uid, day, off, excused, shifts, worked, ded, required: off ? 0 : attDayMinutes(), money: +(ded*attMinuteWage(uid)).toFixed(2), recs };
 }
 /* repeat-lateness penalty table (percent of the day wage), counted within the month */
@@ -2444,10 +2453,10 @@ async function loadAttendance(){
   const {data, error} = await q; if(error) throw error; attRows = data||[];
   attWarn = '';
   const ids = isAdmin() ? users.filter(u=>u.role==='accountant').map(u=>u.id) : [currentUser().id];
-  try{ const {data:cfg, error:e1} = await sb.from('app_settings').select('value').eq('key','attendance').maybeSingle(); if(e1) throw e1; attCfg = cfg ? cfg.value : null; }catch(e){ attCfg = null; attWarn = 'sql'; }
+  try{ const {data:cfg, error:e1} = await sb.from('app_settings').select('value').eq('key','attendance').maybeSingle(); if(e1) throw e1; attCfg = cfg ? cfg.value : null; if(!cfg) attWarn += ' • app_settings: '+(lang==='ar'?'ما انقرأت الإعدادات (صلاحية القراءة)':'no row visible'); }catch(e){ attCfg = null; attWarn += ' • app_settings: '+(e.message||e); }
   attSalary = {};   // salaries are loaded for the admin only — accountants never receive them
-  if(isAdmin()){ try{ const {data:sal, error:e2} = await sb.from('app_users').select('id,salary').in('id', ids); if(e2) throw e2; (sal||[]).forEach(x=>attSalary[x.id]=x.salary); }catch(e){ attWarn = 'sql'; } }
-  try{ const {data:pen, error:e3} = await sb.from('attendance_penalties').select('*').gte('day', `${m}-01`).lte('day', `${m}-31`); if(e3) throw e3; attPen = (pen||[]).filter(p=>ids.includes(p.user_id)); }catch(e){ attPen = []; attWarn = 'sql'; }
+  if(isAdmin()){ try{ const {data:sal, error:e2} = await sb.from('app_users').select('id,salary').in('id', ids); if(e2) throw e2; (sal||[]).forEach(x=>attSalary[x.id]=x.salary); }catch(e){ attWarn += ' • salary: '+(e.message||e); } }
+  try{ const {data:pen, error:e3} = await sb.from('attendance_penalties').select('*').gte('day', `${m}-01`).lte('day', `${m}-31`); if(e3) throw e3; attPen = (pen||[]).filter(p=>ids.includes(p.user_id)); }catch(e){ attPen = []; attWarn += ' • attendance_penalties: '+(e.message||e); }
   // the first day each accountant ever checked in: days before it are not counted as absence
   for(const id of ids){ if(attFirst[id]) continue;
     const {data:f} = await sb.from('attendance').select('check_in').eq('user_id', id).order('check_in',{ascending:true}).limit(1);
@@ -2498,8 +2507,8 @@ function attShiftCell(s, d){
   if(s.early>0) tags.push(`<span class="tag pending">${ar?'خروج مبكر':'Early'} ${s.early} ${ar?'د':'m'}</span>`);
   if(s.recs.length>1) tags.push(`<span class="tag">${s.recs.length} ${ar?'دخول':'entries'}</span>`);
   const tm = ts=>`<span dir="ltr">${attTime(new Date(ts).toISOString())}</span>`;
-  const outCell = s.open ? outTxt : s.forgot ? outTxt : tm(s.lastOut);
-  return `<div style="white-space:nowrap">${ar?'دخول':'In'} ${tm(s.firstIn)}</div><div style="white-space:nowrap">${ar?'خروج':'Out'} ${outCell}</div><div style="font-size:11.5px;color:var(--ink-soft)">${ar?'ساعات الفترة':'Hours'} <b>${fmtMin(s.inside)}</b> ${ar?'من':'of'} ${fmtMin(s.len)}</div>${tags.join(' ')}`;
+  const outCell = s.open ? outTxt : s.forgot ? outTxt : s.carriedOut ? `${tm(s.lastOut)} <span class="note">(${ar?'ما طلع بين الفترتين':'stayed'})</span>` : tm(s.lastOut);
+  return `<div style="white-space:nowrap">${ar?'دخول':'In'} ${s.carriedIn ? `<span class="note">${ar?'مستمر من':'since'}</span> ${tm(s.firstIn)}` : tm(s.firstIn)}</div><div style="white-space:nowrap">${ar?'خروج':'Out'} ${outCell}</div><div style="font-size:11.5px;color:var(--ink-soft)">${ar?'ساعات الفترة':'Hours'} <b>${fmtMin(s.inside)}</b> ${ar?'من':'of'} ${fmtMin(s.len)}</div>${tags.join(' ')}`;
 }
 function attSummaryCards(S){
   const ar = lang==='ar'; S = isAdmin() ? S : {...S, salary:0};   // no money on the accountant's screen
@@ -2555,7 +2564,7 @@ async function renderAttendance(){
   if(route!=='attendance') return;
   const month = attMonth || todayStr().slice(0,7), now = Date.now(), todayKey = attDay(new Date(now).toISOString());
   const accountants = users.filter(u=>u.role==='accountant' && u.active!==false);
-  const sqlNote = attWarn ? `<div class="login-error">${ar?'⚠️ شغّل ملف attendance_v2.sql في Supabase عشان تنحفظ الرواتب والإعدادات والجزاءات.':'Run attendance_v2.sql in Supabase.'}</div>` : '';
+  const sqlNote = attWarn && isAdmin() ? `<div class="login-error">${ar?'⚠️ النظام ما قدر يقرأ إعدادات الحضور — صوّر هذي الرسالة:':'⚠️ Attendance settings could not be read:'}<div dir="ltr" style="font-size:11.5px;margin-top:4px;">${esc(attWarn)}</div></div>` : '';
   let html = sqlNote;
   if(!isAdmin()){
     const me = currentUser().id, S = attSummary(me, month, now), td = S.days.find(d=>d.day===todayKey) || attComputeDay(me, todayKey, attRows.filter(r=>r.user_id===me && attDay(r.check_in)===todayKey), now);
