@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G28</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G29</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -2348,44 +2348,134 @@ function render(){
   (routes[route]||renderDashboard)();
 }
 
-/* ===================== ATTENDANCE (accountants) ===================== */
-/* time always comes from the server (database trigger); location is checked against the branch */
-let attRows = [], attMonth = null, attUser = 'all';
+/* ===================== ATTENDANCE (accountants) — G29 =====================
+   Two shifts a day (default 09:00–12:00 and 16:30–21:30 = 8 h), Friday off.
+   Deduction (Saudi practice): day wage = salary ÷ 30, minute = day wage ÷ shift minutes.
+   Late ≤ grace (15 min) is not deducted; above it every late minute is. Early leave, gaps and absent shifts are deducted.
+   A forgotten check-out is closed at the shift end and shown in red. The penalty table (repeat lateness) is only
+   suggested — the admin approves each one. Times come from the server; only the admin can correct them (manual). */
+let attRows = [], attMonth = null, attUser = 'all', attCfg = null, attSalary = {}, attPen = [], attFirst = {}, attWarn = '';
 const ATT_TZ = 'Asia/Riyadh';
-function attDay(ts){ return new Date(ts).toLocaleDateString('en-CA',{timeZone:ATT_TZ}); }
+const ATT_DEFAULT = { shifts:[{from:'09:00',to:'12:00'},{from:'16:30',to:'21:30'}], grace:15, off:[5] };   // 5 = Friday
+function attDay(ts){ const d = ts ? new Date(ts) : new Date(); return (isNaN(d) ? new Date() : d).toLocaleDateString('en-CA',{timeZone:ATT_TZ}); }
 function attTime(ts){ return ts ? new Date(ts).toLocaleTimeString('en-US',{timeZone:ATT_TZ,hour:'2-digit',minute:'2-digit'}) : '—'; }
-function attHM(ts){ const p = new Date(ts).toLocaleTimeString('en-GB',{timeZone:ATT_TZ,hour:'2-digit',minute:'2-digit',hour12:false}).split(':'); return (+p[0])*60 + (+p[1]); }
+function attHM(ts){ const p = (ts ? new Date(ts) : new Date()).toLocaleTimeString('en-GB',{timeZone:ATT_TZ,hour:'2-digit',minute:'2-digit',hour12:false}).split(':'); return (+p[0])*60 + (+p[1]); }
 function attHours(r){ if(!r.check_out) return 0; return Math.max(0,(new Date(r.check_out)-new Date(r.check_in))/3600000); }
 function fmtHours(h){ const m = Math.round(h*60); return `${Math.floor(m/60)}:${String(m%60).padStart(2,'0')}`; }
-function attLateMin(r){
-  const b = branches.find(x=>x.id===r.branch_id); const st = String((b&&b.shift_start)||'').slice(0,5);
-  if(!/^\d{1,2}:\d{2}$/.test(st)) return 0;
-  const [h,m] = st.split(':').map(Number); const late = attHM(r.check_in) - (h*60+m);
-  return late > 15 ? late : 0;   // 15 minutes grace
+function fmtMin(m){ m = Math.round(m||0); return `${Math.floor(m/60)}:${String(m%60).padStart(2,'0')}`; }
+function attC(){ const c = attCfg || {}; return { shifts: Array.isArray(c.shifts)&&c.shifts.length ? c.shifts : ATT_DEFAULT.shifts, grace: c.grace!=null ? Number(c.grace) : ATT_DEFAULT.grace, off: Array.isArray(c.off) ? c.off : ATT_DEFAULT.off }; }
+function attHm(s){ const [h,m] = String(s).split(':').map(Number); return h*60+(m||0); }
+function attTs(day, hhmm){ return new Date(`${day}T${hhmm}:00+03:00`).getTime(); }
+function attDow(day){ return new Date(`${day}T12:00:00+03:00`).getUTCDay(); }
+function attIsOff(day){ return attC().off.includes(attDow(day)); }
+function attDayMinutes(){ return attC().shifts.reduce((a,s)=>a+attHm(s.to)-attHm(s.from),0); }
+function attDayWage(uid){ return (Number(attSalary[uid])||0)/30; }
+function attMinuteWage(uid){ const m = attDayMinutes(); return m ? attDayWage(uid)/m : 0; }
+function attShiftOf(r){ const sh = attC().shifts, m = attHM(r.check_in); const i = sh.findIndex(s=>m < attHm(s.to)); return i<0 ? sh.length-1 : i; }
+function attExcused(uid, day){ return attPen.some(p=>p.user_id===uid && p.kind==='excuse' && String(p.day).slice(0,10)===day); }
+const AR_DAYS = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+
+/* one person, one day → per shift: in, out, minutes inside the shift, late, early, missed, deducted minutes */
+function attComputeDay(uid, day, recs, nowMs){
+  const C = attC(), off = attIsOff(day), excused = attExcused(uid, day);
+  const shifts = C.shifts.map((s,i)=>{
+    const start = attTs(day, s.from), end = attTs(day, s.to), len = (end-start)/60000;
+    const mine = recs.filter(r=>attShiftOf(r)===i).sort((a,b)=>a.check_in.localeCompare(b.check_in));
+    let inside = 0, forgot = false, lastOut = null, open = false;
+    mine.forEach(r=>{ const a = new Date(r.check_in).getTime(); let b;
+      if(r.check_out){ b = new Date(r.check_out).getTime(); if(r.auto_closed || b > end + 3*3600000) forgot = true; }   // checked out hours later / next day = forgot
+      else if(nowMs >= end){ b = end; forgot = true; } else { b = nowMs; open = true; }
+      inside += Math.max(0, Math.min(b,end) - Math.max(a,start))/60000; lastOut = b; });
+    const firstIn = mine.length ? new Date(mine[0].check_in).getTime() : null;
+    const ended = nowMs >= end, started = nowMs >= start;
+    const late = firstIn!=null ? Math.max(0, Math.round((firstIn-start)/60000)) : 0;
+    const early = ended && lastOut!=null && !forgot ? Math.max(0, Math.round((end-lastOut)/60000)) : 0;
+    const absent = ended && !mine.length;
+    let missed = 0, ded = 0;
+    if(!off){
+      if(ended){ missed = Math.max(0, Math.round(len - inside)); const forgiven = late>0 && late<=C.grace ? late : 0; ded = Math.max(0, missed - forgiven); }
+      else if(started && late > C.grace) ded = late;   // shift still running: only the lateness so far
+      if(excused) ded = 0;
+    }
+    return { i, from:s.from, to:s.to, len, recs:mine, firstIn, lastOut, inside:Math.round(inside), late, early, missed, ded, absent, forgot, open, ended, started };
+  });
+  const worked = off ? Math.round(recs.reduce((a,r)=>a+Math.max(0,((r.check_out?new Date(r.check_out).getTime():Math.min(nowMs,new Date(r.check_in).getTime()+12*3600000))-new Date(r.check_in).getTime())/60000),0)) : shifts.reduce((a,s)=>a+s.inside,0);
+  const ded = shifts.reduce((a,s)=>a+s.ded,0);
+  return { uid, day, off, excused, shifts, worked, ded, required: off ? 0 : attDayMinutes(), money: +(ded*attMinuteWage(uid)).toFixed(2), recs };
 }
+/* repeat-lateness penalty table (percent of the day wage), counted within the month */
+const ATT_TIERS = [ {min:15,max:30,pct:[10,15,25,50],ar:'تأخير 15–30 دقيقة'}, {min:30,max:60,pct:[25,50,75,100],ar:'تأخير 30–60 دقيقة'}, {min:60,max:1e9,pct:[0,100,200,300],ar:'تأخير أكثر من ساعة'} ];
+function attPenaltySuggestions(uid, days){
+  const n = [0,0,0], out = [];
+  days.slice().sort((a,b)=>a.day.localeCompare(b.day)).forEach(d=>{ if(d.off || d.excused) return; d.shifts.forEach(s=>{
+    if(!(s.late > attC().grace)) return; const ti = ATT_TIERS.findIndex(t=>s.late>t.min && s.late<=t.max); if(ti<0) return;
+    const k = Math.min(n[ti],3); n[ti]++; const pct = ATT_TIERS[ti].pct[k]; const ref = `${d.day}|${s.i}`;
+    const done = attPen.find(p=>p.user_id===uid && p.kind==='penalty' && p.ref===ref);
+    out.push({ uid, day:d.day, shift:s.i, ref, late:s.late, tier:ATT_TIERS[ti].ar, time:k+1, pct, amount:+(pct/100*attDayWage(uid)).toFixed(2), approved:!!done, row:done||null });
+  }); });
+  return out;
+}
+function attMonthDays(month, uid, nowMs){
+  const today = attDay(new Date(nowMs).toISOString()); const [y,m] = month.split('-').map(Number);
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate(); const first = attFirst[uid] || null; const list = [];
+  for(let d=1; d<=last; d++){ const day = `${month}-${String(d).padStart(2,'0')}`; if(day>today) break; if(first && day<first) continue; if(!first) continue; list.push(day); }
+  return list;
+}
+function attSummary(uid, month, nowMs){
+  const recs = attRows.filter(r=>r.user_id===uid);
+  const days = attMonthDays(month, uid, nowMs).map(day=>attComputeDay(uid, day, recs.filter(r=>attDay(r.check_in)===day), nowMs));
+  const sum = { days, present:0, workDays:0, required:0, worked:0, late:0, lateCount:0, early:0, absentShifts:0, forgot:0, ded:0 };
+  days.forEach(d=>{ if(!d.off){ sum.workDays++; sum.required += d.excused?0:d.required; }
+    if(d.recs.length && !d.off) sum.present++; sum.worked += d.worked; sum.ded += d.ded;
+    d.shifts.forEach(s=>{ if(d.off) return; if(s.late>attC().grace){ sum.lateCount++; sum.late+=s.late; } sum.early+=s.early; if(s.absent && !d.excused) sum.absentShifts++; if(s.forgot) sum.forgot++; }); });
+  const salary = Number(attSalary[uid])||0;
+  sum.salary = salary; sum.minuteWage = attMinuteWage(uid); sum.dedMoney = +(sum.ded*sum.minuteWage).toFixed(2);
+  sum.suggest = attPenaltySuggestions(uid, days);
+  sum.penalties = +attPen.filter(p=>p.user_id===uid && p.kind==='penalty' && String(p.day).slice(0,7)===month).reduce((a,p)=>a+Number(p.amount||0),0).toFixed(2);
+  sum.net = +(salary - sum.dedMoney - sum.penalties).toFixed(2);
+  return sum;
+}
+
 async function loadAttendance(){
   const m = attMonth || todayStr().slice(0,7);
-  const from = new Date(`${m}-01T00:00:00+03:00`);
-  const to = new Date(from); to.setMonth(to.getMonth()+1);
+  const from = new Date(`${m}-01T00:00:00+03:00`); const to = new Date(from); to.setMonth(to.getMonth()+1);
   let q = sb.from('attendance').select('*').gte('check_in', from.toISOString()).lt('check_in', to.toISOString()).order('check_in',{ascending:false});
   if(!isAdmin()) q = q.eq('user_id', currentUser().id);
-  const {data, error} = await q; if(error) throw error;
-  attRows = data||[];
+  const {data, error} = await q; if(error) throw error; attRows = data||[];
+  attWarn = '';
+  const ids = isAdmin() ? users.filter(u=>u.role==='accountant').map(u=>u.id) : [currentUser().id];
+  try{ const {data:cfg, error:e1} = await sb.from('app_settings').select('value').eq('key','attendance').maybeSingle(); if(e1) throw e1; attCfg = cfg ? cfg.value : null; }catch(e){ attCfg = null; attWarn = 'sql'; }
+  attSalary = {};   // salaries are loaded for the admin only — accountants never receive them
+  if(isAdmin()){ try{ const {data:sal, error:e2} = await sb.from('app_users').select('id,salary').in('id', ids); if(e2) throw e2; (sal||[]).forEach(x=>attSalary[x.id]=x.salary); }catch(e){ attWarn = 'sql'; } }
+  try{ const {data:pen, error:e3} = await sb.from('attendance_penalties').select('*').gte('day', `${m}-01`).lte('day', `${m}-31`); if(e3) throw e3; attPen = (pen||[]).filter(p=>ids.includes(p.user_id)); }catch(e){ attPen = []; attWarn = 'sql'; }
+  // the first day each accountant ever checked in: days before it are not counted as absence
+  for(const id of ids){ if(attFirst[id]) continue;
+    const {data:f} = await sb.from('attendance').select('check_in').eq('user_id', id).order('check_in',{ascending:true}).limit(1);
+    if(f && f[0]) attFirst[id] = attDay(f[0].check_in); }
 }
 async function attOpenRow(){
   const {data, error} = await sb.from('attendance').select('*').eq('user_id', currentUser().id).is('check_out', null).order('check_in',{ascending:false}).limit(1);
   if(error) throw error; return (data||[])[0]||null;
 }
+/* an open row whose shift is over (forgot to check out) → close it at the shift end */
+async function attCloseIfOver(open){
+  if(!open) return null;
+  const day = attDay(open.check_in), s = attC().shifts[attShiftOf(open)], end = attTs(day, s.to);
+  if(Date.now() < end) return open;
+  const {error} = await sb.from('attendance').update({check_out:new Date(end).toISOString(), auto_closed:true}).eq('id', open.id);
+  if(error) throw error; return null;
+}
 window.uiAttendance = async function(kind){
-  const btn = document.getElementById('attActionBtn'); const msg = document.getElementById('attMsg');
-  if(btn){ btn.disabled = true; btn.textContent = lang==='ar'?'جاري التسجيل…':'Saving…'; }
+  const btn = document.getElementById('attActionBtn'); const msg = document.getElementById('attMsg'); const ar = lang==='ar';
+  if(btn){ btn.disabled = true; btn.textContent = ar?'جاري التسجيل…':'Saving…'; }
   try{
     if(kind==='in'){
-      if(await attOpenRow()) throw new Error(lang==='ar'?'عندك حضور مسجّل من قبل — سجّل انصراف أول.':'Already checked in.');
+      const open = await attCloseIfOver(await attOpenRow());
+      if(open) throw new Error(ar?'عندك حضور مسجّل من قبل — سجّل انصراف أول.':'Already checked in.');
       const {error} = await sb.from('attendance').insert({user_id:currentUser().id, branch_id:currentUser().branch_id||null});
       if(error) throw error;
     }else{
-      const open = await attOpenRow(); if(!open) throw new Error(lang==='ar'?'ما عندك حضور مفتوح.':'No open check-in.');
+      const open = await attCloseIfOver(await attOpenRow()); if(!open) throw new Error(ar?'ما عندك حضور مفتوح (الفترة انتهت وانقفلت تلقائيًا).':'No open check-in.');
       const {error} = await sb.from('attendance').update({check_out:new Date().toISOString()}).eq('id', open.id);
       if(error) throw error;
     }
@@ -2393,78 +2483,206 @@ window.uiAttendance = async function(kind){
   }catch(e){
     console.error(e);
     if(msg) msg.innerHTML = `<div class="login-error">${e && e.code ? errText() : esc(e.message||String(e))}</div>`;
-    if(btn){ btn.disabled = false; btn.textContent = kind==='in' ? (lang==='ar'?'تسجيل حضور':'Check in') : (lang==='ar'?'تسجيل انصراف':'Check out'); }
+    if(btn){ btn.disabled = false; btn.textContent = kind==='in' ? (ar?'تسجيل حضور':'Check in') : (ar?'تسجيل انصراف':'Check out'); }
   }
 };
+
+function attShiftCell(s, d){
+  const ar = lang==='ar', G = attC().grace;
+  if(d.off) return '<span class="note">—</span>';
+  if(!s.started) return `<span class="note">${ar?'لم تبدأ':'Not started'}</span>`;
+  if(!s.recs.length) return s.ended ? `<span class="tag rejected">${ar?'غياب':'Absent'}</span>` : `<span class="tag pending">${ar?'لم يحضر بعد':'Not in yet'}</span>`;
+  const outTxt = s.open ? `<b style="color:#1f7a4d">${ar?'داخل':'In'}</b>` : s.forgot ? `<span style="color:var(--red);font-weight:700">${ar?'ما سجّل انصراف':'No check-out'}</span>` : attTime(new Date(s.lastOut).toISOString());
+  const tags = [];
+  if(s.late>G) tags.push(`<span class="tag pending">${ar?'تأخير':'Late'} ${s.late} ${ar?'د':'m'}</span>`); else if(s.late>0) tags.push(`<span class="tag" title="${ar?'ضمن السماح':'within grace'}">${s.late} ${ar?'د سماح':'m grace'}</span>`);
+  if(s.early>0) tags.push(`<span class="tag pending">${ar?'خروج مبكر':'Early'} ${s.early} ${ar?'د':'m'}</span>`);
+  if(s.recs.length>1) tags.push(`<span class="tag">${s.recs.length} ${ar?'دخول':'entries'}</span>`);
+  const tm = ts=>`<span dir="ltr">${attTime(new Date(ts).toISOString())}</span>`;
+  const outCell = s.open ? outTxt : s.forgot ? outTxt : tm(s.lastOut);
+  return `<div style="white-space:nowrap">${ar?'دخول':'In'} ${tm(s.firstIn)}</div><div style="white-space:nowrap">${ar?'خروج':'Out'} ${outCell}</div><div style="font-size:11.5px;color:var(--ink-soft)">${ar?'ساعات الفترة':'Hours'} <b>${fmtMin(s.inside)}</b> ${ar?'من':'of'} ${fmtMin(s.len)}</div>${tags.join(' ')}`;
+}
+function attSummaryCards(S){
+  const ar = lang==='ar'; S = isAdmin() ? S : {...S, salary:0};   // no money on the accountant's screen
+  const card = (lbl, val, color)=>`<div class="kpi"><div class="kpi-label">${lbl}</div><div class="kpi-value" style="${color?`color:${color}`:''}">${val}</div></div>`;
+  return `<div class="kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
+    ${card(ar?'الساعات المطلوبة':'Required hours', fmtMin(S.required))}
+    ${card(ar?'ساعاتك الفعلية (داخل الدوام)':'Worked (in shift)', fmtMin(S.worked), S.worked>=S.required?'#1f7a4d':'')}
+    ${card(ar?'الناقص':'Short', fmtMin(Math.max(0,S.required-S.worked)), S.required>S.worked?'var(--red)':'')}
+    ${card(ar?'التأخير (بعد السماح)':'Late (after grace)', `${S.lateCount} ${ar?'مرة':'x'} — ${S.late} ${ar?'د':'m'}`, S.lateCount?'var(--red)':'')}
+    ${card(ar?'خروج مبكر':'Early leave', `${S.early} ${ar?'د':'m'}`, S.early?'var(--red)':'')}
+    ${card(ar?'فترات غياب':'Absent shifts', S.absentShifts, S.absentShifts?'var(--red)':'')}
+    ${card(ar?'ما سجّل انصراف':'No check-out', S.forgot, S.forgot?'var(--red)':'')}
+    ${card(ar?'دقائق الخصم':'Deducted minutes', `${S.ded} ${ar?'د':'m'} (${fmtMin(S.ded)})`)}
+    ${S.salary?card(ar?'خصم الوقت':'Time deduction', money(S.dedMoney), S.dedMoney?'var(--red)':''):''}
+    ${S.salary?card(ar?'جزاءات معتمدة':'Approved penalties', money(S.penalties), S.penalties?'var(--red)':''):''}
+    ${S.salary?card(ar?'الراتب بعد الخصم':'Net salary', `${money(S.net)}<div style="font-size:11px;color:var(--ink-soft)">${ar?'من':'of'} ${money(S.salary)}</div>`, '#1f7a4d'):''}
+  </div>
+  ${S.salary?`<p class="note" style="margin-top:8px;">${ar?`طريقة الحساب: أجر اليوم = ${money(S.salary)} ÷ 30 = ${money(S.salary/30)} — أجر الدقيقة = أجر اليوم ÷ ${attDayMinutes()} دقيقة = ${S.minuteWage.toFixed(4)} ريال. التأخير ${attC().grace} دقيقة وأقل ما ينخصم.`:''}</p>`:''}`;
+}
+function attDailyTable(S, uid){
+  const ar = lang==='ar', A = isAdmin(), sh = attC().shifts;
+  if(!S.days.length) return `<div class="empty">${t('emptyData')}</div>`;
+  return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('fieldDate')}</th>${sh.map((s,i)=>`<th>${ar?(i===0?'الفترة الأولى':i===1?'الفترة الثانية':'الفترة '+(i+1)):'Shift '+(i+1)}<div style="font-weight:400;font-size:11px">${s.from}–${s.to}</div></th>`).join('')}<th>${ar?'ساعات اليوم':'Day hours'}</th><th>${ar?'الخصم':'Deduction'}</th>${A?'<th></th>':''}</tr></thead><tbody>
+    ${S.days.slice().reverse().map(d=>`<tr style="${d.off?'background:rgba(0,0,0,.03)':''}">
+      <td style="white-space:nowrap"><b>${d.day}</b><div style="font-size:11px;color:var(--ink-soft)">${ar?AR_DAYS[attDow(d.day)]:''}${d.off?(ar?' — إجازة':' — off'):''}${d.excused?` <span class="tag collected">${ar?'معذور':'Excused'}</span>`:''}</div></td>
+      ${d.shifts.map(s=>`<td>${attShiftCell(s,d)}</td>`).join('')}
+      <td class="num">${fmtMin(d.worked)}${d.off?'':` <span style="font-size:11px;color:var(--ink-soft)">/ ${fmtMin(d.required)}</span>`}</td>
+      <td class="num" style="${d.ded?'color:var(--red);font-weight:600':''}">${d.ded?`${d.ded} ${ar?'د':'m'}${S.salary&&A?`<div style="font-size:11px">${money(d.money)}</div>`:''}`:'—'}</td>
+      ${A?`<td style="white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="uiAttEditDay('${uid}','${d.day}')">✏️ ${ar?'تعديل':'Edit'}</button></td>`:''}
+    </tr>`).join('')}</tbody></table></div>`;
+}
+function attPenaltyPanel(S, uid){
+  const ar = lang==='ar'; if(!S.suggest.length) return '';
+  return `<div class="panel"><div class="panel-head"><h3 class="panel-title">⚖️ ${ar?'جزاءات التأخير المتكرر (حسب لائحة العمل)':'Repeat-lateness penalties'}</h3></div>
+    <p class="note">${ar?'النسبة من أجر اليوم وتكبر مع التكرار خلال الشهر. ما تنخصم إلا لما تعتمدها (الجزاء يحتاج إنذار للموظف).':'Percent of day wage, grows with repeats. Deducted only once approved.'}</p>
+    <div style="overflow-x:auto;"><table><thead><tr><th>${t('fieldDate')}</th><th>${ar?'الفترة':'Shift'}</th><th>${ar?'التأخير':'Late'}</th><th>${ar?'المخالفة':'Violation'}</th><th>${ar?'المرة':'Time'}</th><th>${ar?'الجزاء':'Penalty'}</th><th></th></tr></thead><tbody>
+    ${S.suggest.map(p=>`<tr><td>${p.day}</td><td>${p.shift+1}</td><td>${p.late} ${ar?'د':'m'}</td><td>${p.tier}</td><td>${p.time}</td>
+      <td>${p.pct===0?(ar?'إنذار كتابي':'Written warning'):(isAdmin()?`${p.pct}% = ${money(p.amount)}`:`${p.pct}% ${ar?'من أجر اليوم':'of day wage'}`)}</td>
+      <td>${isAdmin()?(p.approved?`<span class="tag collected">${ar?'معتمد':'Approved'}</span> <button class="btn btn-ghost btn-sm" onclick="uiAttPenalty('${uid}','${p.ref}',null)">${ar?'إلغاء':'Undo'}</button>`
+        : `<button class="btn btn-gold btn-sm" onclick='uiAttPenalty("${uid}","${p.ref}",${JSON.stringify({day:p.day,amount:p.amount,note:`${p.tier} — المرة ${p.time} (${p.late} د)`})})'>${ar?'اعتماد':'Approve'}</button>`)
+        : (p.approved?`<span class="tag rejected">${ar?'معتمد':'Approved'}</span>`:'')}</td></tr>`).join('')}
+    </tbody></table></div></div>`;
+}
+
 async function renderAttendance(){
   const ar = lang==='ar';
   document.getElementById('pageSub').textContent = ar ? 'تسجيل الحضور والانصراف — الوقت يُسجَّل من السيرفر' : 'Check in and out — time is taken from the server';
   const box = document.getElementById('content');
   box.innerHTML = `<div class="panel"><div class="empty">${ar?'جاري التحميل…':'Loading…'}</div></div>`;
   let open = null;
-  try{ await loadAttendance(); if(!isAdmin()) open = await attOpenRow(); }
+  try{ await loadAttendance(); if(!isAdmin()){ const o0 = await attOpenRow(); open = await attCloseIfOver(o0); if(o0 && !open) await loadAttendance(); } }
   catch(e){ console.error(e); box.innerHTML = `<div class="panel"><div class="login-error">${errText()}<br>${ar?'تأكد إنك شغّلت كود SQL الخاص بالحضور في Supabase.':'Make sure the attendance SQL was run in Supabase.'}</div></div>`; return; }
   if(route!=='attendance') return;
-  const month = attMonth || todayStr().slice(0,7);
-  const rows = isAdmin() && attUser!=='all' ? attRows.filter(r=>r.user_id===attUser) : attRows;
-  // one line per person per day
-  const days = new Map();
-  rows.forEach(r=>{ const k = r.user_id+'|'+attDay(r.check_in); const e = days.get(k) || {user_id:r.user_id, day:attDay(r.check_in), recs:[]}; e.recs.push(r); days.set(k,e); });
-  const dayList = [...days.values()].map(e=>{ e.recs.sort((a,b)=>a.check_in.localeCompare(b.check_in));
-    e.first = e.recs[0]; e.last = e.recs[e.recs.length-1]; e.hours = e.recs.reduce((s,r)=>s+attHours(r),0);
-    e.late = attLateMin(e.first); e.openIn = e.recs.some(r=>!r.check_out); e.branch = e.first.branch_id; return e; })
-    .sort((a,b)=> b.day.localeCompare(a.day) || userName(a.user_id).localeCompare(userName(b.user_id)));
-  const todayKey = attDay(new Date().toISOString());
+  const month = attMonth || todayStr().slice(0,7), now = Date.now(), todayKey = attDay(new Date(now).toISOString());
   const accountants = users.filter(u=>u.role==='accountant' && u.active!==false);
-  // monthly summary per person
-  const sum = new Map();
-  dayList.forEach(e=>{ const x = sum.get(e.user_id) || {days:0, hours:0, late:0, lateMin:0, open:0}; x.days++; x.hours+=e.hours; if(e.late){ x.late++; x.lateMin+=e.late; } if(e.openIn && e.day!==todayKey) x.open++; sum.set(e.user_id,x); });
-  const myToday = dayList.find(e=>e.day===todayKey && e.user_id===currentUser().id);
-  box.innerHTML = `
-    ${!isAdmin()?`<div class="panel" style="text-align:center;">
-      <div style="font-size:14px;color:var(--muted,#667);">${new Date().toLocaleDateString(ar?'ar-SA-u-ca-gregory':'en-GB',{timeZone:ATT_TZ,weekday:'long',day:'numeric',month:'long'})}</div>
-      <div style="font-size:15px;margin:10px 0;">${open
-        ? (ar?`حاضر من الساعة <b>${attTime(open.check_in)}</b>`:`Checked in at <b>${attTime(open.check_in)}</b>`)
-        : myToday ? (ar?`آخر انصراف: <b>${attTime(myToday.last.check_out)}</b> — مجموع اليوم ${fmtHours(myToday.hours)} ساعة`:`Last check-out ${attTime(myToday.last.check_out)}`)
-        : (ar?'ما سجّلت حضور اليوم':'Not checked in today')}</div>
+  const sqlNote = attWarn ? `<div class="login-error">${ar?'⚠️ شغّل ملف attendance_v2.sql في Supabase عشان تنحفظ الرواتب والإعدادات والجزاءات.':'Run attendance_v2.sql in Supabase.'}</div>` : '';
+  let html = sqlNote;
+  if(!isAdmin()){
+    const me = currentUser().id, S = attSummary(me, month, now), td = S.days.find(d=>d.day===todayKey) || attComputeDay(me, todayKey, attRows.filter(r=>r.user_id===me && attDay(r.check_in)===todayKey), now);
+    html += `<div class="panel" style="text-align:center;">
+      <div style="font-size:14px;color:var(--ink-soft);">${new Date().toLocaleDateString(ar?'ar-SA-u-ca-gregory':'en-GB',{timeZone:ATT_TZ,weekday:'long',day:'numeric',month:'long'})}</div>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:12px 0;">
+        ${td.shifts.map(s=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px 14px;min-width:170px;">
+          <div style="font-weight:700">${ar?(s.i===0?'الفترة الأولى':'الفترة الثانية'):'Shift '+(s.i+1)} <span style="font-weight:400;font-size:12px">${s.from}–${s.to}</span></div>
+          <div style="margin-top:6px">${attShiftCell(s, td)}</div></div>`).join('')}
+      </div>
+      <div style="font-size:15px;margin:6px 0 12px;">${ar?'ساعات اليوم':'Today'}: <b>${fmtMin(td.worked)}</b> ${td.off?'':`${ar?'من':'of'} ${fmtMin(td.required)}`}</div>
       <button class="btn ${open?'btn-ghost':'btn-gold'}" id="attActionBtn" style="min-width:200px;padding:14px 20px;font-size:16px;" onclick="uiAttendance('${open?'out':'in'}')">${open?(ar?'تسجيل انصراف':'Check out'):(ar?'تسجيل حضور':'Check in')}</button>
       <div id="attMsg" style="margin-top:10px;"></div>
-      <p class="note" style="margin-top:8px;">${ar?'الوقت يُسجَّل من السيرفر مو من جهازك.':'Time is taken from the server, not your device.'}</p>
-    </div>`:''}
-    ${isAdmin()?`<div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'حضور اليوم':'Today'}</h3></div>
-      ${accountants.length?`<table><thead><tr><th>${ar?'المحاسب':'Accountant'}</th><th>${t('colBranch')}</th><th>${ar?'الحالة':'Status'}</th></tr></thead><tbody>
-      ${accountants.map(u=>{ const e = dayList.find(x=>x.day===todayKey && x.user_id===u.id);
-        const st = !e ? `<span class="tag rejected">${ar?'لم يحضر':'Absent'}</span>`
-          : e.openIn ? `<span class="tag collected">${ar?'حاضر من':'In since'} ${attTime(e.first.check_in)}</span>${e.late?` <span class="tag pending">${ar?'متأخر':'Late'} ${e.late} ${ar?'د':'min'}</span>`:''}`
-          : `<span class="tag">${ar?'انصرف':'Left'} ${attTime(e.last.check_out)}</span>`;
-        return `<tr><td>${esc(u.name)}</td><td>${esc(branchName(u.branch_id))}</td><td>${st}</td></tr>`; }).join('')}</tbody></table>`
-      :`<div class="empty">${ar?'ما فيه مستخدمين بدور محاسب.':'No accountants.'}</div>`}
-    </div>`:''}
-    <div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'سجل الشهر':'Monthly log'}</h3>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <input type="month" id="attMonthInput" value="${month}">
-        ${isAdmin()?`<select id="attUserSel"><option value="all">${t('allEmployeesOpt')}</option>${users.filter(u=>u.role!=='employee'||attRows.some(r=>r.user_id===u.id)).map(u=>`<option value="${u.id}" ${attUser===u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
-        <button class="btn btn-ghost btn-sm" id="attExcelBtn">${t('exportExcelBtn')}</button>`:''}
-      </div></div>
-      ${isAdmin() && sum.size ? `<div style="overflow-x:auto;margin-bottom:12px;"><table><thead><tr><th>${ar?'الاسم':'Name'}</th><th>${ar?'أيام الحضور':'Days'}</th><th>${ar?'مجموع الساعات':'Hours'}</th><th>${ar?'مرات التأخير':'Late days'}</th><th>${ar?'دقائق التأخير':'Late min'}</th><th>${ar?'بدون انصراف':'No check-out'}</th></tr></thead><tbody>
-        ${[...sum.entries()].map(([id,x])=>`<tr><td style="font-weight:600">${esc(userName(id))}</td><td class="num">${x.days}</td><td class="num">${fmtHours(x.hours)}</td><td class="num" style="${x.late?'color:var(--red);font-weight:600':''}">${x.late}</td><td class="num">${x.lateMin}</td><td class="num" style="${x.open?'color:var(--red);font-weight:600':''}">${x.open}</td></tr>`).join('')}
-      </tbody></table></div>` : ''}
-      ${dayList.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('fieldDate')}</th>${isAdmin()?`<th>${ar?'الاسم':'Name'}</th>`:''}<th>${t('colBranch')}</th><th>${ar?'حضور':'In'}</th><th>${ar?'انصراف':'Out'}</th><th>${ar?'الساعات':'Hours'}</th><th>${ar?'ملاحظات':'Notes'}</th></tr></thead><tbody>
-        ${dayList.map(e=>`<tr><td style="white-space:nowrap">${e.day}</td>${isAdmin()?`<td style="font-weight:600">${esc(userName(e.user_id))}</td>`:''}<td>${esc(branchName(e.branch))}</td>
-          <td class="num">${attTime(e.first.check_in)}</td><td class="num">${e.openIn?(e.day===todayKey?(ar?'لسا داخل':'In'):`<span style="color:var(--red);font-weight:600">${ar?'ما سجّل':'Missing'}</span>`):attTime(e.last.check_out)}</td>
-          <td class="num">${fmtHours(e.hours)}</td>
-          <td>${e.late?`<span class="tag pending">${ar?'تأخير':'Late'} ${e.late} ${ar?'د':'min'}</span> `:''}${e.recs.length>1?`<span class="tag">${e.recs.length} ${ar?'فترات':'shifts'}</span>`:''}</td></tr>`).join('')}
-      </tbody></table></div>`}
-    </div>`;
+      <p class="note" style="margin-top:8px;">${ar?`الوقت يُسجَّل من السيرفر. سجّل حضور وانصراف لكل فترة. التأخير ${attC().grace} دقيقة وأقل ما ينخصم.`:'Time is taken from the server.'}</p>
+    </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'ملخص الشهر':'This month'}</h3><input type="month" id="attMonthInput" value="${month}"></div>${attSummaryCards(S)}</div>
+    ${attPenaltyPanel(S, me)}
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'سجلك اليومي':'Daily log'}</h3></div>${attDailyTable(S, me)}</div>`;
+  }else{
+    const sums = accountants.map(u=>({u, S:attSummary(u.id, month, now)}));
+    const sel = attUser!=='all' && accountants.some(u=>u.id===attUser) ? attUser : (accountants[0]||{}).id;
+    html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'حضور اليوم':'Today'}</h3></div>
+      ${accountants.length?`<div style="overflow-x:auto;"><table><thead><tr><th>${ar?'المحاسب':'Accountant'}</th>${attC().shifts.map((s,i)=>`<th>${ar?(i===0?'الفترة الأولى':'الفترة الثانية'):'Shift '+(i+1)} <span style="font-weight:400;font-size:11px">${s.from}–${s.to}</span></th>`).join('')}<th>${ar?'ساعات اليوم':'Hours'}</th></tr></thead><tbody>
+      ${accountants.map(u=>{ const d = attComputeDay(u.id, todayKey, attRows.filter(r=>r.user_id===u.id && attDay(r.check_in)===todayKey), now);
+        return `<tr><td style="font-weight:600">${esc(u.name)}</td>${d.shifts.map(s=>`<td>${attShiftCell(s,d)}</td>`).join('')}<td class="num">${fmtMin(d.worked)}</td></tr>`; }).join('')}</tbody></table></div>`
+      :`<div class="empty">${ar?'ما فيه مستخدمين بدور محاسب.':'No accountants.'}</div>`}</div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'ملخص الشهر — المحاسبين':'Month — accountants'}</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;"><input type="month" id="attMonthInput" value="${month}">
+        <button class="btn btn-ghost btn-sm" id="attSetBtn">⚙️ ${ar?'الدوام والرواتب':'Shifts & salaries'}</button>
+        <button class="btn btn-ghost btn-sm" id="attExcelBtn">${t('exportExcelBtn')}</button></div></div>
+      <div style="overflow-x:auto;"><table><thead><tr><th>${ar?'الاسم':'Name'}</th><th>${ar?'أيام الحضور':'Days'}</th><th>${ar?'الساعات':'Hours'}</th><th>${ar?'المطلوب':'Required'}</th><th>${ar?'تأخير':'Late'}</th><th>${ar?'خروج مبكر':'Early'}</th><th>${ar?'غياب (فترات)':'Absent'}</th><th>${ar?'ما سجّل انصراف':'No out'}</th><th>${ar?'دقائق الخصم':'Ded. min'}</th><th>${ar?'الراتب':'Salary'}</th><th>${ar?'الخصم':'Deduction'}</th><th>${ar?'الصافي':'Net'}</th></tr></thead><tbody>
+      ${sums.map(({u,S})=>`<tr style="cursor:pointer;${u.id===sel?'background:rgba(168,114,44,.08)':''}" onclick="attUser='${u.id}';renderAttendance()"><td style="font-weight:600">${esc(u.name)}</td><td class="num">${S.present}/${S.workDays}</td><td class="num">${fmtMin(S.worked)}</td><td class="num">${fmtMin(S.required)}</td>
+        <td class="num" style="${S.lateCount?'color:var(--red)':''}">${S.lateCount} (${S.late} ${ar?'د':'m'})</td><td class="num">${S.early} ${ar?'د':'m'}</td><td class="num" style="${S.absentShifts?'color:var(--red)':''}">${S.absentShifts}</td><td class="num" style="${S.forgot?'color:var(--red)':''}">${S.forgot}</td>
+        <td class="num">${S.ded}</td><td class="num">${S.salary?money(S.salary):`<span class="note">${ar?'غير محدد':'not set'}</span>`}</td><td class="num" style="color:var(--red)">${S.salary?money(S.dedMoney+S.penalties):'—'}</td><td class="num" style="font-weight:700">${S.salary?money(S.net):'—'}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+    const cur = sums.find(x=>x.u.id===sel);
+    if(cur) html += `<div class="panel"><div class="panel-head"><h3 class="panel-title">${esc(cur.u.name)} — ${month}</h3></div>${attSummaryCards(cur.S)}</div>
+      ${attPenaltyPanel(cur.S, cur.u.id)}
+      <div class="panel"><div class="panel-head"><h3 class="panel-title">${ar?'السجل اليومي':'Daily log'} — ${esc(cur.u.name)}</h3></div>${attDailyTable(cur.S, cur.u.id)}</div>`;
+  }
+  box.innerHTML = html;
   document.getElementById('attMonthInput').onchange = e=>{ attMonth = e.target.value || null; renderAttendance(); };
-  if(document.getElementById('attUserSel')) document.getElementById('attUserSel').onchange = e=>{ attUser = e.target.value; renderAttendance(); };
+  if(document.getElementById('attSetBtn')) document.getElementById('attSetBtn').onclick = uiAttSettings;
   if(document.getElementById('attExcelBtn')) document.getElementById('attExcelBtn').onclick = ()=>{
-    const data = dayList.map(e=>({ [ar?'التاريخ':'Date']:e.day, [ar?'الاسم':'Name']:userName(e.user_id), [ar?'الفرع':'Branch']:branchName(e.branch),
-      [ar?'حضور':'In']:attTime(e.first.check_in), [ar?'انصراف':'Out']:e.openIn?'':attTime(e.last.check_out), [ar?'الساعات':'Hours']:fmtHours(e.hours), [ar?'تأخير (دقيقة)':'Late (min)']:e.late||0 }));
-    const ws = XLSX.utils.json_to_sheet(data); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Attendance');
-    XLSX.writeFile(wb, `attendance-${month}.xlsx`);
+    const rows = [];
+    accountants.forEach(u=>{ const S = attSummary(u.id, month, now); S.days.forEach(d=>{ const r = { [ar?'التاريخ':'Date']:d.day, [ar?'اليوم':'Day']:AR_DAYS[attDow(d.day)], [ar?'الاسم':'Name']:u.name };
+      d.shifts.forEach((s,i)=>{ const n = i+1; r[`${ar?'حضور':'In'} ${n}`] = s.firstIn?attTime(new Date(s.firstIn).toISOString()):''; r[`${ar?'انصراف':'Out'} ${n}`] = s.forgot?(ar?'ما سجّل':'none'):(s.lastOut&&!s.open?attTime(new Date(s.lastOut).toISOString()):''); r[`${ar?'تأخير':'Late'} ${n}`] = s.late; });
+      r[ar?'ساعات اليوم':'Hours'] = fmtMin(d.worked); r[ar?'المطلوب':'Required'] = fmtMin(d.required); r[ar?'دقائق الخصم':'Ded. min'] = d.ded; r[ar?'الخصم (ريال)':'Deduction'] = d.money; rows.push(r); });
+      rows.push({ [ar?'التاريخ':'Date']:ar?'الإجمالي':'Total', [ar?'الاسم':'Name']:u.name, [ar?'ساعات اليوم':'Hours']:fmtMin(S.worked), [ar?'المطلوب':'Required']:fmtMin(S.required), [ar?'دقائق الخصم':'Ded. min']:S.ded, [ar?'الخصم (ريال)':'Deduction']:+(S.dedMoney+S.penalties).toFixed(2), [ar?'الصافي':'Net']:S.net }); rows.push({}); });
+    const ws = XLSX.utils.json_to_sheet(rows); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Attendance'); XLSX.writeFile(wb, `attendance-${month}.xlsx`);
   };
 }
+
+/* admin: shifts, grace, weekly off and each accountant's salary */
+function uiAttSettings(){
+  const ar = lang==='ar', C = attC(), acc = users.filter(u=>u.role==='accountant' && u.active!==false);
+  showModal(`<div class="modal-head"><h3>⚙️ ${ar?'الدوام والرواتب':'Shifts & salaries'}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="attSetForm">
+      ${C.shifts.map((s,i)=>`<div style="display:flex;gap:8px;align-items:end;"><div class="field" style="flex:1"><label>${ar?(i===0?'الفترة الأولى من':'الفترة الثانية من'):'Shift '+(i+1)+' from'}</label><input type="time" name="f${i}" value="${s.from}"></div><div class="field" style="flex:1"><label>${ar?'إلى':'to'}</label><input type="time" name="t${i}" value="${s.to}"></div></div>`).join('')}
+      <div class="field"><label>${ar?'السماح بالتأخير (دقيقة)':'Grace (min)'}</label><input type="number" name="grace" min="0" value="${C.grace}"></div>
+      <div class="field"><label>${ar?'يوم الإجازة':'Weekly off'}</label><select name="off">${AR_DAYS.map((d,i)=>`<option value="${i}" ${C.off.includes(i)?'selected':''}>${d}</option>`).join('')}</select></div>
+      <h4 style="margin:12px 0 6px;">${ar?'رواتب المحاسبين (قبل التأمينات)':'Salaries'}</h4>
+      ${acc.map(u=>`<div class="field"><label>${esc(u.name)}</label><input type="number" step="0.01" min="0" name="sal_${u.id}" value="${attSalary[u.id]??''}" placeholder="4000"></div>`).join('')}
+      <div id="attSetErr"></div>
+      <div style="margin-top:14px;display:flex;gap:10px;"><button type="submit" class="btn btn-primary" id="attSetSave">${t('saveChanges')}</button><button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>
+    </form>`);
+  const f = document.getElementById('attSetForm');
+  f.onsubmit = async e=>{ e.preventDefault(); const bt = document.getElementById('attSetSave'); bt.disabled = true;
+    try{
+      const shifts = C.shifts.map((s,i)=>({from:f['f'+i].value||s.from, to:f['t'+i].value||s.to}));
+      if(shifts.some(s=>attHm(s.to)<=attHm(s.from))) throw new Error(ar?'وقت النهاية لازم بعد البداية.':'End must be after start.');
+      const value = {shifts, grace:Math.max(0, Number(f.grace.value)||0), off:[Number(f.off.value)]};
+      const {error} = await sb.from('app_settings').upsert({key:'attendance', value}); if(error) throw error; attCfg = value;
+      for(const u of acc){ const v = f['sal_'+u.id].value; const sal = v===''?null:Number(v); if(sal!==(attSalary[u.id]??null)){ const {error:e2} = await sb.from('app_users').update({salary:sal}).eq('id', u.id); if(e2) throw e2; attSalary[u.id] = sal; } }
+      closeModal(); renderAttendance();
+    }catch(err){ console.error(err); document.getElementById('attSetErr').innerHTML = `<div class="login-error">${err && err.code ? errText() : esc(err.message||String(err))}</div>`; bt.disabled = false; }
+  };
+}
+/* admin: correct a day — change times, add a missing entry, delete a wrong one, excuse the day */
+window.uiAttEditDay = function(uid, day){
+  const ar = lang==='ar', recs = attRows.filter(r=>r.user_id===uid && attDay(r.check_in)===day).sort((a,b)=>a.check_in.localeCompare(b.check_in));
+  const hhmm = ts=>ts?new Date(ts).toLocaleTimeString('en-GB',{timeZone:ATT_TZ,hour:'2-digit',minute:'2-digit',hour12:false}):'';
+  const exc = attExcused(uid, day);
+  showModal(`<div class="modal-head"><h3>✏️ ${esc(userName(uid))} — ${day}</h3><button class="close-x" onclick="closeModal()">✕</button></div>
+    <form id="attEdForm">
+      ${recs.map((r,i)=>`<div style="display:flex;gap:8px;align-items:end;border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:8px;">
+        <div class="field" style="flex:1"><label>${ar?'حضور':'In'}</label><input type="time" name="in_${i}" value="${hhmm(r.check_in)}"></div>
+        <div class="field" style="flex:1"><label>${ar?'انصراف':'Out'}${r.auto_closed?` <span style="color:var(--red)">(${ar?'قفل تلقائي':'auto'})</span>`:''}</label><input type="time" name="out_${i}" value="${hhmm(r.check_out)}"></div>
+        <label style="white-space:nowrap;font-size:12px;"><input type="checkbox" name="del_${i}"> ${ar?'حذف':'Delete'}</label></div>`).join('')}
+      <div style="display:flex;gap:8px;align-items:end;"><div class="field" style="flex:1"><label>${ar?'إضافة دخول — حضور':'Add — in'}</label><input type="time" name="new_in"></div><div class="field" style="flex:1"><label>${ar?'انصراف':'Out'}</label><input type="time" name="new_out"></div></div>
+      <div class="field"><label>${ar?'ملاحظة (سبب التعديل)':'Note'}</label><input name="note" required placeholder="${ar?'مثال: نسي يسجل انصراف — طلع 12:05':''}"></div>
+      <label style="display:block;margin:8px 0;"><input type="checkbox" name="excuse" ${exc?'checked':''}> ${ar?'معذور هذا اليوم (إجازة / عذر) — ما ينخصم عليه':'Excused (no deduction)'}</label>
+      <div id="attEdErr"></div>
+      <div style="margin-top:12px;display:flex;gap:10px;"><button type="submit" class="btn btn-primary" id="attEdSave">${t('saveChanges')}</button><button type="button" class="btn btn-ghost" onclick="closeModal()">${t('cancel')}</button></div>
+    </form>`);
+  const f = document.getElementById('attEdForm');
+  const iso = hm=>new Date(`${day}T${hm}:00+03:00`).toISOString();
+  f.onsubmit = async e=>{ e.preventDefault(); const bt = document.getElementById('attEdSave'); bt.disabled = true;
+    try{
+      const note = f.note.value.trim(), me = currentUser().id;
+      for(let i=0;i<recs.length;i++){ const r = recs[i];
+        if(f['del_'+i].checked){ const {error} = await sb.from('attendance').delete().eq('id', r.id); if(error) throw error; continue; }
+        const ni = f['in_'+i].value, no = f['out_'+i].value; if(!ni) throw new Error(ar?'وقت الحضور مطلوب.':'In time required.');
+        if(no && attHm(no)<=attHm(ni)) throw new Error(ar?'الانصراف لازم بعد الحضور.':'Out must be after in.');
+        const patch = {check_in:iso(ni), check_out:no?iso(no):null, manual:true, auto_closed:false, note, edited_by:me};
+        if(patch.check_in!==new Date(r.check_in).toISOString() || (patch.check_out||null)!==(r.check_out?new Date(r.check_out).toISOString():null)){ const {error} = await sb.from('attendance').update(patch).eq('id', r.id); if(error) throw error; }
+      }
+      if(f.new_in.value){ const no = f.new_out.value; if(no && attHm(no)<=attHm(f.new_in.value)) throw new Error(ar?'الانصراف لازم بعد الحضور.':'Out must be after in.');
+        const u = users.find(x=>x.id===uid); const {error} = await sb.from('attendance').insert({user_id:uid, branch_id:(u&&u.branch_id)||null, check_in:iso(f.new_in.value), check_out:no?iso(no):null, manual:true, note, edited_by:me}); if(error) throw error; }
+      if(f.excuse.checked !== exc){
+        if(f.excuse.checked){ const {error} = await sb.from('attendance_penalties').insert({user_id:uid, day, kind:'excuse', ref:'excuse|'+day, amount:0, note, created_by:me}); if(error) throw error; }
+        else { const {error} = await sb.from('attendance_penalties').delete().eq('user_id', uid).eq('kind','excuse').eq('day', day); if(error) throw error; }
+      }
+      closeModal(); renderAttendance();
+    }catch(err){ console.error(err); document.getElementById('attEdErr').innerHTML = `<div class="login-error">${err && err.code ? errText() : esc(err.message||String(err))}</div>`; bt.disabled = false; }
+  };
+};
+window.uiAttPenalty = async function(uid, ref, p){
+  const ar = lang==='ar';
+  try{
+    if(p){ if(!confirm(ar?`اعتماد جزاء ${money(p.amount)}؟\n${p.note}\n\nتأكد إنك أنذرت الموظف.`:'Approve penalty?')) return;
+      const {error} = await sb.from('attendance_penalties').insert({user_id:uid, day:p.day, kind:'penalty', ref, amount:p.amount, note:p.note, created_by:currentUser().id}); if(error) throw error; }
+    else { if(!confirm(ar?'إلغاء الجزاء؟':'Undo penalty?')) return; const {error} = await sb.from('attendance_penalties').delete().eq('user_id', uid).eq('ref', ref); if(error) throw error; }
+    renderAttendance();
+  }catch(e){ console.error(e); alert(e && e.code ? errTextPlain() : (e.message||String(e))); }
+};
+
 /* admin: set a branch's location (stand inside it and tap, or paste coordinates), allowed radius and shift start */
 window.uiBranchAttendance = function(id){
   const b = branches.find(x=>x.id===id); if(!b) return; const ar = lang==='ar';
