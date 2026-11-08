@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G33</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G34</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -2373,6 +2373,11 @@ function attHm(s){ const [h,m] = String(s).split(':').map(Number); return h*60+(
 function attTs(day, hhmm){ return new Date(`${day}T${hhmm}:00+03:00`).getTime(); }
 function attDow(day){ return new Date(`${day}T12:00:00+03:00`).getUTCDay(); }
 function attIsOff(day){ return attC().off.includes(attDow(day)); }
+// a check-out is still accepted up to 60 minutes after the shift ends (never past the next shift's start);
+// only after that an open entry counts as "forgot to check out" and is closed at the shift end
+const ATT_OUT_WINDOW = 60;
+function attOutDeadline(day, i){ const sh = attC().shifts, end = attTs(day, sh[i].to), lim = end + ATT_OUT_WINDOW*60000;
+  return sh[i+1] ? Math.min(lim, attTs(day, sh[i+1].from)) : lim; }
 function attDayMinutes(){ return attC().shifts.reduce((a,s)=>a+attHm(s.to)-attHm(s.from),0); }
 function attDayWage(uid){ return (Number(attSalary[uid])||0)/30; }
 function attMinuteWage(uid){ const m = attDayMinutes(); return m ? attDayWage(uid)/m : 0; }
@@ -2391,10 +2396,10 @@ function attComputeDay(uid, day, recs, nowMs){
   // each entry: real in/out. A check-out hours after the day's last shift / next day, or none after its shift ended = forgot:
   // it then counts only up to the end of the shift it started in.
   const ents = recs.slice().sort((a,b)=>a.check_in.localeCompare(b.check_in)).map(r=>{
-    const a = new Date(r.check_in).getTime(), own = C.shifts[attShiftOf(r)], ownEnd = attTs(day, own.to);
+    const a = new Date(r.check_in).getTime(), oi = attShiftOf(r), own = C.shifts[oi], ownEnd = attTs(day, own.to), dl = attOutDeadline(day, oi);
     let b, forgot = false, open = false;
     if(r.check_out){ b = new Date(r.check_out).getTime(); if(r.auto_closed || b > lastEnd + 3*3600000 || attDay(r.check_out)!==day){ forgot = true; b = Math.min(b, ownEnd); } }
-    else if(nowMs >= ownEnd){ b = ownEnd; forgot = true; } else { b = nowMs; open = true; }
+    else if(nowMs >= dl){ b = ownEnd; forgot = true; } else { b = nowMs; open = true; }
     return { r, a, b, forgot, open };
   });
   const shifts = C.shifts.map((s,i)=>{
@@ -2487,8 +2492,8 @@ async function attOpenRow(){
 /* an open row whose shift is over (forgot to check out) → close it at the shift end */
 async function attCloseIfOver(open){
   if(!open) return null;
-  const day = attDay(open.check_in), s = attC().shifts[attShiftOf(open)], end = attTs(day, s.to);
-  if(Date.now() < end) return open;
+  const day = attDay(open.check_in), i = attShiftOf(open), s = attC().shifts[i], end = attTs(day, s.to);
+  if(Date.now() < attOutDeadline(day, i)) return open;   // still time to check out normally
   const {error} = await sb.from('attendance').update({check_out:new Date(end).toISOString(), auto_closed:true}).eq('id', open.id);
   if(error) throw error; return null;
 }
