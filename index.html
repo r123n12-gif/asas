@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G34</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G35</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -960,6 +960,8 @@ async function uploadReceiptFile(file){
 }
 async function submitDeposit(data){
   data = {...data, amount: requirePositive(data.amount)};
+  { const who = data.onBehalfOf||currentUser()?.id; const same = deposits.filter(d=>d.submitted_by===who && d.status!=='rejected' && Math.abs(Number(d.amount)-Number(data.amount))<0.005 && (Date.now()-new Date(d.created_at))<3*864e5);
+    if(same.length && typeof confirm==='function' && !confirm(lang==='ar'?`⚠️ فيه إيداع بنفس المبلغ (${money(data.amount)}) مسجّل ${String(same[0].created_at).slice(0,10)} — ${same[0].status==='approved'?'معتمد':'بانتظار الاعتماد'}.\nمتأكد إنه إيداع ثاني ومو نفس الإيداع؟`:'A deposit with the same amount exists. Send anyway?')) throw new Error(lang==='ar'?'ما انرسل الإيداع.':'Not sent.'); }
   const receiptUrl = await uploadReceiptFile(data.file);
   const row = { branch_id:data.branchId, amount:Number(data.amount)||0, destination:data.destination,
     receipt_url:receiptUrl, status:'pending', submitted_by:data.onBehalfOf||currentUser()?.id||null, note:data.note||null };
@@ -973,6 +975,7 @@ async function approveDeposit(id){
   // fresh read: another screen / a double click may have approved it already
   const {data:fresh} = await sb.from('cash_deposits').select('status').eq('id', id).maybeSingle();
   if(fresh && fresh.status==='approved'){ d0.status='approved'; return; }
+  if(fresh && fresh.status==='rejected'){ d0.status='rejected'; throw new Error(lang==='ar'?'هذا الإيداع انرفض من شاشة ثانية — ما ينفع يعتمد.':'This deposit was rejected on another screen.'); }
   const {data:already} = await sb.from('journal').select('*').eq('deposit_id', id).eq('desc_key','jDeposit');
   if(already && already.length){ await mustUpdate('cash_deposits', id, {status:'approved', reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}); d0.status='approved'; already.forEach(j=>{ if(!journal.some(x=>x.id===j.id)) journal.unshift(j); }); return; }
   // entry first, then status — if the status update fails the entry is removed, so nothing is half-done
@@ -985,8 +988,10 @@ async function approveDeposit(id){
   journal.unshift(jIns);
 }
 async function rejectDeposit(id, notes){
-  const {error} = await sb.from('cash_deposits').update({status:'rejected', notes:notes||null, reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id);
+  const {data:upd, error} = await sb.from('cash_deposits').update({status:'rejected', notes:notes||null, reviewed_by:currentUser()?.id||null, reviewed_at:new Date().toISOString()}).eq('id', id).eq('status','pending').select('id');
   if(error) throw error;
+  if(!upd || !upd.length){ const {data:fr} = await sb.from('cash_deposits').select('status').eq('id', id).maybeSingle(); const d = deposits.find(x=>x.id===id); if(d && fr) d.status = fr.status;
+    throw new Error(lang==='ar'?`هذا الإيداع ${fr&&fr.status==='approved'?'معتمد':'تمت مراجعته'} مسبقًا — ما ينفع يترفض.`:'This deposit was already reviewed.'); }
   const d = deposits.find(x=>x.id===id); if(d){ d.status='rejected'; d.notes=notes||null; }
 }
 // parts of the same ticket are confirmed one after the other (never dropped, never overwriting each other)
@@ -1005,6 +1010,8 @@ async function verifySplitPaymentNow(bookingId, splitIndex){
   if(!b || !Array.isArray(b.payment_splits)) return;
   if(journal.some(j=>j.booking_id===bookingId && j.desc_key==='jBankReceipt' && (j.desc_args||[])[2]===splitIndex) && b.payment_splits[splitIndex] && b.payment_splits[splitIndex].verified) throw new Error(lang==='ar'?'هذا الجزء مؤكَّد مسبقًا.':'This part is already confirmed.');
   if(b.payment_splits[splitIndex] && b.payment_splits[splitIndex].verified) throw new Error(lang==='ar'?'هذا الجزء مؤكَّد مسبقًا.':'This part is already confirmed.');
+  { const {data:fr, error:fe} = await sb.from('journal').select('*').eq('booking_id', bookingId).eq('desc_key','jBankReceipt'); if(fe) throw fe;
+    if((fr||[]).some(j=>String((j.desc_args||[])[2])===String(splitIndex))) throw new Error(lang==='ar'?'هذا الجزء مؤكَّد مسبقًا من شاشة ثانية.':'This part was already confirmed on another screen.'); }
   const partBefore = transferParts(b).find(p=>p.part===splitIndex);
   if(!partBefore || partBefore.status!=='pending') throw new Error(lang==='ar'?'لا يوجد مبلغ بانتظار التأكيد في هذا الجزء (قد يكون مسترجعًا).':'Nothing awaiting confirmation in this part (it may be refunded).');
   const confirmedAmt = (partBefore && partBefore.status==='pending') ? partBefore.counted : null;
@@ -1020,13 +1027,15 @@ async function verifySplitPaymentNow(bookingId, splitIndex){
   const jRows = [{date:todayStr(), branch_id:b.branch_id, booking_id:b.id, desc_key:'jBankReceipt', desc_args:[b.booking_no, b.customer, splitIndex], debit_key:'accBank', credit_key:'accCustomers', amount:netToBank}];
   if(feeAmount>0) jRows.push({date:todayStr(), branch_id:b.branch_id, booking_id:b.id, desc_key:'jCardFee', desc_args:[b.booking_no, '', splitIndex], debit_key:'accExpenses', credit_key:'accCustomers', amount:feeAmount});
   const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
-  if(jErr) throw jErr;
+  if(jErr){ if(jErr.code==='23505') throw new Error(lang==='ar'?'هذا الجزء مؤكَّد مسبقًا من شاشة ثانية.':'Already confirmed on another screen.'); throw jErr; }
   try{ await mustUpdate('bookings', bookingId, {payment_splits:splits, payment_status: allVerified?'paid':'pending', transfer_verified: allVerified}); }
   catch(e){ await sb.from('journal').delete().in('id', jIns.map(j=>j.id)); throw e; }
   b.payment_splits = splits; b.payment_status = allVerified?'paid':'pending'; b.transfer_verified = allVerified;
   journal.unshift(...jIns.reverse());
 }
 async function rejectTransfer(bookingId, note){
+  { const {data:fresh, error:fe} = await sb.from('bookings').select('*').eq('id', bookingId).maybeSingle(); if(fe) throw fe;
+    if(fresh){ const lb = bookings.find(x=>x.id===bookingId); if(lb) Object.assign(lb, fresh); if(!transferParts(fresh).some(p=>p.status==='pending')) throw new Error(lang==='ar'?'ما فيه مبلغ بانتظار التأكيد — غالبًا تأكّد من شاشة ثانية.':'Nothing is waiting — probably confirmed elsewhere.'); } }
   const {error} = await sb.from('bookings').update({edit_requested:true, edit_note: note||null}).eq('id', bookingId);
   if(error) throw error;
   const b = bookings.find(x=>x.id===bookingId); if(b){ b.edit_requested=true; b.edit_note=note||null; }
@@ -1043,6 +1052,8 @@ async function verifyPaymentReceived(bookingId, actualAmount){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) return;
   if(b.refunded && bookingPendingAmount(b)<=0) throw new Error(lang==='ar'?'لا يوجد مبلغ بانتظار التأكيد في هذه التذكرة (مسترجعة).':'Nothing awaiting confirmation on this ticket (refunded).');
+  { const {data:fr, error:fe} = await sb.from('journal').select('*').eq('booking_id', bookingId).eq('desc_key','jBankReceipt'); if(fe) throw fe;
+    (fr||[]).forEach(j=>{ if(!journal.some(x=>x.id===j.id)) journal.unshift(j); }); }   // another screen may have confirmed it a moment ago
   if(journal.some(j=>j.booking_id===bookingId && j.desc_key==='jBankReceipt')){
     await mustUpdate('bookings', bookingId, {transfer_verified:true, payment_status:'paid'});
     b.transfer_verified = true; b.payment_status='paid';
@@ -1073,11 +1084,11 @@ async function verifyPaymentReceived(bookingId, actualAmount){
   const verifiedAmt = (b.refunded && Math.abs(sell-(Number(b.sell)||0))>0.004) ? sell : null;
   // entries first, then the status; if the status cannot be saved the entries are removed again (nothing half-done)
   const jRows = [{ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
-    desc_key:'jBankReceipt', desc_args:[b.booking_no, b.customer], debit_key:'accBank', credit_key:'accCustomers', amount:netToBank }];
+    desc_key:'jBankReceipt', desc_args:[b.booking_no, b.customer, 'all'], debit_key:'accBank', credit_key:'accCustomers', amount:netToBank }];
   if(feeAmount>0) jRows.push({ date:todayStr(), branch_id:b.branch_id, booking_id:b.id,
-    desc_key:'jCardFee', desc_args:[b.booking_no], debit_key:'accExpenses', credit_key:'accCustomers', amount:feeAmount });
+    desc_key:'jCardFee', desc_args:[b.booking_no, '', 'all'], debit_key:'accExpenses', credit_key:'accCustomers', amount:feeAmount });
   const {data:jIns, error:jErr} = await sb.from('journal').insert(jRows).select();
-  if(jErr) throw jErr;
+  if(jErr){ if(jErr.code==='23505') throw new Error(lang==='ar'?'هذا التحويل مؤكَّد مسبقًا من شاشة ثانية.':'Already confirmed on another screen.'); throw jErr; }
   try{ await mustUpdate('bookings', bookingId, {transfer_verified:true, transfer_verified_by:currentUser()?.id||null, transfer_verified_at:new Date().toISOString(), payment_status:'paid'}); }
   catch(e){ await sb.from('journal').delete().in('id', jIns.map(j=>j.id)); throw e; }
   b.transfer_verified = true; b.payment_status='paid'; if(verifiedAmt!=null) b.verified_amount = verifiedAmt;
@@ -4901,11 +4912,12 @@ function renderTransfers(){
   document.getElementById('pageSub').textContent = t('subTransfers');
   const scopedBookings = filteredBookings();
   const pendingAll = scopedBookings.filter(b=>b.payment_method!=='cash' && b.payment_method!=='split' && transferParts(b).some(p=>p.status==='pending'));
+  const returnedSplit = scopedBookings.filter(b=>b.payment_method==='split' && b.edit_requested && transferParts(b).some(p=>p.status==='pending'));
   const pendingTransfers = pendingAll.filter(b=>!b.edit_requested);
-  const returnedTransfers = pendingAll.filter(b=>b.edit_requested);
+  const returnedTransfers = pendingAll.filter(b=>b.edit_requested).concat(returnedSplit);
   const verifiedTransfers = scopedBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && b.transfer_verified);
   const pendingSplitRows = [];
-  scopedBookings.filter(b=>b.payment_method==='split' && Array.isArray(b.payment_splits)).forEach(b=>{
+  scopedBookings.filter(b=>b.payment_method==='split' && Array.isArray(b.payment_splits) && !b.edit_requested).forEach(b=>{
     transferParts(b).forEach(p=>{ if(p.status==='pending') pendingSplitRows.push({b, s:b.payment_splits[p.part], i:p.part}); });
   });
   const dueRows = scopedBookings.filter(b=>bookingDueAmount(b)>0.004 && !b.refunded).sort((a,b2)=>dueDays(b2)-dueDays(a));
@@ -4935,7 +4947,7 @@ function renderTransfers(){
         <td>${s.method==='span'?'—':bankLabel(s.bankName)}</td>
         <td class="num" style="font-weight:600">${money((transferParts(b).find(p=>p.part===i)||{}).counted ?? s.amount)}${b.refunded?`<div style="font-size:11px;color:#A8722C;">${lang==='ar'?'بعد استرجاع جزئي':'after partial refund'}</div>`:''}</td>
         <td class="num">${money(b.sell)}</td>
-        <td>${__processing.has(b.id+':'+i)?`<span style="color:#A8722C;font-weight:600;">⏳</span>`:`<button class="btn btn-primary btn-sm" onclick="uiVerifySplitPayment('${b.id}', ${i})">${t('verifyTransferBtn')}</button>`}</td></tr>`).join('')}</tbody></table></div>`}
+        <td>${__processing.has(b.id+':'+i)?`<span style="color:#A8722C;font-weight:600;">⏳</span>`:`<button class="btn btn-primary btn-sm" onclick="uiVerifySplitPayment('${b.id}', ${i})">${t('verifyTransferBtn')}</button> <button class="btn btn-danger btn-sm" onclick="uiRejectSplitPayment('${b.id}', ${i})">${t('rejectTransferBtn')}</button>`}</td></tr>`).join('')}</tbody></table></div>`}
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('verifiedTransfersTitle')}</h3></div>
       ${verifiedTransfers.length===0?`<div class="empty">${t('noVerifiedTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th></tr></thead>
@@ -5576,7 +5588,7 @@ window.uiApproveDeposit = async function(id){
 };
 window.uiRejectDeposit = async function(id){
   const reason = prompt(t('rejectReason')); if(reason===null) return;
-  try{ await rejectDeposit(id, reason); render(); }catch(e){ alert(errTextPlain()); }
+  try{ await rejectDeposit(id, reason); render(); }catch(e){ console.error(e); alert(errTextPlain()); render(); }
 };
 window.uiVerifyTransfer = async function(id){
   const b = bookings.find(x=>x.id===id);
@@ -5598,6 +5610,15 @@ window.uiRejectTransfer = async function(id){
   __processing.add(id); render();
   try{ await rejectTransfer(id, note); }catch(e){ console.error(e); alert(errTextPlain()); }
   finally{ __processing.delete(id); render(); }
+};
+window.uiRejectSplitPayment = async function(id, splitIndex){
+  const b = bookings.find(x=>x.id===id); if(!b) return; const s = (b.payment_splits||[])[splitIndex]||{};
+  const label = `${lang==='ar'?'الجزء':'Part'} ${splitIndex+1} (${s.method==='span'?t('paySpan'):s.method==='installment'?t('payInstallment'):t('payTransfer')} ${money(s.amount)})`;
+  if(!confirm((lang==='ar'?`رفض ${label}؟\nالحجز يرجع للموظف يصلحه (مثلًا: المبلغ ما وصل، أو وصل ناقص، أو كان كاش).`:`Reject ${label}?`))) return;
+  const note = prompt(t('editNotePrompt')); if(note===null) return;
+  const k = id+':'+splitIndex; __processing.add(k); render();
+  try{ await rejectTransfer(id, `${label}: ${note}`); }catch(e){ console.error(e); alert(errTextPlain()); }
+  finally{ __processing.delete(k); render(); }
 };
 window.uiVerifySplitPayment = async function(id, splitIndex){
   if(!confirm(t('confirmVerifySplit'))) return;
