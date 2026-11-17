@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G35</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G36</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -529,7 +529,7 @@ function cleanCred(v){ return String(v==null?'':v).replace(/[\u200B-\u200F\u202A
   .replace(/[٠-٩]/g, d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[۰-۹]/g, d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d)); }
 function getSession(){ try{ return JSON.parse(localStorage.getItem('asas_session')||'null'); }catch(e){ return null; } }
 function setSession(u){ localStorage.setItem('asas_session', JSON.stringify(u)); resetAllFilters(); }
-function clearSession(){ localStorage.removeItem('asas_session'); resetAllFilters(); stopAutoRefresh(); }
+function clearSession(){ localStorage.removeItem('asas_session'); resetAllFilters(); stopAutoRefresh(); clearTimeout(__cacheT); cacheClear(); }
 function resetAllFilters(){
   branchFilter = 'all';
   employeeFilter = 'all';
@@ -593,12 +593,27 @@ function dataSignature(){
   return [bookings.length, journal.length, deposits.length, refundRows.length, profitHandovers.length, employeeCharges.length, miscReceipts.length, manualExpenses.length, users.length,
     x.toFixed(2), st(deposits), st(profitHandovers), st(miscReceipts), employeeCharges.map(c=>(c.settled?1:0)+(c.payment_claimed?2:0)).join('')].join('|');
 }
+/* ===================== LOCAL COPY (G36) =====================
+   The last downloaded data is kept in this browser. On opening, the screen shows it at once while the fresh copy
+   downloads in the background; any save waits for the fresh copy first. Removed on logout; kept per user. */
+const __IDB = 'asas-cache', __IDBV = 1;
+function __idb(){ return new Promise((ok,bad)=>{ try{ const r = indexedDB.open(__IDB, __IDBV); r.onupgradeneeded = ()=>r.result.createObjectStore('kv'); r.onsuccess = ()=>ok(r.result); r.onerror = ()=>bad(r.error); }catch(e){ bad(e); } }); }
+async function cacheGet(k){ try{ const db = await __idb(); return await new Promise(ok=>{ const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = ()=>ok(q.result||null); q.onerror = ()=>ok(null); }); }catch(e){ return null; } }
+async function cacheSet(k, v){ try{ const db = await __idb(); await new Promise(ok=>{ const tx = db.transaction('kv','readwrite'); tx.objectStore('kv').put(v, k); tx.oncomplete = ok; tx.onerror = ok; tx.onabort = ok; }); }catch(e){} }
+async function cacheClear(){ try{ indexedDB.deleteDatabase(__IDB); }catch(e){} }
+let __cacheT = null;
+function saveLocalCopy(){
+  clearTimeout(__cacheT);
+  __cacheT = setTimeout(()=>{ const s = getSession(); if(!s) return;
+    cacheSet('snap', { v:1, uid:s.id, at:Date.now(), b:{data:branches}, u:{data:users}, bk:{data:bookings}, jr:{data:journal}, ex:{data:manualExpenses}, dp:{data:deposits},
+      ph:{data:profitHandovers}, ec:{data:employeeCharges}, mr:{data:miscReceipts}, rf: refundsReady ? {data:refundRows} : {error:'none'} }); }, 4000);
+}
 async function fetchAll(){
   if(__fetching) return __fetching;
   __fetching = (async ()=>{
     // a save that happens while we download would be overwritten by the older copy → download again
-    for(let i=0;i<3;i++){ const m0 = __mutations; const snap = await fetchAllNow(); if(m0===__mutations && !__busy.size){ applyFetched(snap); return; } }
-    const snap = await fetchAllNow(); applyFetched(snap);
+    for(let i=0;i<3;i++){ const m0 = __mutations; const snap = await fetchAllNow(); if(m0===__mutations && !__busy.size){ applyFetched(snap); saveLocalCopy(); return; } }
+    const snap = await fetchAllNow(); applyFetched(snap); saveLocalCopy();
   })().finally(()=>{ __fetching = null; });
   return __fetching;
 }
@@ -670,6 +685,7 @@ async function pollDelta(){
     byCreatedAsc(branches); byCreatedAsc(users);
   }
   if(data.now) __deltaCursor = data.now;
+  if(changed) saveLocalCopy();
   const cnt = data.counts || {};
   for(const t of DELTA_TABLES){ const arr = __tbl(t); if(arr && cnt[t]!=null && Number(cnt[t])!==arr.length) return 'full'; }
   return 'ok';
@@ -1783,10 +1799,11 @@ function busyBadge(on){
   if(!el && on){ el = document.createElement('div'); el.id = 'busyBadge';
     el.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#0F2A3F;color:#fff;padding:8px 16px;border-radius:20px;z-index:9999;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,.2)';
     document.body.appendChild(el); }
-  if(el){ el.textContent = lang==='ar' ? '⏳ جاري الحفظ…' : '⏳ Saving…'; el.style.display = on ? 'block' : 'none'; }
+  if(el){ el.textContent = window.__warm ? (lang==='ar' ? '🔄 جاري تحديث البيانات…' : '🔄 Updating data…') : (lang==='ar' ? '⏳ جاري الحفظ…' : '⏳ Saving…'); el.style.display = on ? 'block' : 'none'; }
 }
 function lockify(fn, name){
   return async function(...args){
+    if(window.__warm){ try{ await window.__warm; }catch(e){} }   // opened from the local copy: save only on fresh data
     const key = name + ':' + JSON.stringify(args.slice(0,2));
     if(__busy.has(key)) return;
     __busy.add(key); busyBadge(true); __mutations++;
@@ -2249,6 +2266,20 @@ async function boot(){
   const session = getSession();
   if(!session){ renderLogin(app); return; }
   app.innerHTML = `<div class="login-wrap" style="color:#EDE7D6;">Loading... / جاري التحميل...</div>`;
+  // 1) instant screen from this browser's last copy (same user, under 3 days old) — 2) fresh data replaces it in the background
+  const snap = await cacheGet('snap');
+  if(snap && snap.v===1 && snap.uid===session.id && Date.now()-snap.at < 3*864e5 && snap.u && (snap.u.data||[]).some(x=>x.id===session.id && x.active!==false)){
+    try{
+      applyFetched(snap); render();
+      window.__warm = (async()=>{ await fetchAll(); afterFullFetch(); })(); busyBadge(true);
+      await window.__warm; window.__warm = null; busyBadge(false);
+      const me = users.find(x=>x.id===session.id);
+      if(!me || me.active===false){ clearSession(); renderLogin(app); return; }
+      const ov = document.getElementById('overlay'), ae = document.activeElement;
+      if(!(ov && ov.classList.contains('show')) && !(ae && ['INPUT','SELECT','TEXTAREA'].includes(ae.tagName))) render();
+      startAutoRefresh(); return;
+    }catch(e){ console.error('fresh download after local copy failed', e); window.__warm = null; busyBadge(false); }
+  }
   try{
     await fetchAll(); afterFullFetch();
     const me = users.find(x=>x.id===session.id);
@@ -2978,11 +3009,16 @@ function renderDashboard(){
   document.getElementById('dashDateToInput').onchange = (e)=>{ dashDateTo = e.target.value||null; renderDashboard(); };
 }
 let bookingsShowAll = false;
+// long tables draw their first rows only (the browser stays fast); one click shows the rest — totals always use everything
+const __showAll = {};
+function capRows(key, arr, n){ return __showAll[key] ? arr : arr.slice(0, n||150); }
+function moreRowsBtn(key, total, n){ n = n||150; if(__showAll[key] || total<=n) return '';
+  return `<div style="text-align:center;margin:10px 0;"><button class="btn btn-ghost" onclick="__showAll['${key}']=true;render()">${lang==='ar'?`عرض الكل (${total}) — المعروض أول ${n}`:`Show all (${total}) — showing first ${n}`}</button></div>`; }
 var reportsShowAll = false;
 window.uiShowAllBookings = function(){ bookingsShowAll = true; render(); };
 function bookingsTable(list, mode){
   const fullCount = list.length;
-  if(!bookingsShowAll && fullCount > 300) list = list.slice(0, 300);
+  if(!bookingsShowAll && fullCount > 120) list = list.slice(0, 120);
   const more = fullCount > list.length ? `<div style="text-align:center;margin:10px 0;"><button class="btn btn-ghost" onclick="uiShowAllBookings()">${lang==='ar'?`عرض الكل (${fullCount}) — المعروض الآن آخر ${list.length}`:`Show all (${fullCount})`}</button></div>` : '';
   return bookingsTableInner(list, mode) + more;
 }
@@ -3183,7 +3219,7 @@ function renderBookings(){
   document.getElementById('printReportBtn').onclick = openPrintReportModal;
   document.getElementById('exportExcelBtn').onclick = ()=>exportBookingsToExcel(list, mode);
   if(document.getElementById('profitHandoverBtn')) document.getElementById('profitHandoverBtn').onclick = openProfitHandoverModal;
-  document.getElementById('bookingsSearchInput').oninput = (e)=>{ bookingsSearchTerm = e.target.value; renderBookings(); };
+  document.getElementById('bookingsSearchInput').oninput = (e)=>{ bookingsSearchTerm = e.target.value; clearTimeout(window.__bsT); window.__bsT = setTimeout(renderBookings, 300); };   // search after typing stops (not on every letter)
   if(wasFocused){
     const newInput = document.getElementById('bookingsSearchInput');
     newInput.focus();
@@ -4700,9 +4736,9 @@ function renderCommissions(){
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('commDetails')}</h3></div>
       ${list.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;">
       <table><thead><tr><th>${t('colBookingNo')}</th><th>${t('colSupplierName')}</th><th>${t('colCustomer')}</th><th>${t('colBranch')}</th><th>${t('colCommAmount')}</th><th>${t('colStatus')}</th><th></th></tr></thead>
-        <tbody>${list.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.supplier}</td><td>${esc(b.customer)}</td><td>${branchName(b.branch_id)}</td>
+        <tbody>${capRows('commList', list).map(b=>`<tr><td class="num">${b.booking_no}</td><td>${b.supplier}</td><td>${esc(b.customer)}</td><td>${branchName(b.branch_id)}</td>
           <td class="num">${money(b.commission)}</td><td><span class="tag ${b.commission_status}">${b.commission_status==='collected'?t('statusCollected'):t('statusPending')}</span></td>
-          <td>${b.commission_status==='pending'?`<button class="btn btn-ghost btn-sm" onclick="uiCollectCommission('${b.id}')">${t('collectComm')}</button>`:''}</td></tr>`).join('')}</tbody></table></div>`}
+          <td>${b.commission_status==='pending'?`<button class="btn btn-ghost btn-sm" onclick="uiCollectCommission('${b.id}')">${t('collectComm')}</button>`:''}</td></tr>`).join('')}</tbody></table></div>`}${moreRowsBtn('commList', list.length)}
     </div>`;
 }
 
@@ -4840,7 +4876,7 @@ function renderReports(){
         </div>
       </div>
       <p class="note">${t('ticketDetailsNote')}</p>
-      ${scoped.length===0?`<div class="empty">${t('emptyData')}</div>`:bookingsTableHTML(reportsShowAll?scoped:scoped.slice(0,300))+(scoped.length>300&&!reportsShowAll?`<div style="text-align:center;margin:10px 0;"><button class="btn btn-ghost" onclick="reportsShowAll=true;render()">${lang==='ar'?`عرض الكل (${scoped.length}) — المعروض آخر 300 (الطباعة والتصدير فيها الكل)`:`Show all (${scoped.length})`}</button></div>`:'')}
+      ${scoped.length===0?`<div class="empty">${t('emptyData')}</div>`:bookingsTableHTML(reportsShowAll?scoped:scoped.slice(0,120))+(scoped.length>120&&!reportsShowAll?`<div style="text-align:center;margin:10px 0;"><button class="btn btn-ghost" onclick="reportsShowAll=true;render()">${lang==='ar'?`عرض الكل (${scoped.length}) — المعروض آخر 300 (الطباعة والتصدير فيها الكل)`:`Show all (${scoped.length})`}</button></div>`:'')}
     </div>
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('refundsReportTitle')}</h3>
@@ -4851,10 +4887,10 @@ function renderReports(){
       </div>
       <p class="note">${t('refundsReportNote')}</p>
       ${refundsList.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colAmount')}</th><th>${t('colProfit')}</th><th>${t('colRefundStatus')}</th><th>${t('fieldRefundMethod')}</th></tr></thead>
-      <tbody>${refundsList.map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(b.created_by))}</td>
+      <tbody>${capRows('repRefunds', refundsList).map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(b.created_by))}</td>
         <td class="num">${canSeeSalesTotals()?money(b.sell):moneyOrHidden(0)}</td><td class="num">${canSeeProfit()?profitCell(b.profit_amount):t('hiddenValue')}</td>
         <td><span class="tag ${b.refund_status==='approved'?'collected':b.refund_status==='rejected'?'rejected':'pending'}">${b.refund_status==='approved'?t('approve'):b.refund_status==='rejected'?t('reject'):t('refundPendingTag')}</span></td>
-        <td>${b.refund_method==='transfer'?t('payTransfer'):b.refund_method==='cash'?t('payCash'):'—'}</td></tr>`).join('')}</tbody></table></div>`}
+        <td>${b.refund_method==='transfer'?t('payTransfer'):b.refund_method==='cash'?t('payCash'):'—'}</td></tr>`).join('')}</tbody></table></div>`}${moreRowsBtn('repRefunds', refundsList.length)}
     </div>
     <div class="panel">
       <div class="panel-head"><h3 class="panel-title">${t('branchTable')}</h3>
@@ -4887,7 +4923,7 @@ function renderReports(){
   if(document.getElementById('trStmtBtn')) document.getElementById('trStmtBtn').onclick = ()=>openStatementModal('transfer', reportEmployeeFilter);
   document.getElementById('reportExcelBtnTop').onclick = ()=>exportReportsToExcel(rows, groupBy, nameHeader);
   document.getElementById('reportGroupBySel').onchange = (e)=>{ reportGroupBy = e.target.value; renderReports(); };
-  document.getElementById('reportSearchInput').oninput = (e)=>{ reportSearchTerm = e.target.value; renderReports(); };
+  document.getElementById('reportSearchInput').oninput = (e)=>{ reportSearchTerm = e.target.value; clearTimeout(window.__rsT); window.__rsT = setTimeout(renderReports, 300); };
   document.getElementById('repSupplier').onchange = (e)=>{ reportSupplierFilter = e.target.value; renderReports(); };
   document.getElementById('repBranch').onchange = (e)=>{ reportBranchFilter = e.target.value; renderReports(); };
   document.getElementById('repEmployee').onchange = (e)=>{ reportEmployeeFilter = e.target.value; renderReports(); };
@@ -4984,7 +5020,7 @@ function renderDeposits(){
     ${depositsTableHTML(pendingDeposits, canManage)}
   </div>
   <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('depositHistory')}</h3></div>
-    ${depositsTableHTML(historyDeposits, false)}
+    ${depositsTableHTML(capRows('depHistory', historyDeposits, 100), false)}${moreRowsBtn('depHistory', historyDeposits.length, 100)}
   </div>`;
   const myMisc0 = canManage ? miscReceipts : miscReceipts.filter(r=>r.employee_id===u.id);
   const myMisc = canManage ? myMisc0.filter(r=>(effectiveBranchFilter()==='all'||r.branch_id===effectiveBranchFilter()) && (employeeFilter==='all'||r.employee_id===employeeFilter)) : myMisc0;
@@ -5843,7 +5879,7 @@ function renderProfits(){
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('profitTicketDetailsTitle')}</h3></div>
       <p class="note">${t('profitTicketDetailsNote')}</p>
       ${ticketRows.length===0?`<div class="empty">${t('emptyData')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colTicketNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('jDate')}</th><th>${t('colProfit')}</th></tr></thead>
-      <tbody>${ticketRows.map(({b,h})=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(h.employee_id))}</td><td>${b.date}</td><td class="num" style="font-weight:600">${profitCell(b.profit_amount)}</td></tr>`).join('')}</tbody></table></div>`}
+      <tbody>${capRows('profitTickets', ticketRows).map(({b,h})=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.ticket_no)||'—'}</td><td>${esc(b.customer)}</td><td>${esc(userName(h.employee_id))}</td><td>${b.date}</td><td class="num" style="font-weight:600">${profitCell(b.profit_amount)}</td></tr>`).join('')}</tbody></table></div>`}${moreRowsBtn('profitTickets', ticketRows.length)}
     </div>`;
   document.getElementById('profitsSearchInput').onchange = (e)=>{ profitsSearchTerm = e.target.value; renderProfits(); };
   document.getElementById('profitsDateFromInput').onchange = (e)=>{ profitsDateFrom = e.target.value||null; renderProfits(); };
