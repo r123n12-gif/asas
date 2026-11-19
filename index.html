@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G38</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G40</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -6259,7 +6259,10 @@ function flashNote(msg){ const d = document.createElement('div'); d.textContent 
 /* ---- trash bin ---- */
 const TRASH_TABLES = {bookings:'تذكرة', cash_deposits:'إيداع', refunds:'استرجاع', profit_handovers:'تسليم أرباح', misc_receipts:'مبلغ بدون تذكرة',
   employee_charges:'مبلغ على موظف', manual_expenses:'مصروف', branches:'فرع', attendance:'حضور', attendance_penalties:'جزاء/إفادة', attendance_excuses:'إفادة', app_users:'مستخدم'};
-const RESTORABLE = ['bookings','cash_deposits','refunds','profit_handovers','misc_receipts','employee_charges','manual_expenses','branches','attendance','attendance_penalties','attendance_excuses'];
+// G38b: only documents the app deletes as a whole (with all their lines) come back from the bin.
+// Refunds, deposits, handovers, misc receipts are never deleted by the app (they get a status), and an employee charge is
+// deleted only AFTER a reversing entry was posted — bringing those back would count the money twice.
+const RESTORABLE = ['bookings','manual_expenses','branches','attendance','attendance_penalties','attendance_excuses'];
 let __trash = null;
 function trashDesc(t, r){
   const N = x=>money(Number(x)||0);
@@ -6277,7 +6280,22 @@ function trashDesc(t, r){
     default: return `${esc(userName(r.user_id))} ${esc(r.day||'')}`;
   }
 }
-async function liveIds(table, ids){ const out = new Set(); for(let i=0;i<ids.length;i+=150){ const {data} = await sb.from(table).select('id').in('id', ids.slice(i,i+150)); (data||[]).forEach(x=>out.add(String(x.id))); } return out; }
+// the field that ties journal lines to a document the app deletes whole
+const LINE_KEY = {bookings:'booking_id', manual_expenses:'expense_id'};
+function whyNotRestorable(t, r){
+  if(t==='bookings' && r.refund_link) return 'تذكرة استرجاع — انحذفت مع إلغاء الاسترجاع، ترجع لو سجّلت الاسترجاع من جديد';
+  if(t==='employee_charges') return 'انلغى بقيد عكسي — أضفه من جديد لو تبيه';
+  if(t==='app_users') return 'أضفه من صفحة المستخدمين بكلمة مرور جديدة';
+  if(!RESTORABLE.includes(t)) return 'ما يرجع من هنا';
+  return '';
+}
+// a ticket that looks like one already in the system (same ticket number, or same employee+customer+price+date)
+function sameTicketLive(r){
+  const tk = normTkt(r.ticket_no);
+  return bookings.find(x=>x.id!==r.id && ((tk && tk.length>=6 && normTkt(x.ticket_no)===tk) ||
+    (x.created_by===r.created_by && String(x.customer||'').trim().toLowerCase()===String(r.customer||'').trim().toLowerCase() && Math.abs((Number(x.sell)||0)-(Number(r.sell)||0))<0.01 && x.date===r.date)));
+}
+async function liveIds(table, ids){ const out = new Set(); for(let i=0;i<ids.length;i+=150){ const {data, error} = await sb.from(table).select('id').in('id', ids.slice(i,i+150)); if(error) throw error; (data||[]).forEach(x=>out.add(String(x.id))); } return out; }
 window.uiTrash = async function(){
   if(!isAdmin()) return;
   showModal(`<h3 style="margin-top:0">🗑️ سلة المحذوفات</h3><div class="note">جاري التحميل…</div>`);
@@ -6287,84 +6305,164 @@ window.uiTrash = async function(){
     if(error) throw error;
     __trash = data||[];
     const back = new Map(); for(const t of new Set(__trash.map(x=>x.table_name))){ const ids = __trash.filter(x=>x.table_name===t && x.row_id).map(x=>x.row_id); (await liveIds(t, ids)).forEach(id=>back.set(t+':'+id, true)); }
-    const rows = __trash.map((x,i)=>{ const restored = back.has(x.table_name+':'+x.row_id); const can = RESTORABLE.includes(x.table_name);
+    const rows = __trash.map((x,i)=>{ const restored = back.has(x.table_name+':'+x.row_id); const why = whyNotRestorable(x.table_name, x.row);
       const d = new Date(x.deleted_at).toLocaleString('ar-SA-u-nu-latn-ca-gregory',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
       return `<tr><td style="white-space:nowrap;font-size:12px;">${d}</td><td><span class="tag">${TRASH_TABLES[x.table_name]||x.table_name}</span></td><td>${trashDesc(x.table_name, x.row)}</td>
-        <td>${restored?'<span class="tag collected">✅ موجود</span>':can?`<button class="btn btn-gold btn-sm" onclick="uiTrashRestore(${i})">♻️ استرجاع</button>`:'<span class="note">أضفه من جديد</span>'}</td></tr>`; }).join('');
+        <td>${restored?'<span class="tag collected">✅ موجود</span>':why?`<span class="note" style="font-size:11.5px;">${why}</span>`:`<button class="btn btn-gold btn-sm" onclick="uiTrashRestore(${i})">♻️ استرجاع</button>`}</td></tr>`; }).join('');
     showModal(`<h3 style="margin-top:0">🗑️ سلة المحذوفات <span class="note">(آخر 60 يوم)</span></h3>
-      <div class="note" style="margin-bottom:8px;">كل شي ينحذف ينحفظ هنا تلقائيًا، والسلة ما أحد يقدر يمسحها من البرنامج. "استرجاع" يرجّع الشي مع قيوده المحاسبية زي ما كان قبل الحذف.</div>
+      <div class="note" style="margin-bottom:8px;">كل شي ينحذف ينحفظ هنا تلقائيًا، والسلة ما أحد يقدر يمسحها من البرنامج. "استرجاع" يرجّع الشي مع قيوده بالضبط زي ما كانت لحظة الحذف — وما يرجّع شي ممكن يتكرر.</div>
       ${__trash.length?`<div style="overflow:auto;max-height:60vh;"><table><thead><tr><th>وقت الحذف</th><th>النوع</th><th>التفاصيل</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty">السلة فاضية 👍</div>'}
       <div style="margin-top:12px;text-align:left;"><button class="btn btn-ghost" onclick="closeModal()">إغلاق</button></div>`);
     const mEl=document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='min(980px,96vw)';
   }catch(e){ console.error(e);
     showModal(`<h3 style="margin-top:0">🗑️ سلة المحذوفات</h3><div class="login-error">${/deleted_rows/.test(e.message||'')||e.code==='42P01'||e.code==='PGRST205'?'السلة ما تفعّلت بعد — شغّل ملف trash.sql في Supabase مرة وحدة.':esc(e.message||String(e))}</div><div style="margin-top:12px;"><button class="btn btn-ghost" onclick="closeModal()">إغلاق</button></div>`); }
 };
+// the lines deleted together with the document = the LAST delete call before it (one call → one server timestamp).
+// Lines removed earlier by an edit of the same ticket have an older timestamp and are left out — that is what prevents doubling.
+function linesOfDelete(lines, t0){
+  const before = lines.filter(j=>new Date(j.__at).getTime() <= t0+5e3);
+  if(!before.length) return [];
+  const last = Math.max(...before.map(j=>new Date(j.__at).getTime()));
+  if(t0-last > 120e3) return [];
+  return before.filter(j=>new Date(j.__at).getTime()===last);
+}
 const __trashRestoreLocked = lockify(async function(i){
   const x = __trash && __trash[i]; if(!x) return;
-  if(!confirm('استرجاع: '+(TRASH_TABLES[x.table_name]||x.table_name)+' — '+String(trashDesc(x.table_name,x.row)).replace(/<[^>]+>/g,'')+'\n\nيرجع مع قيوده المحاسبية. متأكد؟')) return;
+  const why = whyNotRestorable(x.table_name, x.row); if(why) throw new Error(why);
   const id = String(x.row_id), t0 = new Date(x.deleted_at).getTime();
-  // the accounting lines that were removed together with it (same document, within 3 minutes)
-  const from = new Date(t0-180e3).toISOString(), to = new Date(t0+180e3).toISOString();
-  const {data:jr, error:je} = await sb.from('deleted_rows').select('row').eq('table_name','journal').gte('deleted_at', from).lte('deleted_at', to).limit(1000); if(je) throw je;
-  let lines = (jr||[]).map(r=>r.row).filter(j=>JSON.stringify(j).includes(id));
-  // a refund also removed the replacement tickets it had created
-  let extraBookings = [];
-  if(x.table_name==='refunds'){ const {data:eb} = await sb.from('deleted_rows').select('row').eq('table_name','bookings').gte('deleted_at', from).lte('deleted_at', to); extraBookings = (eb||[]).map(r=>r.row).filter(b=>b.refund_link==='R:'+id);
-    const ebIds = extraBookings.map(b=>String(b.id)); lines = lines.concat((jr||[]).map(r=>r.row).filter(j=>ebIds.includes(String(j.booking_id)) && !lines.some(l=>l.id===j.id))); }
-  const {error:e1} = await sb.from(x.table_name).upsert(__fresh(x.row), {onConflict:'id', ignoreDuplicates:true}); if(e1) throw e1;
-  for(const b of extraBookings){ const {error} = await sb.from('bookings').upsert(__fresh(b), {onConflict:'id', ignoreDuplicates:true}); if(error) throw error; }
-  let skipped = 0;
-  if(lines.length){ const live = await liveIds('journal', lines.map(j=>j.id)); const missing = lines.filter(j=>!live.has(String(j.id)));
-    for(const j of missing){ const {error} = await sb.from('journal').insert(__fresh(j)); if(error){ if(error.code==='23505') skipped++; else throw error; } } }
-  alert('✅ تم الاسترجاع'+(lines.length?` مع ${lines.length-skipped} قيد محاسبي`:'')+(skipped?`\n(${skipped} قيد كان موجود أصلاً فما تكرر)`:'')+'\n\nتأكد من صفحة "سلامة البيانات" إن كل شي مطابق.');
+  // 1) still missing? (someone may have restored it a moment ago)
+  if((await liveIds(x.table_name, [id])).size) throw new Error('هذا موجود أصلاً — ما يحتاج استرجاع.');
+  // 2) a ticket entered again after it was deleted → restoring would double it
+  if(x.table_name==='bookings'){ const dup = sameTicketLive(x.row);
+    if(dup) throw new Error(`فيه تذكرة موجودة تشبهها: #${dup.booking_no} ${dup.customer||''} (${money(dup.sell)}) — غالبًا انسجلت من جديد بعد الحذف. الاسترجاع بيكرر المبلغ، فما رجّعتها.`); }
+  // 3) its own journal lines, from the delete call only
+  let lines = [];
+  const key = LINE_KEY[x.table_name];
+  if(key){
+    const {data:jr, error:je} = await sb.from('deleted_rows').select('row,deleted_at').eq('table_name','journal').gte('deleted_at', new Date(t0-130e3).toISOString()).lte('deleted_at', new Date(t0+5e3).toISOString()).limit(2000); if(je) throw je;
+    lines = linesOfDelete((jr||[]).map(r=>({...r.row, __at:r.deleted_at})).filter(j=>String(j[key])===id), t0);
+    const {data:liveJ, error:le} = await sb.from('journal').select('id').eq(key, id).limit(1); if(le) throw le;
+    if((liveJ||[]).length) throw new Error('فيه قيود موجودة لهذا المستند الحين — الاسترجاع بيكررها، فما رجّعته.');
+    // same line twice = something is off → stop rather than double
+    const sig = new Set(); for(const j of lines){ const k = [j.desc_key, j.debit_key, j.credit_key, JSON.stringify(j.desc_args||[]), j.amount].join('|'); if(sig.has(k)) throw new Error('القيود المحذوفة فيها تكرار — ما رجّعته عشان ما يتكرر المبلغ. كلّمني.'); sig.add(k); }
+    if(x.table_name==='bookings' && !lines.length && (Number(x.row.sell)||0)>0) throw new Error('ما لقيت قيود هذي التذكرة في السلة — سجّلها من جديد بدل الاسترجاع.');
+  }
+  if(!confirm('استرجاع: '+(TRASH_TABLES[x.table_name]||x.table_name)+' — '+String(trashDesc(x.table_name,x.row)).replace(/<[^>]+>/g,'')+(lines.length?`\nمع ${lines.length} قيد محاسبي (نفس اللي انحذف معه بالضبط)`:'')+'\n\nمتأكد؟')) return false;
+  const {error:e1} = await sb.from(x.table_name).insert(__fresh(x.row)); if(e1) throw e1;
+  if(lines.length){ const {error:e2} = await sb.from('journal').insert(lines.map(j=>{ const c = __fresh(j); delete c.__at; return c; }));
+    if(e2){ await sb.from(x.table_name).delete().eq('id', id); throw e2; } }   // all or nothing
+  alert('✅ تم الاسترجاع'+(lines.length?` مع ${lines.length} قيد محاسبي`:'')+'\n\nتأكد من صفحة "سلامة البيانات" إن كل شي مطابق.');
   return true;
 }, 'trashRestore');
 window.uiTrashRestore = async function(i){
-  try{ if(await __trashRestoreLocked(i)) uiTrash(); }catch(e){ console.error(e); alert('⚠️ ما قدرت أسترجع: '+(e.message||e)); }
+  try{ if(await __trashRestoreLocked(i)) uiTrash(); }catch(e){ console.error(e); alert('⚠️ '+(e.message||e)); }
   setTimeout(()=>{ if(!__busy.size) render(); }, 4000);
 };
 function __fresh(r){ const c = {...r}; delete c.updated_at; return c; }   // the server stamps it now, so every screen picks it up
 
-/* ---- restore from a backup file: brings back only what is missing now; never deletes or overwrites ---- */
-const RESTORE_ORDER = [['branches','branches','فروع'],['bookings','bookings','تذاكر'],['refunds','refunds','استرجاعات'],['cash_deposits','cash_deposits','إيداعات'],
-  ['profit_handovers','profit_handovers','تسليم أرباح'],['employee_charges','employee_charges','مبالغ على موظفين'],['misc_receipts','misc_receipts','مبالغ بدون تذكرة'],
-  ['manual_expenses','manual_expenses','مصروفات'],['attendance','attendance','حضور'],['attendance_penalties','attendance_penalties','جزاءات'],['attendance_excuses','attendance_excuses','إفادات'],['journal','journal','قيود محاسبية']];
+/* ---- restore from a backup file: brings back only documents that are missing now, each with its OWN lines.
+   Never deletes or changes anything. Lines of documents that still exist are never touched (an edit after the backup
+   replaced them with new lines — bringing the old ones back would count the money twice). ---- */
+const RESTORE_DOCS = [['branches','فروع'],['bookings','تذاكر'],['refunds','استرجاعات'],['cash_deposits','إيداعات'],['profit_handovers','تسليم أرباح'],
+  ['misc_receipts','مبالغ بدون تذكرة'],['manual_expenses','مصروفات'],['attendance','حضور'],['attendance_penalties','جزاءات'],['attendance_excuses','إفادات']];
 let __restorePlan = null;
+// which document a journal line belongs to (null = a general line: manual, opening, employee charge…)
+function lineOwner(j){
+  if(j.booking_id) return j.booking_id; if(j.deposit_id) return j.deposit_id; if(j.refund_id) return j.refund_id; if(j.expense_id) return j.expense_id;
+  const a = j.desc_args||[]; if(j.desc_key==='jProfitHandover') return a[1]||null; if(j.desc_key==='jMiscReceipt') return a[2]||null;
+  return null;
+}
+// G40: the plan is a list of documents, each with ONLY its own lines; the admin ticks what comes back.
+// A journal line comes back only together with its document, and only when that document is missing now (deleted whole).
+// Lines of a booking that exists now are never restored — an edit removes old lines on purpose.
+async function planRestore(bk){
+  const head = [`📁 نسخة بتاريخ: ${String(bk.exported_at||'').slice(0,16).replace('T',' ')}`], notes = [];
+  const missing = {};
+  for(const [table] of RESTORE_DOCS){ const rows = Array.isArray(bk[table]) ? bk[table].filter(r=>r && r.id!=null) : []; if(!rows.length) continue;
+    const live = await liveIds(table, rows.map(r=>r.id)); missing[table] = rows.filter(r=>!live.has(String(r.id))); }
+  const refundBack = new Set((missing.refunds||[]).map(r=>String(r.id)));
+  let dupT = 0, linkT = 0;
+  if(missing.bookings) missing.bookings = missing.bookings.filter(r=>{
+    if(r.refund_link && !refundBack.has(String(r.refund_link).slice(2))){ linkT++; return false; }
+    if(sameTicketLive(r)){ dupT++; return false; }
+    return true; });
+  const bj = Array.isArray(bk.journal) ? bk.journal.filter(j=>j && j.id!=null) : [];
+  const liveJ = await liveIds('journal', bj.map(j=>j.id));
+  const missJ = bj.filter(j=>!liveJ.has(String(j.id)));
+  const byOwner = new Map(); missJ.forEach(j=>{ const o = lineOwner(j); if(o){ const k = String(o); if(!byOwner.has(k)) byOwner.set(k, []); byOwner.get(k).push(j); } });
+  const items = [];
+  for(const [table, label] of RESTORE_DOCS){ for(const r of (missing[table]||[])){ const lines = byOwner.get(String(r.id))||[]; byOwner.delete(String(r.id));
+    items.push({kind:'doc', table, label, row:r, lines, sort:String(r.date||r.day||r.created_at||'')}); } }
+  // lines whose document exists now → never restored
+  let keptOut = 0; byOwner.forEach(v=>keptOut += v.length);
+  const general = missJ.filter(j=>!lineOwner(j));
+  const wiped = bj.length > 50 && journal.length < bj.length*0.5;
+  if(wiped) general.forEach(j=>items.push({kind:'line', table:'journal', label:'قيد عام', row:j, lines:[], sort:String(j.date||j.created_at||'')}));
+  if(dupT) notes.push(`⏭️ ${dupT} تذكرة ناقصة بس فيه تذكرة موجودة تشبهها (انسجلت من جديد) — ما تنعرض عشان ما تتكرر`);
+  if(linkT) notes.push(`⏭️ ${linkT} تذكرة استرجاع انحذفت مع إلغاء استرجاعها — ما تنعرض`);
+  if(keptOut) notes.push(`🛡️ ${keptOut} قيد قديم لحجوزات/مستندات موجودة الحين (انحذف بقصد وقت التعديل) — ما يرجع أبدًا`);
+  if(general.length && !wiped) notes.push(`⏭️ ${general.length} قيد عام ناقص (يدوي / مبلغ على موظف / رصيد افتتاحي) — ما ينعرض لأنه ممكن انلغى بقيد عكسي`);
+  const ec = (bk.employee_charges||[]).filter(c=>!employeeCharges.some(x=>x.id===c.id)).length; if(ec) notes.push(`⏭️ ${ec} مبلغ على موظف ناقص — ينحذف لما ينلغى أو يتسدد، فما يرجع`);
+  const um = (bk.users||[]).filter(u=>!users.some(x=>x.id===u.id)).length; if(um) notes.push(`⏭️ ${um} مستخدم ناقص — أضفه من صفحة المستخدمين بكلمة مرور جديدة`);
+  return {items, head, notes};
+}
+function restoreItemDesc(it){
+  if(it.kind==='line'){ const j = it.row; return `${esc(j.date||'')} — ${esc(j.desc_key||'')} — ${money(j.amount)}`; }
+  return trashDesc(it.table, it.row);
+}
 window.uiRestoreBackup = function(){
   if(!isAdmin()) return;
   showModal(`<h3 style="margin-top:0">♻️ استرجاع من نسخة احتياطية</h3>
-    <div class="note">اختر ملف النسخة (asas-backup-….json). البرنامج يقارن ويرجّع <b>الناقص بس</b>: ما يمسح شي، وما يغيّر شي موجود.</div>
+    <div class="note">اختر ملف النسخة (asas-backup-….json). بتطلع لك قائمة بالمستندات الناقصة الحين، كل وحدة مع قيودها، وتختار وش يرجع. ما يمسح شي، وما يغيّر شي موجود، وما يرجّع أي قيد لحجز موجود.</div>
     <input type="file" id="restoreFile" accept=".json,application/json" style="margin:12px 0;">
     <div id="restoreOut" class="note" style="white-space:pre-line;"></div>
-    <div style="margin-top:12px;display:flex;gap:8px;"><button class="btn btn-gold" id="restoreGo" disabled>♻️ استرجع الناقص</button><button class="btn btn-ghost" onclick="closeModal()">إغلاق</button></div>`);
+    <div id="restoreList"></div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-gold" id="restoreGo" disabled>♻️ استرجع المختار</button><button class="btn btn-ghost" onclick="closeModal()">إغلاق</button></div>`);
+  const mEl=document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='min(1000px,96vw)';
+  const count = ()=>{ const it = __restorePlan||[]; const sel = [...document.querySelectorAll('.rsChk')].filter(x=>x.checked).map(x=>it[+x.dataset.i]);
+    const go = document.getElementById('restoreGo'); go.disabled = !sel.length;
+    go.textContent = `♻️ استرجع المختار (${sel.length}${sel.length?` — ${sel.reduce((a,x)=>a+x.lines.length,0)} قيد`:''})`; };
   document.getElementById('restoreFile').onchange = async e=>{
-    const out = document.getElementById('restoreOut'), go = document.getElementById('restoreGo'); go.disabled = true; __restorePlan = null;
+    const out = document.getElementById('restoreOut'), list = document.getElementById('restoreList'); __restorePlan = null; list.innerHTML = ''; document.getElementById('restoreGo').disabled = true;
     try{
       const f = e.target.files[0]; if(!f) return; out.textContent = '⏳ أقرأ الملف وأقارن…';
       const bk = JSON.parse(await f.text()); if(!bk || !Array.isArray(bk.bookings) || !Array.isArray(bk.journal)) throw new Error('هذا مو ملف نسخة احتياطية من البرنامج');
       await syncData(true);
-      const plan = []; const lines = [`📁 نسخة بتاريخ: ${String(bk.exported_at||'').slice(0,16).replace('T',' ')}`];
-      for(const [key, table, label] of RESTORE_ORDER){ const rows = Array.isArray(bk[key]) ? bk[key].filter(r=>r && r.id!=null) : []; if(!rows.length) continue;
-        const live = await liveIds(table, rows.map(r=>r.id)); const miss = rows.filter(r=>!live.has(String(r.id)));
-        if(miss.length){ plan.push({table, label, rows:miss}); lines.push(`• ${label}: ${miss.length} ناقص`); } }
-      const um = (bk.users||[]).filter(u=>!users.some(x=>x.id===u.id)); if(um.length) lines.push(`• مستخدمين ناقصين: ${um.length} (ما ينرجعون من هنا — أضفهم من صفحة المستخدمين بكلمة مرور جديدة)`);
-      if(!plan.length){ out.textContent = lines.join('\n')+'\n\n✅ ما فيه شي ناقص — كل اللي في النسخة موجود الحين.'; return; }
-      __restorePlan = plan; out.textContent = lines.join('\n')+'\n\nاضغط "استرجع الناقص" عشان ترجع.'; go.disabled = false;
+      const r = await planRestore(bk);
+      out.textContent = r.head.concat(r.notes).join('\n');
+      if(!r.items.length){ out.textContent += '\n\n✅ ما فيه شي ناقص يرجع.'; return; }
+      __restorePlan = r.items;
+      const rows = r.items.map((it,i)=>`<tr><td><input type="checkbox" class="rsChk" data-i="${i}" checked></td><td><span class="tag">${it.label}</span></td><td>${restoreItemDesc(it)}</td>
+        <td style="font-size:12px;">${it.lines.length?`${it.lines.length} قيد<div style="color:var(--ink-soft);font-size:11px;">${it.lines.map(j=>`${esc(j.desc_key)} ${money(j.amount)}`).join('<br>')}</div>`:'—'}</td></tr>`).join('');
+      list.innerHTML = `<div style="display:flex;gap:8px;margin:10px 0;"><button class="btn btn-ghost btn-sm" id="rsAll">تحديد الكل</button><button class="btn btn-ghost btn-sm" id="rsNone">إلغاء الكل</button></div>
+        <div style="overflow:auto;max-height:50vh;"><table><thead><tr><th></th><th>النوع</th><th>التفاصيل</th><th>قيوده اللي بترجع معه</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      document.getElementById('rsAll').onclick = ()=>{ document.querySelectorAll('.rsChk').forEach(x=>x.checked=true); count(); };
+      document.getElementById('rsNone').onclick = ()=>{ document.querySelectorAll('.rsChk').forEach(x=>x.checked=false); count(); };
+      document.querySelectorAll('.rsChk').forEach(x=>x.onchange = count); count();
     }catch(err){ console.error(err); out.textContent = '⚠️ '+(err.message||err); }
   };
   const __restoreLocked = lockify(async ()=>{
     const out = document.getElementById('restoreOut'), go = document.getElementById('restoreGo'); if(!__restorePlan) return;
-    if(!confirm('يرجّع الناقص بس، وما يمسح ولا يغيّر شي موجود. متأكد؟')) return; go.disabled = true;
-    const res = [];
-    for(const p of __restorePlan){ let ok = 0, dup = 0, bad = 0, firstErr = '';
-      for(let i=0;i<p.rows.length;i+=200){ const chunk = p.rows.slice(i,i+200);
-        const {error} = await sb.from(p.table).upsert(chunk.map(__fresh), {onConflict:'id', ignoreDuplicates:true});
-        if(!error){ ok += chunk.length; continue; }
-        for(const r of chunk){ const {error:e1} = await sb.from(p.table).upsert(__fresh(r), {onConflict:'id', ignoreDuplicates:true}); if(!e1) ok++; else if(e1.code==='23505') dup++; else { bad++; firstErr = firstErr || e1.message; } } }
-      res.push(`• ${p.label}: رجع ${ok}${dup?` — ${dup} كان موجود بشكل ثاني فما تكرر`:''}${bad?` — ⚠️ فشل ${bad} (${firstErr})`:''}`);
-      out.textContent = '⏳ '+res.join('\n'); }
-    __restorePlan = null;
-    out.textContent = '✅ خلص الاسترجاع:\n'+res.join('\n')+'\n\nافتح صفحة "سلامة البيانات" وتأكد إن كل شي مطابق.';
+    const sel = [...document.querySelectorAll('.rsChk')].filter(x=>x.checked).map(x=>__restorePlan[+x.dataset.i]); if(!sel.length) return;
+    if(!confirm(`بيرجع ${sel.length} من القائمة مع ${sel.reduce((a,x)=>a+x.lines.length,0)} قيد تابع لها بس.\nما يمسح ولا يغيّر شي موجود. متأكد؟`)) return; go.disabled = true;
+    // check again right now: the document must still be missing, and none of its lines may exist
+    const res = []; let ok = 0, skip = 0, bad = 0, firstErr = '';
+    const order = RESTORE_DOCS.map(x=>x[0]).concat(['journal']);
+    sel.sort((a,b)=>order.indexOf(a.table)-order.indexOf(b.table));
+    for(const it of sel){
+      try{
+        if((await liveIds(it.table, [it.row.id])).size){ skip++; continue; }
+        if(it.kind==='doc' && it.table==='bookings' && sameTicketLive(it.row)){ skip++; continue; }
+        const key = it.table==='bookings'?'booking_id':it.table==='cash_deposits'?'deposit_id':it.table==='refunds'?'refund_id':it.table==='manual_expenses'?'expense_id':null;
+        if(key && it.lines.length){ const {data:lj, error:le} = await sb.from('journal').select('id').eq(key, it.row.id).limit(1); if(le) throw le; if((lj||[]).length){ skip++; continue; } }
+        const {error:e1} = await sb.from(it.table).insert(__fresh(it.row)); if(e1){ if(e1.code==='23505'){ skip++; continue; } throw e1; }
+        if(it.lines.length){ const {error:e2} = await sb.from('journal').insert(it.lines.map(__fresh)); if(e2){ await sb.from(it.table).delete().eq('id', it.row.id); throw e2; } }   // all or nothing per document
+        ok++;
+      }catch(e){ bad++; firstErr = firstErr || (e.message||String(e)); }
+      out.textContent = `⏳ رجع ${ok} — تخطّى ${skip}${bad?` — فشل ${bad}`:''}`;
+    }
+    __restorePlan = null; document.getElementById('restoreList').innerHTML = '';
+    out.textContent = `✅ خلص: رجع ${ok}${skip?`\n⏭️ تخطّى ${skip} (صار موجود، أو له قيود موجودة — عشان ما يتكرر)`:''}${bad?`\n⚠️ فشل ${bad}: ${firstErr}`:''}\n\nافتح صفحة "سلامة البيانات" وتأكد إن كل شي مطابق.`;
   }, 'restoreBackup');
   document.getElementById('restoreGo').onclick = async ()=>{ try{ await __restoreLocked(); }catch(e){ console.error(e); const o = document.getElementById('restoreOut'); if(o) o.textContent = '⚠️ '+(e.message||e); }
     setTimeout(()=>{ if(!__busy.size) render(); }, 4000); };
