@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G37</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G38</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -2267,8 +2267,10 @@ async function boot(){
   const session = getSession();
   if(!session){ renderLogin(app); return; }
   app.innerHTML = `<div class="login-wrap" style="color:#EDE7D6;">Loading... / جاري التحميل...</div>`;
+  const __slowT = setTimeout(()=>{ const w = app.querySelector('.login-wrap'); if(w && /Loading/.test(w.textContent) && !document.getElementById('slowNote')) w.insertAdjacentHTML('beforeend', `<div id="slowNote" style="margin-top:14px;font-size:13px;opacity:.85;text-align:center;">التحميل أبطأ من العادة… تأكد من الإنترنت<br><button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="location.reload()">إعادة المحاولة / Retry</button></div>`); }, 20000);
   // 1) instant screen from this browser's last copy (same user, under 3 days old) — 2) fresh data replaces it in the background
   const snap = await cacheGet('snap');
+  if(snap) clearTimeout(__slowT);
   if(snap && snap.v===1 && snap.uid===session.id && Date.now()-snap.at < 3*864e5 && snap.u && (snap.u.data||[]).some(x=>x.id===session.id && x.active!==false)){
     try{
       applyFetched(snap); render();
@@ -2278,18 +2280,18 @@ async function boot(){
       if(!me || me.active===false){ clearSession(); renderLogin(app); return; }
       const ov = document.getElementById('overlay'), ae = document.activeElement;
       if(!(ov && ov.classList.contains('show')) && !(ae && ['INPUT','SELECT','TEXTAREA'].includes(ae.tagName))) render();
-      startAutoRefresh(); return;
+      startAutoRefresh(); setTimeout(autoDailyBackup, 8000); return;
     }catch(e){ console.error('fresh download after local copy failed', e); window.__warm = null; busyBadge(false); }
   }
   try{
-    await fetchAll(); afterFullFetch();
+    await fetchAll(); afterFullFetch(); clearTimeout(__slowT);
     const me = users.find(x=>x.id===session.id);
     if(!me || me.active===false){ localStorage.removeItem('asas_session'); renderLogin(app);
       setTimeout(()=>{ const box = document.getElementById('loginErrorBox'); if(box) box.innerHTML = `<div class="login-error">${lang==='ar'?'هذا الحساب موقوف أو محذوف. راجع المدير.':'This account is disabled.'}</div>`; }, 0); return; }
     render();
-    startAutoRefresh();
+    startAutoRefresh(); setTimeout(autoDailyBackup, 8000);
   }catch(e){
-    console.error(e);
+    clearTimeout(__slowT); console.error(e);
     app.innerHTML = `<div class="login-wrap"><div class="login-card"><div class="login-error">${errText()}</div>
       <button class="btn btn-ghost" style="width:100%" onclick="location.reload()">Retry / إعادة المحاولة</button></div></div>`;
   }
@@ -3327,6 +3329,9 @@ function openPrintReportModal(){
     closeModal();
   };
 }
+function whoWhen(by, at){ if(!by) return `<span style="color:var(--ink-soft);font-size:11.5px;">${lang==='ar'?'غير مسجّل (قديم)':'not recorded'}</span>`;
+  const d = at ? new Date(at) : null; const ts = d && !isNaN(d) ? d.toLocaleString(lang==='ar'?'ar-SA-u-nu-latn-ca-gregory':'en-GB',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+  return `<b>${esc(userName(by))}</b>${ts?`<div style="font-size:11px;color:var(--ink-soft);">${ts}</div>`:''}`; }
 function userName(id){ const x = users.find(u=>u.id===id); return x ? x.name : '—'; }
 function exportBookingsToExcel(list, mode){
   const showProfit = isAdmin() || mode==='employee';
@@ -4953,6 +4958,13 @@ function renderTransfers(){
   const pendingTransfers = pendingAll.filter(b=>!b.edit_requested);
   const returnedTransfers = pendingAll.filter(b=>b.edit_requested).concat(returnedSplit);
   const verifiedTransfers = scopedBookings.filter(b=>(b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && b.transfer_verified);
+  // G38: one row per confirmed payment (whole ticket or each confirmed part of a split), with who booked it and who confirmed it
+  const verifiedRows = [];
+  scopedBookings.forEach(b=>{
+    if(b.payment_method==='split' && Array.isArray(b.payment_splits)) b.payment_splits.forEach((p,i)=>{ if(p && p.verified && p.method!=='cash' && p.method!=='due') verifiedRows.push({b, method:p.method, bank:p.bankName, amount:Number(p.verified_amount ?? p.amount)||0, by:p.verified_by, at:p.verified_at, part:i+1}); });
+    else if((b.payment_method==='transfer'||b.payment_method==='span'||b.payment_method==='installment') && b.transfer_verified) verifiedRows.push({b, method:b.payment_method, bank:b.bank_name, amount:Number(b.sell)||0, by:b.transfer_verified_by, at:b.transfer_verified_at});
+  });
+  verifiedRows.sort((x,y)=>String(y.at||y.b.date||'').localeCompare(String(x.at||x.b.date||'')));
   const pendingSplitRows = [];
   scopedBookings.filter(b=>b.payment_method==='split' && Array.isArray(b.payment_splits) && !b.edit_requested).forEach(b=>{
     transferParts(b).forEach(p=>{ if(p.status==='pending') pendingSplitRows.push({b, s:b.payment_splits[p.part], i:p.part}); });
@@ -4987,11 +4999,12 @@ function renderTransfers(){
         <td>${__processing.has(b.id+':'+i)?`<span style="color:#A8722C;font-weight:600;">⏳</span>`:`<button class="btn btn-primary btn-sm" onclick="uiVerifySplitPayment('${b.id}', ${i})">${t('verifyTransferBtn')}</button> <button class="btn btn-danger btn-sm" onclick="uiRejectSplitPayment('${b.id}', ${i})">${t('rejectTransferBtn')}</button>`}</td></tr>`).join('')}</tbody></table></div>`}
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('verifiedTransfersTitle')}</h3></div>
-      ${verifiedTransfers.length===0?`<div class="empty">${t('noVerifiedTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th></tr></thead>
-      <tbody>${verifiedTransfers.slice(0,50).map(b=>`<tr><td class="num">${b.booking_no}</td><td>${esc(b.customer)}</td><td>${userName(b.created_by)}</td><td>${branchName(b.branch_id)}</td>
-        <td>${b.payment_method==='span'?t('paySpan'):b.payment_method==='installment'?t('payInstallment'):t('payTransfer')}</td>
-        <td>${b.payment_method==='span'?'—':bankLabel(b.bank_name)}</td>
-        <td class="num">${money(b.sell)}</td></tr>`).join('')}</tbody></table></div>`}
+      ${verifiedRows.length===0?`<div class="empty">${t('noVerifiedTransfers')}</div>`:`<div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${lang==='ar'?'حجزه':'Booked by'}</th><th>${t('colBranch')}</th><th>${t('colPaymentMethod')}</th><th>${t('fieldBankName')}</th><th>${t('colAmount')}</th><th>${lang==='ar'?'أكّد التحويل':'Confirmed by'}</th></tr></thead>
+      <tbody>${capRows('verTr', verifiedRows, 100).map(r=>`<tr><td class="num">${r.b.booking_no}${r.part?` <span class="tag">${lang==='ar'?'جزء':'part'} ${r.part}</span>`:''}</td><td>${esc(r.b.customer)}</td><td>${userName(r.b.created_by)}</td><td>${branchName(r.b.branch_id)}</td>
+        <td>${r.method==='span'?t('paySpan'):r.method==='installment'?t('payInstallment'):t('payTransfer')}</td>
+        <td>${r.method==='span'?'—':bankLabel(r.bank)}</td>
+        <td class="num">${money(r.amount)}</td>
+        <td>${whoWhen(r.by, r.at)}</td></tr>`).join('')}</tbody></table></div>${moreRowsBtn('verTr', verifiedRows.length, 100)}`}
     </div>`;
   document.getElementById('content').innerHTML = html;
 }
@@ -5056,7 +5069,7 @@ function depositsTableHTML(list, showApprove){
   return `<div style="overflow-x:auto;"><table><thead><tr><th>${t('jDate')}</th><th>${t('colEmployee')}</th><th>${t('colBranch')}</th><th>${t('colDestination')}</th><th>${t('colAmount')}</th><th>${t('colReceipt')}</th><th>${t('colDepositStatus')}</th>${showApprove?'<th></th>':''}</tr></thead>
     <tbody>${list.map(d=>`<tr><td>${(d.created_at||'').slice(0,10)}</td><td>${userName(d.submitted_by)}</td><td>${branchName(d.branch_id)}</td><td>${destLabel(d.destination)}</td><td class="num">${money(d.amount)}</td>
       <td><a href="${d.receipt_url}" target="_blank">${t('viewReceipt')}</a></td>
-      <td><span class="tag ${d.status==='approved'?'collected':d.status==='rejected'?'rejected':'pending'}">${d.status==='approved'?t('depositApproved'):d.status==='rejected'?t('depositRejected'):t('depositPending')}</span></td>
+      <td><span class="tag ${d.status==='approved'?'collected':d.status==='rejected'?'rejected':'pending'}">${d.status==='approved'?t('depositApproved'):d.status==='rejected'?t('depositRejected'):t('depositPending')}</span>${d.status!=='pending'&&d.reviewed_by?`<div style="margin-top:3px;">${whoWhen(d.reviewed_by, d.reviewed_at)}</div>`:''}</td>
       ${showApprove?`<td style="display:flex;gap:6px;"><button class="btn btn-gold btn-sm" onclick="uiApproveDeposit('${d.id}')">${t('approve')}</button><button class="btn btn-danger btn-sm" onclick="uiRejectDeposit('${d.id}')">${t('reject')}</button></td>`:''}
     </tr>${d.note?`<tr><td colspan="8" style="background:#EEF3F8;font-size:11.5px;color:var(--navy);">🗒️ ${esc(d.note)}</td></tr>`:''}`).join('')}</tbody></table></div>`;
 }
@@ -6110,7 +6123,11 @@ function renderSettings(){
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">${t('backupTitle')}</h3></div>
       <p class="note">${t('backupNote')}</p>
-      <button class="btn btn-primary btn-sm" id="exportBackupBtn">${t('exportBackupBtn')}</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary btn-sm" id="exportBackupBtn">${t('exportBackupBtn')}</button>
+        <button class="btn btn-gold btn-sm" onclick="uiRestoreBackup()">♻️ ${lang==='ar'?'استرجاع من نسخة احتياطية':'Restore from backup'}</button>
+        <button class="btn btn-ghost btn-sm" onclick="uiTrash()">🗑️ ${lang==='ar'?'سلة المحذوفات':'Trash'}</button></div>
+      <label style="display:flex;gap:6px;align-items:center;margin-top:10px;font-size:13px;"><input type="checkbox" ${lsGet('asas_auto_backup_off')==='1'?'':'checked'} onchange="lsSet('asas_auto_backup_off', this.checked?'0':'1')"> 💾 ${lang==='ar'?'نسخة احتياطية تلقائية كل يوم على هذا الجهاز (أول ما تفتح البرنامج)':'Automatic daily backup on this device'}</label>
+      <div class="note">${lang==='ar'?'آخر نسخة نزلت على هذا الجهاز: ':'Last backup on this device: '}${lsGet('asas_auto_backup_day')||'—'}</div>
     </div>
     <div class="panel"><div class="panel-head"><h3 class="panel-title">🗜️ ${lang==='ar'?'ضغط صور الإيصالات القديمة':'Compress old receipt photos'}</h3></div>
       <p class="note">${lang==='ar'?'يصغّر صور الإيصالات المرفوعة سابقًا (نفس الرابط، ما يتغير شي بالحجوزات) عشان توفر مساحة واستهلاك Supabase. ملفات الـ PDF ما تنلمس. الصور الجديدة تنضغط تلقائيًا قبل الرفع. خذ نسخة احتياطية قبل.':'Shrinks receipt photos already uploaded (same link). PDFs untouched. New photos are compressed automatically.'}</p>
@@ -6197,25 +6214,161 @@ async function exportFullBackup(){
   const btn = document.getElementById('exportBackupBtn');
   btn.disabled = true; btn.textContent = t('saving');
   try{
-    const payload = {
-      exported_at: new Date().toISOString(),
-      agency: 'ASAS Travel & Tourism - أساس للسفر والسياحة',
-      app_version: (document.body.innerHTML.match(/v 25\.\d+-G\d+/)||[''])[0],
-      branches, users: users.map(u=>{ const c = {...u}; delete c.password; delete c.password_hash; delete c.pass; return c; }),
-      bookings, journal, manual_expenses: manualExpenses, cash_deposits: deposits,
-      profit_handovers: profitHandovers, employee_charges: employeeCharges, misc_receipts: miscReceipts,
-      refunds: (typeof refundRows!=='undefined' ? refundRows : []), refunds_ready: (typeof refundsReady!=='undefined' ? !!refundsReady : false)
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const stamp = new Date().toISOString().slice(0,10);
-    a.href = url; a.download = `asas-backup-${stamp}.json`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadJSON(await buildBackupPayload(), `asas-backup-${todayStr()}.json`); lsSet('asas_auto_backup_day', todayStr());
   }catch(err){ console.error(err); alert(errTextPlain()); }
   finally{ btn.disabled=false; btn.textContent=t('exportBackupBtn'); }
 }
+
+/* ===================== DATA PROTECTION (G38): trash bin, daily backup, restore ===================== */
+async function __allRows(table){ const out=[]; for(let from=0;;from+=1000){ const {data,error} = await sb.from(table).select('*').range(from, from+999); if(error) return out; out.push(...(data||[])); if(!data||data.length<1000) break; } return out; }
+async function buildBackupPayload(){
+  const [att, attPen, attExc, settings] = await Promise.all(['attendance','attendance_penalties','attendance_excuses','app_settings'].map(__allRows));
+  return {
+    exported_at: new Date().toISOString(),
+    agency: 'ASAS Travel & Tourism - أساس للسفر والسياحة',
+    app_version: (document.body.innerHTML.match(/v 25\.\d+-G\d+/)||[''])[0],
+    branches, users: users.map(u=>{ const c = {...u}; delete c.password; delete c.password_hash; delete c.pass; return c; }),
+    bookings, journal, manual_expenses: manualExpenses, cash_deposits: deposits,
+    profit_handovers: profitHandovers, employee_charges: employeeCharges, misc_receipts: miscReceipts,
+    refunds: (typeof refundRows!=='undefined' ? refundRows : []), refunds_ready: (typeof refundsReady!=='undefined' ? !!refundsReady : false),
+    attendance: att, attendance_penalties: attPen, attendance_excuses: attExc, app_settings: settings
+  };
+}
+function downloadJSON(obj, name){
+  const blob = new Blob([JSON.stringify(obj)], {type:'application/json'}); const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 5000);
+}
+function lsGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
+function lsSet(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
+// once a day, on the admin's computer, after the fresh data has loaded
+async function autoDailyBackup(){
+  try{
+    if(!isAdmin() || lsGet('asas_auto_backup_off')==='1') return;
+    const day = todayStr(); if(lsGet('asas_auto_backup_day')===day) return;
+    if(!bookings.length || !journal.length) return;   // never save an empty copy
+    lsSet('asas_auto_backup_day', day);
+    downloadJSON(await buildBackupPayload(), `asas-backup-${day}.json`);
+    flashNote(lang==='ar'?'💾 نزلت نسخة اليوم الاحتياطية في مجلد التنزيلات':'💾 Today\'s backup was downloaded');
+  }catch(e){ console.error('auto backup', e); }
+}
+function flashNote(msg){ const d = document.createElement('div'); d.textContent = msg;
+  d.style.cssText = 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#1F3A5F;color:#fff;padding:10px 18px;border-radius:10px;z-index:9999;font-size:13.5px;box-shadow:0 4px 14px rgba(0,0,0,.25);';
+  document.body.appendChild(d); setTimeout(()=>d.remove(), 6000); }
+
+/* ---- trash bin ---- */
+const TRASH_TABLES = {bookings:'تذكرة', cash_deposits:'إيداع', refunds:'استرجاع', profit_handovers:'تسليم أرباح', misc_receipts:'مبلغ بدون تذكرة',
+  employee_charges:'مبلغ على موظف', manual_expenses:'مصروف', branches:'فرع', attendance:'حضور', attendance_penalties:'جزاء/إفادة', attendance_excuses:'إفادة', app_users:'مستخدم'};
+const RESTORABLE = ['bookings','cash_deposits','refunds','profit_handovers','misc_receipts','employee_charges','manual_expenses','branches','attendance','attendance_penalties','attendance_excuses'];
+let __trash = null;
+function trashDesc(t, r){
+  const N = x=>money(Number(x)||0);
+  switch(t){
+    case 'bookings': return `#${r.booking_no||''} ${esc(r.customer||'')} — ${N(r.sell)} — ${esc(userName(r.created_by))}${r.refund_link?' <span class="tag">تذكرة استرجاع</span>':''}`;
+    case 'cash_deposits': return `${N(r.amount)} — ${esc(userName(r.submitted_by))} — ${esc(r.status||'')}`;
+    case 'refunds': return `${esc(r.customer||'')} ${esc(r.ticket_no||'')} — ${N(r.customer_amount)} — ${esc(userName(r.employee_id||r.created_by))}`;
+    case 'profit_handovers': return `${N(r.total_profit)} — ${esc(userName(r.employee_id))}`;
+    case 'misc_receipts': return `${N(r.amount)} — ${esc(userName(r.employee_id))} ${esc(r.note||'')}`;
+    case 'employee_charges': return `${N(r.amount)} — ${esc(userName(r.employee_id))} ${esc(r.note||r.reason||'')}`;
+    case 'manual_expenses': return `${N(r.amount)} — ${esc(r.description||r.note||r.category||'')}`;
+    case 'branches': return esc(r.name||'');
+    case 'app_users': return esc(r.name||r.username||'');
+    case 'attendance': return `${esc(userName(r.user_id))} — ${String(r.check_in||'').slice(0,16).replace('T',' ')}`;
+    default: return `${esc(userName(r.user_id))} ${esc(r.day||'')}`;
+  }
+}
+async function liveIds(table, ids){ const out = new Set(); for(let i=0;i<ids.length;i+=150){ const {data} = await sb.from(table).select('id').in('id', ids.slice(i,i+150)); (data||[]).forEach(x=>out.add(String(x.id))); } return out; }
+window.uiTrash = async function(){
+  if(!isAdmin()) return;
+  showModal(`<h3 style="margin-top:0">🗑️ سلة المحذوفات</h3><div class="note">جاري التحميل…</div>`);
+  try{
+    const since = new Date(Date.now()-60*864e5).toISOString();
+    const {data, error} = await sb.from('deleted_rows').select('*').neq('table_name','journal').neq('table_name','app_settings').gte('deleted_at', since).order('deleted_at',{ascending:false}).limit(400);
+    if(error) throw error;
+    __trash = data||[];
+    const back = new Map(); for(const t of new Set(__trash.map(x=>x.table_name))){ const ids = __trash.filter(x=>x.table_name===t && x.row_id).map(x=>x.row_id); (await liveIds(t, ids)).forEach(id=>back.set(t+':'+id, true)); }
+    const rows = __trash.map((x,i)=>{ const restored = back.has(x.table_name+':'+x.row_id); const can = RESTORABLE.includes(x.table_name);
+      const d = new Date(x.deleted_at).toLocaleString('ar-SA-u-nu-latn-ca-gregory',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+      return `<tr><td style="white-space:nowrap;font-size:12px;">${d}</td><td><span class="tag">${TRASH_TABLES[x.table_name]||x.table_name}</span></td><td>${trashDesc(x.table_name, x.row)}</td>
+        <td>${restored?'<span class="tag collected">✅ موجود</span>':can?`<button class="btn btn-gold btn-sm" onclick="uiTrashRestore(${i})">♻️ استرجاع</button>`:'<span class="note">أضفه من جديد</span>'}</td></tr>`; }).join('');
+    showModal(`<h3 style="margin-top:0">🗑️ سلة المحذوفات <span class="note">(آخر 60 يوم)</span></h3>
+      <div class="note" style="margin-bottom:8px;">كل شي ينحذف ينحفظ هنا تلقائيًا، والسلة ما أحد يقدر يمسحها من البرنامج. "استرجاع" يرجّع الشي مع قيوده المحاسبية زي ما كان قبل الحذف.</div>
+      ${__trash.length?`<div style="overflow:auto;max-height:60vh;"><table><thead><tr><th>وقت الحذف</th><th>النوع</th><th>التفاصيل</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty">السلة فاضية 👍</div>'}
+      <div style="margin-top:12px;text-align:left;"><button class="btn btn-ghost" onclick="closeModal()">إغلاق</button></div>`);
+    const mEl=document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='min(980px,96vw)';
+  }catch(e){ console.error(e);
+    showModal(`<h3 style="margin-top:0">🗑️ سلة المحذوفات</h3><div class="login-error">${/deleted_rows/.test(e.message||'')||e.code==='42P01'||e.code==='PGRST205'?'السلة ما تفعّلت بعد — شغّل ملف trash.sql في Supabase مرة وحدة.':esc(e.message||String(e))}</div><div style="margin-top:12px;"><button class="btn btn-ghost" onclick="closeModal()">إغلاق</button></div>`); }
+};
+const __trashRestoreLocked = lockify(async function(i){
+  const x = __trash && __trash[i]; if(!x) return;
+  if(!confirm('استرجاع: '+(TRASH_TABLES[x.table_name]||x.table_name)+' — '+String(trashDesc(x.table_name,x.row)).replace(/<[^>]+>/g,'')+'\n\nيرجع مع قيوده المحاسبية. متأكد؟')) return;
+  const id = String(x.row_id), t0 = new Date(x.deleted_at).getTime();
+  // the accounting lines that were removed together with it (same document, within 3 minutes)
+  const from = new Date(t0-180e3).toISOString(), to = new Date(t0+180e3).toISOString();
+  const {data:jr, error:je} = await sb.from('deleted_rows').select('row').eq('table_name','journal').gte('deleted_at', from).lte('deleted_at', to).limit(1000); if(je) throw je;
+  let lines = (jr||[]).map(r=>r.row).filter(j=>JSON.stringify(j).includes(id));
+  // a refund also removed the replacement tickets it had created
+  let extraBookings = [];
+  if(x.table_name==='refunds'){ const {data:eb} = await sb.from('deleted_rows').select('row').eq('table_name','bookings').gte('deleted_at', from).lte('deleted_at', to); extraBookings = (eb||[]).map(r=>r.row).filter(b=>b.refund_link==='R:'+id);
+    const ebIds = extraBookings.map(b=>String(b.id)); lines = lines.concat((jr||[]).map(r=>r.row).filter(j=>ebIds.includes(String(j.booking_id)) && !lines.some(l=>l.id===j.id))); }
+  const {error:e1} = await sb.from(x.table_name).upsert(__fresh(x.row), {onConflict:'id', ignoreDuplicates:true}); if(e1) throw e1;
+  for(const b of extraBookings){ const {error} = await sb.from('bookings').upsert(__fresh(b), {onConflict:'id', ignoreDuplicates:true}); if(error) throw error; }
+  let skipped = 0;
+  if(lines.length){ const live = await liveIds('journal', lines.map(j=>j.id)); const missing = lines.filter(j=>!live.has(String(j.id)));
+    for(const j of missing){ const {error} = await sb.from('journal').insert(__fresh(j)); if(error){ if(error.code==='23505') skipped++; else throw error; } } }
+  alert('✅ تم الاسترجاع'+(lines.length?` مع ${lines.length-skipped} قيد محاسبي`:'')+(skipped?`\n(${skipped} قيد كان موجود أصلاً فما تكرر)`:'')+'\n\nتأكد من صفحة "سلامة البيانات" إن كل شي مطابق.');
+  return true;
+}, 'trashRestore');
+window.uiTrashRestore = async function(i){
+  try{ if(await __trashRestoreLocked(i)) uiTrash(); }catch(e){ console.error(e); alert('⚠️ ما قدرت أسترجع: '+(e.message||e)); }
+  setTimeout(()=>{ if(!__busy.size) render(); }, 4000);
+};
+function __fresh(r){ const c = {...r}; delete c.updated_at; return c; }   // the server stamps it now, so every screen picks it up
+
+/* ---- restore from a backup file: brings back only what is missing now; never deletes or overwrites ---- */
+const RESTORE_ORDER = [['branches','branches','فروع'],['bookings','bookings','تذاكر'],['refunds','refunds','استرجاعات'],['cash_deposits','cash_deposits','إيداعات'],
+  ['profit_handovers','profit_handovers','تسليم أرباح'],['employee_charges','employee_charges','مبالغ على موظفين'],['misc_receipts','misc_receipts','مبالغ بدون تذكرة'],
+  ['manual_expenses','manual_expenses','مصروفات'],['attendance','attendance','حضور'],['attendance_penalties','attendance_penalties','جزاءات'],['attendance_excuses','attendance_excuses','إفادات'],['journal','journal','قيود محاسبية']];
+let __restorePlan = null;
+window.uiRestoreBackup = function(){
+  if(!isAdmin()) return;
+  showModal(`<h3 style="margin-top:0">♻️ استرجاع من نسخة احتياطية</h3>
+    <div class="note">اختر ملف النسخة (asas-backup-….json). البرنامج يقارن ويرجّع <b>الناقص بس</b>: ما يمسح شي، وما يغيّر شي موجود.</div>
+    <input type="file" id="restoreFile" accept=".json,application/json" style="margin:12px 0;">
+    <div id="restoreOut" class="note" style="white-space:pre-line;"></div>
+    <div style="margin-top:12px;display:flex;gap:8px;"><button class="btn btn-gold" id="restoreGo" disabled>♻️ استرجع الناقص</button><button class="btn btn-ghost" onclick="closeModal()">إغلاق</button></div>`);
+  document.getElementById('restoreFile').onchange = async e=>{
+    const out = document.getElementById('restoreOut'), go = document.getElementById('restoreGo'); go.disabled = true; __restorePlan = null;
+    try{
+      const f = e.target.files[0]; if(!f) return; out.textContent = '⏳ أقرأ الملف وأقارن…';
+      const bk = JSON.parse(await f.text()); if(!bk || !Array.isArray(bk.bookings) || !Array.isArray(bk.journal)) throw new Error('هذا مو ملف نسخة احتياطية من البرنامج');
+      await syncData(true);
+      const plan = []; const lines = [`📁 نسخة بتاريخ: ${String(bk.exported_at||'').slice(0,16).replace('T',' ')}`];
+      for(const [key, table, label] of RESTORE_ORDER){ const rows = Array.isArray(bk[key]) ? bk[key].filter(r=>r && r.id!=null) : []; if(!rows.length) continue;
+        const live = await liveIds(table, rows.map(r=>r.id)); const miss = rows.filter(r=>!live.has(String(r.id)));
+        if(miss.length){ plan.push({table, label, rows:miss}); lines.push(`• ${label}: ${miss.length} ناقص`); } }
+      const um = (bk.users||[]).filter(u=>!users.some(x=>x.id===u.id)); if(um.length) lines.push(`• مستخدمين ناقصين: ${um.length} (ما ينرجعون من هنا — أضفهم من صفحة المستخدمين بكلمة مرور جديدة)`);
+      if(!plan.length){ out.textContent = lines.join('\n')+'\n\n✅ ما فيه شي ناقص — كل اللي في النسخة موجود الحين.'; return; }
+      __restorePlan = plan; out.textContent = lines.join('\n')+'\n\nاضغط "استرجع الناقص" عشان ترجع.'; go.disabled = false;
+    }catch(err){ console.error(err); out.textContent = '⚠️ '+(err.message||err); }
+  };
+  const __restoreLocked = lockify(async ()=>{
+    const out = document.getElementById('restoreOut'), go = document.getElementById('restoreGo'); if(!__restorePlan) return;
+    if(!confirm('يرجّع الناقص بس، وما يمسح ولا يغيّر شي موجود. متأكد؟')) return; go.disabled = true;
+    const res = [];
+    for(const p of __restorePlan){ let ok = 0, dup = 0, bad = 0, firstErr = '';
+      for(let i=0;i<p.rows.length;i+=200){ const chunk = p.rows.slice(i,i+200);
+        const {error} = await sb.from(p.table).upsert(chunk.map(__fresh), {onConflict:'id', ignoreDuplicates:true});
+        if(!error){ ok += chunk.length; continue; }
+        for(const r of chunk){ const {error:e1} = await sb.from(p.table).upsert(__fresh(r), {onConflict:'id', ignoreDuplicates:true}); if(!e1) ok++; else if(e1.code==='23505') dup++; else { bad++; firstErr = firstErr || e1.message; } } }
+      res.push(`• ${p.label}: رجع ${ok}${dup?` — ${dup} كان موجود بشكل ثاني فما تكرر`:''}${bad?` — ⚠️ فشل ${bad} (${firstErr})`:''}`);
+      out.textContent = '⏳ '+res.join('\n'); }
+    __restorePlan = null;
+    out.textContent = '✅ خلص الاسترجاع:\n'+res.join('\n')+'\n\nافتح صفحة "سلامة البيانات" وتأكد إن كل شي مطابق.';
+  }, 'restoreBackup');
+  document.getElementById('restoreGo').onclick = async ()=>{ try{ await __restoreLocked(); }catch(e){ console.error(e); const o = document.getElementById('restoreOut'); if(o) o.textContent = '⚠️ '+(e.message||e); }
+    setTimeout(()=>{ if(!__busy.size) render(); }, 4000); };
+};
 
 /* ===================== RECONCILIATION ===================== */
 /* ---- robust parsing for statements coming from GDS / suppliers / banks ---- */
