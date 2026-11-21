@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G40</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G41</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -2876,7 +2876,10 @@ function renderLogin(app){
         (hits||[]).forEach(h=>{ if(h.username && cleanCred(h.username).toLowerCase()===key && !names.includes(h.username)) names.push(h.username); }); }catch(e){}
       const pwds = [...new Set([pwd, pwd.trim(), latin(pwd), latin(pwd.trim())])];
       let data = null, error = null;
-      outer: for(const n of names){ for(const p of pwds){ const r = await sb.rpc('verify_login', {p_username: n, p_password: p}); if(r.error){ error = r.error; break outer; } if(r.data && r.data.length){ data = r.data; break outer; } } }
+      outer: for(const n of names){ for(const p of pwds){
+        const r = await loginCheck(n, p, null); if(r.error){ error = r.error; break outer; }
+        if(r.status==='ok'){ data = [r.user]; break outer; }
+        if(r.status!=='bad'){ btn.disabled=false; btn.textContent=t('loginBtn'); showMfaStep(r, n, p); return; } } }
       if(error && !data) throw error;
       if(data && data.length>0){
         const {data:st} = await sb.from('app_users').select('active').eq('id', data[0].id).maybeSingle();
@@ -2890,6 +2893,75 @@ function renderLogin(app){
       btn.disabled=false; btn.textContent=t('loginBtn');
     }
   };
+}
+
+/* ===================== CODE FOR ACCOUNTANTS (G41) =====================
+   The server checks password + 6-digit code (Google Authenticator) for accountants; the secret never leaves the server
+   except once, to the accountant who just typed the right password, to scan the QR. */
+let __mfaFn = null;   // null = unknown, true = installed, false = SQL not run yet (old login)
+async function loginCheck(n, p, code){
+  if(__mfaFn!==false){
+    const r = await sb.rpc('verify_login_mfa', {p_username:n, p_password:p, p_code:code});
+    if(!r.error){ __mfaFn = true; return r.data||{status:'bad'}; }
+    if(!(r.error.code==='PGRST202' || r.error.code==='42883' || /verify_login_mfa/.test(r.error.message||''))) return {error:r.error};
+    __mfaFn = false;
+  }
+  const r = await sb.rpc('verify_login', {p_username:n, p_password:p});
+  if(r.error) return {error:r.error};
+  return (r.data&&r.data.length) ? {status:'ok', user:r.data[0]} : {status:'bad'};
+}
+function loadQrLib(){ return window.QRCode ? Promise.resolve(true) : new Promise(ok=>{ const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js'; sc.onload = ()=>ok(!!window.QRCode); sc.onerror = ()=>ok(false); document.head.appendChild(sc); setTimeout(()=>ok(!!window.QRCode), 8000); }); }
+function showMfaStep(r, n, p){
+  const ar = lang==='ar', box = document.getElementById('loginErrorBox'), form = document.getElementById('loginForm');
+  if(r.status==='locked'){ box.innerHTML = `<div class="login-error">${ar?`محاولات غلط كثيرة — جرّب بعد ${r.minutes||5} دقايق.`:'Too many wrong codes — try again in a few minutes.'}</div>`; return; }
+  const setup = r.status==='need_setup';
+  form.innerHTML = `
+    ${setup?`<div class="note" style="text-align:right;line-height:1.9;margin-bottom:10px;">${ar?`<b>أول مرة بس:</b><br>1) نزّل تطبيق <b>Google Authenticator</b> على جوالك<br>2) افتحه واضغط <b>+</b> ثم <b>مسح رمز QR</b> وصوّر الرمز تحت<br>3) اكتب الأرقام الـ 6 اللي تطلع في التطبيق`:'First time: install Google Authenticator, scan the QR, type the 6 digits.'}</div>
+      <div id="mfaQr" style="display:flex;justify-content:center;background:#fff;padding:10px;border-radius:10px;margin:0 auto 8px;width:fit-content;"></div>
+      <div class="note" style="text-align:center;font-size:11.5px;">${ar?'ما قدرت تصوّر؟ في التطبيق اختر "إدخال مفتاح" واكتب:':'Can\'t scan? Enter this key:'}<br><b style="direction:ltr;display:inline-block;letter-spacing:1px;user-select:all;">${esc(String(r.secret||'').replace(/(.{4})/g,'$1 ').trim())}</b></div>`
+    :`<div class="note" style="text-align:center;margin-bottom:10px;">🔐 ${ar?'افتح تطبيق <b>Google Authenticator</b> في جوالك واكتب الأرقام الـ 6 حق ASAS':'Open Google Authenticator and type the 6 digits for ASAS'}</div>`}
+    <div class="field"><label>${ar?'الكود (6 أرقام)':'Code (6 digits)'}</label><input name="code" id="mfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required style="text-align:center;font-size:22px;letter-spacing:6px;direction:ltr;"></div>
+    <button type="submit" class="btn btn-primary" style="width:100%;" id="loginSubmitBtn">${ar?'تأكيد':'Verify'}</button>
+    <button type="button" class="btn btn-ghost btn-sm" style="width:100%;margin-top:8px;" onclick="boot()">${ar?'رجوع':'Back'}</button>`;
+  box.innerHTML = '';
+  if(setup) loadQrLib().then(ok=>{ const el = document.getElementById('mfaQr'); if(!el) return; if(ok){ try{ new QRCode(el, {text:r.uri, width:190, height:190}); }catch(e){ el.style.display='none'; } } else el.style.display='none'; });
+  const inp = document.getElementById('mfaCode'); inp.focus();
+  form.onsubmit = async e=>{
+    e.preventDefault(); const btn = document.getElementById('loginSubmitBtn'); btn.disabled = true;
+    try{
+      const res = await loginCheck(n, p, inp.value);
+      if(res.error) throw res.error;
+      if(res.status==='ok'){
+        const {data:st} = await sb.from('app_users').select('active').eq('id', res.user.id).maybeSingle();
+        if(st && st.active===false){ box.innerHTML = `<div class="login-error">${ar?'هذا الحساب موقوف. راجع المدير.':'This account is disabled.'}</div>`; btn.disabled=false; return; }
+        setSession(res.user); boot(); return;
+      }
+      if(res.status==='locked'){ box.innerHTML = `<div class="login-error">${ar?`محاولات غلط كثيرة — جرّب بعد ${res.minutes||5} دقايق.`:'Locked for a few minutes.'}</div>`; btn.disabled=false; return; }
+      box.innerHTML = `<div class="login-error">${ar?'الكود غلط أو انتهى — استنى الكود الجاي في التطبيق وجرّب.':'Wrong or expired code — wait for the next one.'}</div>`;
+      inp.value=''; inp.focus(); btn.disabled=false;
+    }catch(err){ console.error(err); box.innerHTML = `<div class="login-error">${errText()}</div>`; btn.disabled=false; }
+  };
+}
+let __mfaStatus = null, __mfaAt = 0;
+async function loadMfaStatus(){ try{ const {data, error} = await sb.rpc('mfa_status'); if(error) throw error; __mfaStatus = new Map((data||[]).map(x=>[x.user_id, x])); }catch(e){ __mfaStatus = false; } }
+window.uiMfaReset = async function(id){
+  const ar = lang==='ar', u = users.find(x=>x.id===id); if(!u) return;
+  if(!confirm(ar?`مسح كود المصادقة حق ${u.name}؟\nأول ما يدخل بيطلع له رمز QR جديد يصوّره.`:`Reset ${u.name}'s code?`)) return;
+  const adminPwd = prompt(ar?'للتأكيد: اكتب كلمة مرورك أنت (المدير):':'Confirm with YOUR admin password:'); if(!adminPwd) return;
+  try{ const {data, error} = await sb.rpc('mfa_reset', {p_admin_username: currentUser().username, p_admin_password: adminPwd, p_user_id: id});
+    if(error) throw error; if(!data) throw new Error(ar?'ما انمسح — تأكد من كلمة مرورك.':'Not reset — check your password.');
+    alert(ar?`✔ انمسح. خلّ ${u.name} يدخل ويصوّر الرمز الجديد.`:'Done.'); await loadMfaStatus(); render();
+  }catch(e){ console.error(e); alert('⚠️ '+(e.message||e)); }
+};
+function mfaCell(u){
+  if(u.role!=='accountant' || __mfaStatus===false) return '';
+  if(__mfaStatus==='loading') return '';
+  if(__mfaStatus===null || Date.now()-__mfaAt > 60000){ const first = __mfaStatus===null; if(first) __mfaStatus = 'loading'; __mfaAt = Date.now();
+    loadMfaStatus().then(()=>{ if(route==='users') render(); }); if(first) return ''; }
+  const m = __mfaStatus.get(u.id), ar = lang==='ar';
+  return m && m.enabled
+    ? `<span class="tag collected" title="${m.enabled_at||''}">🔐 ${ar?'الكود مفعّل':'Code on'}</span> <button class="btn btn-ghost btn-sm" onclick="uiMfaReset('${u.id}')">${ar?'إعادة ضبط الكود':'Reset code'}</button>`
+    : `<span class="tag pending">🔐 ${ar?'ما صوّر الرمز بعد':'Not set up yet'}</span>`;
 }
 
 /* ===================== DASHBOARD ===================== */
@@ -5700,7 +5772,7 @@ function renderUsers(){
         <tbody>${users.map(u=>`<tr><td>${esc(u.name)}</td><td class="num">${esc(u.username)}</td>
           <td><span class="tag ${u.role}">${u.role==='admin'?t('roleAdmin'):u.role==='accountant'?t('roleAccountant'):t('roleEmployee')}</span></td>
           <td>${u.branch_id?branchName(u.branch_id):'—'}</td>
-          <td><span class="tag ${u.active===false?'rejected':'collected'}">${u.active===false?t('statusInactive'):t('statusActive')}</span></td>
+          <td><span class="tag ${u.active===false?'rejected':'collected'}">${u.active===false?t('statusInactive'):t('statusActive')}</span>${mfaCell(u)?`<div style="margin-top:4px;">${mfaCell(u)}</div>`:''}</td>
           <td style="display:flex;gap:5px;flex-wrap:wrap;">
             <button class="btn btn-ghost btn-sm" onclick="uiEditUser('${u.id}')">${t('edit')}</button>
             ${u.id!==currentUser().id?`<button class="btn btn-gold btn-sm" onclick="uiToggleUserActive('${u.id}')">${u.active===false?t('activateBtn'):t('deactivateBtn')}</button>
@@ -5783,8 +5855,8 @@ window.uiEditUser = function(id){
       if(error) throw error;
       if(!data) throw new Error(ar?'ما تغيّرت — تأكد من كلمة مرورك.':'Not changed.');
       const target = users.find(x=>x.id===id) || {};
-      const test = await sb.rpc('verify_login', {p_username: target.username, p_password: np});
-      const works = !test.error && test.data && test.data.length>0;
+      const test = await loginCheck(target.username, np, null);
+      const works = !test.error && test.status && test.status!=='bad';
       const off = target.active===false;
       alert(works
         ? (ar?`✔ تم وجربت الدخول وهو شغال.\nاسم المستخدم: ${target.username}\nكلمة المرور: ${np}${off?'\n\n⚠️ لكن الحساب موقوف — فعّله من المستخدمين.':''}`:`Done and tested. Username: ${target.username}`)
