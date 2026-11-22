@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G41</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G42</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -1111,6 +1111,50 @@ async function verifyPaymentReceived(bookingId, actualAmount){
   b.transfer_verified = true; b.payment_status='paid'; if(verifiedAmt!=null) b.verified_amount = verifiedAmt;
   journal.unshift(...jIns.reverse());
 }
+// G42: the admin can take back a confirmation made by mistake (whole ticket or one part of a split payment).
+// Removes exactly the bank-receipt line (and the card-fee line) of that payment; they go to the trash bin.
+async function unverifyPayment(bookingId, splitIndex){
+  const ar = lang==='ar';
+  if(!isAdmin()) throw new Error(ar?'للمدير فقط.':'Admin only.');
+  const {data:b, error:be} = await sb.from('bookings').select('*').eq('id', bookingId).maybeSingle(); if(be) throw be;
+  if(!b) throw new Error(ar?'التذكرة غير موجودة.':'Ticket not found.');
+  if(b.refunded || b.refund_status==='pending') throw new Error(ar?'التذكرة عليها استرجاع — ما ينلغى تأكيدها.':'Ticket has a refund — cannot undo.');
+  { const {data:rf, error:re} = await sb.from('refunds').select('id,status').eq('booking_id', bookingId); if(re && re.code!=='42P01') throw re;
+    if((rf||[]).some(r=>r.status==='pending'||r.status==='approved')) throw new Error(ar?'التذكرة عليها استرجاع — ما ينلغى تأكيدها.':'Ticket has a refund — cannot undo.'); }
+  if(b.profit_handed_over || profitHandovers.some(h=>h.status==='pending' && handoverBookingIds(h).includes(bookingId)))
+    throw new Error(ar?'أرباح هذي التذكرة انسلّمت أو تسليمها معلّق — ما ينلغى تأكيدها.':'Profit already handed over — cannot undo.');
+  const isSplit = splitIndex!=null && splitIndex>=0;
+  if(isSplit){ const s = (b.payment_splits||[])[splitIndex]; if(!s || !s.verified || s.method==='cash' || s.method==='due') throw new Error(ar?'هذا الجزء مو مؤكَّد.':'This part is not confirmed.'); }
+  else if(!b.transfer_verified || b.payment_method==='cash' || b.payment_method==='split') throw new Error(ar?'هذا التحويل مو مؤكَّد.':'Not confirmed.');
+  const {data:jr, error:je} = await sb.from('journal').select('*').eq('booking_id', bookingId).in('desc_key', ['jBankReceipt','jCardFee']); if(je) throw je;
+  const mine = (jr||[]).filter(j=>{ const k = (j.desc_args||[])[2];
+    return isSplit ? String(k)===String(splitIndex) : (k==null || k==='all' || k===''); });
+  if(!mine.some(j=>j.desc_key==='jBankReceipt')) throw new Error(ar?'ما لقيت قيد دخول البنك لهذا التحويل — كلّمني قبل أي تعديل.':'Bank receipt line not found.');
+  const me = currentUser()?.id||null, now = new Date().toISOString();
+  const by = userName(me), when = new Date().toLocaleString('ar-SA-u-nu-latn-ca-gregory',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+  const logLine = `↩️ أُلغي تأكيد ${isSplit?`الجزء ${splitIndex+1}`:'التحويل'} (${money(mine.reduce((a,j)=>a+(Number(j.amount)||0),0))}) — ${by} — ${when}`;
+  const note = [String(b.note||'').trim(), logLine].filter(Boolean).join('\n');
+  let patch;
+  if(isSplit){
+    const splits = b.payment_splits.map((s,i)=>{ if(i!==splitIndex) return s; const c = {...s, verified:false, verified_by:null, verified_at:null, unverified_by:me, unverified_at:now}; delete c.verified_amount; return c; });
+    patch = {payment_splits:splits, payment_status:'pending', transfer_verified:false, note};
+  } else patch = {transfer_verified:false, transfer_verified_by:null, transfer_verified_at:null, payment_status:'pending', note};
+  // status first: if removing the lines then fails, confirming again just re-uses them (nothing doubles)
+  await mustUpdate('bookings', bookingId, patch);
+  const {error:de} = await sb.from('journal').delete().in('id', mine.map(j=>j.id)); if(de) throw de;
+  const lb = bookings.find(x=>x.id===bookingId); if(lb) Object.assign(lb, patch);
+  const gone = new Set(mine.map(j=>j.id)); journal = journal.filter(j=>!gone.has(j.id));
+}
+window.uiUnverify = async function(bookingId, splitIndex){
+  const ar = lang==='ar', b = bookings.find(x=>x.id===bookingId); if(!b) return;
+  const isSplit = splitIndex>=0, part = isSplit ? (b.payment_splits||[])[splitIndex] : null;
+  const amt = isSplit ? (Number(part&&(part.verified_amount ?? part.amount))||0) : (Number(b.sell)||0);
+  const who = userName(isSplit ? part&&part.verified_by : b.transfer_verified_by);
+  if(!confirm(`↩️ إلغاء التأكيد\n\nتذكرة #${b.booking_no} — ${b.customer||''}${isSplit?`\nالجزء ${splitIndex+1}`:''}\nالمبلغ: ${money(amt)}\nأكّده: ${who||'—'}\n\nيرجع "بانتظار التأكيد" وينشال قيد دخول البنك (يروح للسلة). متأكد؟`)) return;
+  try{ await unverifyPayment(bookingId, isSplit?splitIndex:null); alert(ar?'✔ انلغى التأكيد — التحويل رجع بانتظار التأكيد.':'Done.'); }
+  catch(e){ console.error(e); alert('⚠️ '+(e.message||e)); }
+  render();
+};
 async function reviewBookingCost(bookingId, netCost){
   const b = bookings.find(x=>x.id===bookingId);
   if(!b) return;
@@ -5076,7 +5120,7 @@ function renderTransfers(){
         <td>${r.method==='span'?t('paySpan'):r.method==='installment'?t('payInstallment'):t('payTransfer')}</td>
         <td>${r.method==='span'?'—':bankLabel(r.bank)}</td>
         <td class="num">${money(r.amount)}</td>
-        <td>${whoWhen(r.by, r.at)}</td></tr>`).join('')}</tbody></table></div>${moreRowsBtn('verTr', verifiedRows.length, 100)}`}
+        <td>${whoWhen(r.by, r.at)}${isAdmin() && !r.b.refunded && !r.b.profit_handed_over?`<div style="margin-top:4px;"><button class="btn btn-ghost btn-sm" onclick="uiUnverify('${r.b.id}', ${r.part?r.part-1:-1})">↩️ ${lang==='ar'?'إلغاء التأكيد':'Undo'}</button></div>`:''}</td></tr>`).join('')}</tbody></table></div>${moreRowsBtn('verTr', verifiedRows.length, 100)}`}
     </div>`;
   document.getElementById('content').innerHTML = html;
 }
@@ -7575,6 +7619,7 @@ cancelEmployeeCharge = lockify(cancelEmployeeCharge, 'cancelEmployeeCharge');
 settleSupplierPayment = lockify(settleSupplierPayment, 'settleSupplierPayment');
 settleSupplierBulk = lockify(settleSupplierBulk, 'settleSupplierBulk');
 verifyPaymentReceived = lockify(verifyPaymentReceived, 'verifyPaymentReceived');
+unverifyPayment = lockify(unverifyPayment, 'unverifyPayment');
 verifySplitPaymentNow = lockify(verifySplitPaymentNow, 'verifySplitPayment');
 approveRefund = lockify(approveRefund, 'approveRefund');
 approveProfitHandover = lockify(approveProfitHandover, 'approveProfitHandover');
