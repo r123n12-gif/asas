@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G42</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G43</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -5201,6 +5201,7 @@ function openUnifiedRefundModal(prefillId, refundId){
   const R0 = refundsReady ? (refundId ? refundById(refundId) : (prefillId ? (openRefundFor(prefillId) || refundRows.find(r=>r.booking_id===prefillId && r.status==='rejected')) : null)) : null;
   if(R0 && !prefillId && R0.booking_id) prefillId = R0.booking_id;
   let linked = prefillId ? bookings.find(x=>x.id===prefillId) : null;
+  let picked = null;   // G43: the employee clicked one of several tickets with the same number
   const L = Object.assign({}, linked||{}, R0 ? { ticket_no:R0.ticket_no, customer:R0.customer, supplier:R0.supplier, refund_amount:R0.customer_amount, supplier_refund_amount:R0.airline_amount,
     refund_method: R0.method==='transfer'?'transfer':'cash', exchange_data: R0.method==='exchange' ? R0.new_ticket : null, refund_receipt_url:R0.receipt_url,
     refund_status:R0.status, refund_note: R0.status==='rejected' ? (R0.review_note||'') : (R0.note||'') } : {});
@@ -5254,6 +5255,7 @@ function openUnifiedRefundModal(prefillId, refundId){
     const exact = pool.filter(b=>normTkt(b.ticket_no)===k);
     let hits = exact.length ? exact : (k.length>=6 ? pool.filter(b=>normTkt(b.ticket_no).includes(k)) : []);
     // a group PNR holds several passengers: the passenger's name picks the right one
+    if(hits.length>1 && picked){ const pb = hits.find(b=>b.id===picked); if(pb) return pb; }
     if(hits.length>1){ const c = document.getElementById('urCustomer').value; let byName = hits.filter(b=>sameCustomer(b.customer, c)); if(byName.length>1) byName = byName.filter(b=>!isReshu(b)); if(byName.length===1) return byName[0]; }
     return hits.length===1 ? hits[0] : null;
   };
@@ -5280,7 +5282,11 @@ function openUnifiedRefundModal(prefillId, refundId){
     document.getElementById('urSupplierBox').style.display = linked ? 'none' : '';
     { const amb = !linked ? ambiguousTicket() : [];
       if(amb.length){ document.getElementById('urSupplierBox').style.display = 'none';
-        box.innerHTML = `<span style="color:#A8722C;font-weight:700">⚠️ ${ar?'هذي التذكرة مسجلة لأكثر من راكب — اكتب اسم الراكب بالضبط:':'Several passengers on this ticket — type the passenger name:'}</span><br>${amb.map(b=>`#${b.booking_no} — ${esc(b.customer||'')} (${money(b.sell)})`).join('<br>')}`;
+        const oldest = amb.slice().sort((a,b)=>String(a.date+a.created_at).localeCompare(String(b.date+b.created_at)))[0];
+        box.innerHTML = `<span style="color:#A8722C;font-weight:700">⚠️ ${ar?'هذي التذكرة مسجلة أكثر من مرة — اضغط على الحجز اللي تبي تسترجعه:':'This ticket is recorded more than once — tap the booking to refund:'}</span>
+          <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">${amb.map(b=>`<button type="button" class="btn btn-ghost btn-sm" style="text-align:right;justify-content:flex-start;" onclick="__urPick('${b.id}')">#${b.booking_no} — ${esc(b.customer||'')} — ${money(b.sell)} — ${esc(b.date||'')}${isReshu(b)?` <span class="tag">🔁 ${ar?'ريشو':'reissue'}</span>`:(b===oldest?` <span class="tag collected">${ar?'الأقدم (غالبًا الأساسية)':'oldest'}</span>`:'')}</button>`).join('')}</div>
+          <div class="note" style="margin-top:4px;">${ar?'لو وحدة أساسية ووحدة ريشو: الاسترجاع يكون على <b>الأساسية</b>.':'Original + reissue: refund the original.'}</div>`;
+        window.__urPick = id=>{ picked = id; draw(); };
         document.getElementById('urProfit').innerHTML=''; return; } }
     if(linked){
       if(!prefillId) document.getElementById('urCustomer').value = linked.customer||'';
