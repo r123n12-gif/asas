@@ -124,7 +124,7 @@
 </head>
 <body>
 <div id="app"></div>
-<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G43</div>
+<div style="position:fixed;bottom:6px;left:10px;font-size:11px;opacity:.55;z-index:5;pointer-events:none;direction:ltr;">v 25.10-G44</div>
 <div class="overlay" id="overlay"><div class="modal" id="modalBody"></div></div>
 
 <script>
@@ -4679,10 +4679,82 @@ function integrityWarnings(){
     if(p < -0.004) w.push({b, refundLoss: !!b.refunded, issue: b.refunded
       ? (ar?`خسارة ${money(-p)} بعد الاسترجاع — المرجّع للعميل أكثر مما رجّعه المورد + الربح (تأكد من المبلغين)`:`Loss ${money(-p)} after refund — check customer vs supplier refund`)
       : (ar?`تذكرة بخسارة ${money(-p)} (تأكد إن البيع والسستم فير مو معكوسين)`:`Loss ticket ${money(-p)} (check sell / fare not swapped)`), sell:b.sell, cost:b.cost});
-    else if(Number(b.cost)===0 && !isRefundOnly(b)) w.push({b, issue: ar?'تكلفة صفر — الربح يساوي كامل سعر البيع':'Zero cost — profit equals full price', sell:b.sell, cost:b.cost});
+    else if(Number(b.cost)===0 && !isRefundOnly(b) && !/\[ZEROCOST\]/.test(String(b.note||''))) w.push({b, zero:true, issue: ar?'تكلفة صفر — الربح يساوي كامل سعر البيع':'Zero cost — profit equals full price', sell:b.sell, cost:b.cost});
   });
   return w;
 }
+// G44: possible duplicates — the same money or ticket recorded twice. Shown for review; nothing is changed automatically.
+function __dupOk(){ try{ return new Set(JSON.parse(localStorage.getItem('asas_dup_ok')||'[]')); }catch(e){ return new Set(); } }
+window.uiDupOk = function(key){ const s = __dupOk(); s.add(key); try{ localStorage.setItem('asas_dup_ok', JSON.stringify([...s])); }catch(e){} openIntegrityModal(); };
+function duplicateFindings(){
+  const ar = lang==='ar', out = [], ok = __dupOk(), N = x=>Number(x)||0;
+  const add = (kind, key, rows, why, later)=>{ if(!ok.has(key)) out.push({kind, key, rows, why, later}); };
+  const days = (a,b)=>Math.abs(new Date(a||0)-new Date(b||0))/864e5;
+  const live = bookings.filter(b=>!b.refunded && !isRefundOnly(b) && !b.refund_link && !(b.exchange_data && b.exchange_data.old_id));
+  // 1) the same ticket number + the same passenger, twice
+  const byTk = new Map();
+  live.forEach(b=>{ const ck = custKey(b.customer); if(ck.length<3) return; new Set(ticketTokens(b.ticket_no)).forEach(t=>{ const k = t+'|'+ck; if(!byTk.has(k)) byTk.set(k, []); byTk.get(k).push(b); }); });
+  const seenT = new Set();
+  byTk.forEach(list=>{ if(list.length<2) return; const ids = list.map(b=>b.id).sort().join(','); if(seenT.has(ids)) return; seenT.add(ids);
+    const nonReshu = list.filter(b=>!isReshu(b)); if(nonReshu.length<2) return;
+    const same = nonReshu.every(b=>Math.abs(N(b.sell)-N(nonReshu[0].sell))<=1.01 && Math.abs(N(b.cost)-N(nonReshu[0].cost))<=1.01);
+    if(same) add('ticket', 'T:'+ids, list, ar?'🔴 مكرر غالبًا: نفس التذكرة ونفس الراكب ونفس السعر — احذف وحدة منهم':'Likely duplicate: same ticket, passenger and price');
+    else { const later = nonReshu.slice().sort((a,b)=>String(b.date+b.created_at).localeCompare(String(a.date+a.created_at)))[0];
+      add('reshu', 'T:'+ids, list, ar?`🟡 غالبًا ريشو ما انعلّم: نفس التذكرة ونفس الراكب بسعر مختلف — لو #${later.booking_no} ريشو علّمها`:'Probably an unmarked reissue', later); } });
+  // 2) the same employee saving the same sale twice (same customer, price, fare, within a day)
+  const seenD = new Set(), grp = new Map();
+  live.forEach(b=>{ if(isReshu(b)) return; const k = b.created_by+'|'+N(b.sell).toFixed(2)+'|'+N(b.cost).toFixed(2); if(!grp.has(k)) grp.set(k, []); grp.get(k).push(b); });
+  grp.forEach(list=>{ if(list.length<2) return; list.forEach((a,i)=>{ for(let j=i+1;j<list.length;j++){ const b = list[j];
+    if(days(a.created_at,b.created_at)>1 || !sameCustomer(a.customer,b.customer)) continue;
+    const ids = [a.id,b.id].sort().join(','); if(seenD.has(ids) || seenT.has(ids)) continue; seenD.add(ids);
+    const ta = ticketTokens(a.ticket_no), tb = ticketTokens(b.ticket_no); if(ta.length && tb.length && !ta.some(t=>tb.includes(t))) continue;   // different ticket numbers = two real tickets
+    add('ticket', 'S:'+ids, [a,b], ar?'نفس الموظف، نفس العميل والسعر والسستم فير، بفرق أقل من يوم':'Same sale saved twice'); } }); });
+  // 3) deposits: same employee, same amount, within 3 days
+  const dps = deposits.filter(d=>d.status==='approved'||d.status==='pending').sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at)));
+  dps.forEach((a,i)=>{ for(let j=i+1;j<dps.length;j++){ const b = dps[j]; if(days(a.created_at,b.created_at)>3) break;
+    if(a.submitted_by===b.submitted_by && Math.abs(N(a.amount)-N(b.amount))<0.01) add('deposit', 'D:'+[a.id,b.id].sort().join(','), [a,b], ar?'إيداعين بنفس المبلغ لنفس الموظف خلال 3 أيام':'Two equal deposits within 3 days'); } });
+  // 4) amounts without a ticket / amounts on employees: same employee, amount, within 3 days
+  const mr = miscReceipts.filter(m=>m.status!=='cancelled'&&m.status!=='rejected');
+  mr.forEach((a,i)=>mr.slice(i+1).forEach(b=>{ if(a.employee_id===b.employee_id && Math.abs(N(a.amount)-N(b.amount))<0.01 && days(a.created_at,b.created_at)<=3) add('misc','M:'+[a.id,b.id].sort().join(','),[a,b], ar?'مبلغين بدون تذكرة بنفس المبلغ لنفس الموظف':'Two equal misc receipts'); }));
+  const ec = employeeCharges.filter(c=>c.status!=='cancelled');
+  ec.forEach((a,i)=>ec.slice(i+1).forEach(b=>{ if(a.employee_id===b.employee_id && Math.abs(N(a.amount)-N(b.amount))<0.01 && days(a.created_at,b.created_at)<=3) add('charge','C:'+[a.id,b.id].sort().join(','),[a,b], ar?'مبلغين على نفس الموظف بنفس القيمة خلال 3 أيام':'Two equal charges'); }));
+  // 5) two live refunds on one ticket
+  if(typeof refundRows!=='undefined'){ const byB = new Map(); refundRows.filter(r=>r.booking_id && (r.status==='approved'||r.status==='pending')).forEach(r=>{ if(!byB.has(r.booking_id)) byB.set(r.booking_id, []); byB.get(r.booking_id).push(r); });
+    byB.forEach((list,bid)=>{ if(list.length>1) add('refund','R:'+bid, list, ar?'أكثر من استرجاع على نفس التذكرة':'Several refunds on one ticket'); }); }
+  // 6) a ticket inside two profit handovers
+  { const seen = new Map(); profitHandovers.filter(h=>h.status==='approved'||h.status==='pending').forEach(h=>handoverBookingIds(h).forEach(id=>{ if(!seen.has(id)) seen.set(id, []); seen.get(id).push(h); }));
+    seen.forEach((hs,id)=>{ if(hs.length>1){ const b = bookings.find(x=>x.id===id); add('handover','H:'+id, hs, (ar?'ربح التذكرة داخل أكثر من تسليم أرباح':'Ticket in two handovers')+(b?` — #${b.booking_no}`:'')); } }); }
+  // 7) identical journal lines (same document, same accounts, same amount, same description)
+  { const m = new Map(); journal.forEach(j=>{ const k = [j.desc_key, j.booking_id||'', j.deposit_id||'', j.refund_id||'', j.expense_id||'', JSON.stringify(j.desc_args||[]), j.debit_key, j.credit_key, N(j.amount).toFixed(2)].join('|'); if(!m.has(k)) m.set(k, []); m.get(k).push(j); });
+    m.forEach((list,k)=>{ if(list.length<2) return;
+      const b = list[0].booking_id && bookings.find(x=>x.id===list[0].booking_id);
+      // a split payment with several equal parts legitimately has equal lines (older lines carry no part number)
+      if(b && b.payment_method==='split' && Array.isArray(b.payment_splits) && b.payment_splits.filter(x=>Math.abs(N(x.amount)-N(list[0].amount))<0.01).length>=list.length) return;
+      add('journal','J:'+k, list, (ar?'قيد محاسبي مكرر بالضبط':'Identical journal lines')+(b?` — #${b.booking_no}`:'')); }); }
+  const rank = {ticket:0, deposit:1, refund:2, handover:3, journal:4, misc:5, charge:6, reshu:9};
+  out.sort((a,b)=>(rank[a.kind]??5)-(rank[b.kind]??5));
+  return out;
+}
+function dupRowsHTML(f){
+  const ar = lang==='ar';
+  if(f.kind==='ticket'||f.kind==='reshu') return f.rows.map(b=>`#${b.booking_no} — ${esc(b.customer||'')} — ${money(b.sell)} / ${money(b.cost)} — ${esc(b.date||'')} — ${esc(userName(b.created_by))}${isReshu(b)?' 🔁':''} <span style="opacity:.6">${esc(b.ticket_no||'')}</span>`).join('<br>');
+  if(f.kind==='deposit') return f.rows.map(d=>`${money(d.amount)} — ${esc(userName(d.submitted_by))} — ${String(d.created_at||'').slice(0,16).replace('T',' ')} — ${esc(d.status)} ${esc(d.note||d.notes||'')}`).join('<br>');
+  if(f.kind==='misc'||f.kind==='charge') return f.rows.map(m=>`${money(m.amount)} — ${esc(userName(m.employee_id))} — ${String(m.created_at||'').slice(0,10)} ${esc(m.note||m.reason||'')}`).join('<br>');
+  if(f.kind==='refund') return f.rows.map(r=>`${money(r.customer_amount)} — ${esc(r.customer||'')} — ${esc(r.status)} — ${String(r.created_at||'').slice(0,10)}`).join('<br>');
+  if(f.kind==='handover') return f.rows.map(h=>`${money(h.total_profit)} — ${esc(userName(h.employee_id))} — ${esc(h.status)} — ${String(h.created_at||'').slice(0,10)}`).join('<br>');
+  return f.rows.map(j=>`${esc(j.date||'')} — ${esc(j.desc_key)} — ${money(j.amount)}`).join('<br>');
+}
+window.uiMarkReshu = async function(id){
+  const b = bookings.find(x=>x.id===id); if(!b) return; const ar = lang==='ar';
+  if(!confirm(ar?`تعليم #${b.booking_no} — ${b.customer||''} — ${money(b.sell)} كـ "ريشو"؟\n\nما يغيّر أي مبلغ ولا قيد — بس يعرف البرنامج إنها تعديل على تذكرة أساسية (والاسترجاع يروح للأساسية).`:'Mark as reissue?')) return;
+  try{ const note = withReshuMarker(b.note, true); await mustUpdate('bookings', id, {note}); b.note = note; openIntegrityModal(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
+window.uiZeroCostOk = async function(id){
+  const b = bookings.find(x=>x.id===id); if(!b) return; const ar = lang==='ar';
+  if(!confirm(ar?`تذكرة #${b.booking_no} — ${b.customer||''} — ${money(b.sell)}\n\nهل هي فعلًا بدون تكلفة (رسوم خدمة مثلًا) والربح = كامل المبلغ؟`:'Really no cost?')) return;
+  try{ const note = [String(b.note||'').replace(/\s*—?\s*✔ بدون تكلفة \[ZEROCOST\]/g,'').trim(), '✔ بدون تكلفة [ZEROCOST]'].filter(Boolean).join(' — ');
+    await mustUpdate('bookings', id, {note}); b.note = note; openIntegrityModal(); }catch(e){ console.error(e); alert(errTextPlain()); }
+};
 function openIntegrityModal(){
   const ar = lang==='ar';
   const list = integrityIssues();
@@ -4700,7 +4772,13 @@ function openIntegrityModal(){
     ${(()=>{ const w = integrityWarnings(); if(!w.length) return ''; return `<h4 style="margin:16px 0 6px;color:#A8722C;">⚠️ ${ar?`تنبيهات للمراجعة (${w.length}) — مو أخطاء محاسبية، لكن تستاهل نظرة`:`Review warnings (${w.length})`}</h4>
       <div style="overflow-x:auto;"><table><thead><tr><th>${t('colNo')}</th><th>${t('colCustomer')}</th><th>${t('colEmployee')}</th><th>${ar?'التنبيه':'Warning'}</th><th>${ar?'البيع':'Sell'}</th><th>${ar?'التكلفة':'Cost'}</th><th></th></tr></thead>
       <tbody>${w.map(x=>`<tr><td class="num">${x.b.booking_no}</td><td>${esc(x.b.customer||'')}</td><td>${userName(x.b.created_by)}</td><td>${x.issue}</td><td class="num">${money(x.sell)}</td><td class="num">${money(x.cost)}</td>
-        <td>${isAdmin() && !x.refundLoss?`<button class="btn btn-gold btn-sm" onclick="uiFixTicketPrice('${x.b.id}')">🔧 ${ar?'تصحيح':'Fix'}</button>`:''}</td></tr>`).join('')}</tbody></table></div>`; })()}
+        <td style="white-space:nowrap;">${isAdmin() && !x.refundLoss?`<button class="btn btn-gold btn-sm" onclick="uiFixTicketPrice('${x.b.id}')">🔧 ${ar?'تصحيح السعر':'Fix price'}</button>`:''}${isAdmin() && x.zero?` <button class="btn btn-ghost btn-sm" onclick="uiZeroCostOk('${x.b.id}')">✔ ${ar?'صحيح بدون تكلفة':'Correct, no cost'}</button>`:''}</td></tr>`).join('')}</tbody></table></div>`; })()}
+    ${(()=>{ const d = duplicateFindings(); const L = {reshu:ar?'تذكرة':'Ticket', ticket:ar?'تذكرة':'Ticket', deposit:ar?'إيداع':'Deposit', misc:ar?'مبلغ بدون تذكرة':'Misc', charge:ar?'مبلغ على موظف':'Charge', refund:ar?'استرجاع':'Refund', handover:ar?'تسليم أرباح':'Handover', journal:ar?'قيد':'Journal'};
+      if(!d.length) return `<div style="margin-top:14px;color:#1f7a4d;font-weight:700;">✔ ${ar?'ما فيه تكرار — فحصت التذاكر والإيداعات والمبالغ والاسترجاعات وتسليم الأرباح والقيود':'No duplicates found'}</div>`;
+      return `<h4 style="margin:16px 0 6px;color:#b42318;">🔁 ${ar?`مكرر محتمل (${d.length}) — راجعها واحد واحد`:`Possible duplicates (${d.length})`}</h4>
+      <div style="overflow-x:auto;"><table><thead><tr><th>${ar?'النوع':'Type'}</th><th>${ar?'السبب':'Why'}</th><th>${ar?'التفاصيل':'Details'}</th><th></th></tr></thead><tbody>
+      ${d.map(f=>`<tr><td><span class="tag">${L[f.kind]}</span></td><td style="font-size:12.5px;">${f.why}</td><td style="font-size:12.5px;">${dupRowsHTML(f)}</td>
+        <td style="white-space:nowrap;">${f.kind==='reshu'&&f.later&&(isAdmin()||isAccountant())?`<button class="btn btn-gold btn-sm" onclick="uiMarkReshu('${f.later.id}')">🔁 ${ar?`#${f.later.booking_no} ريشو`:'Mark reissue'}</button> `:''}${isAdmin()?`<button class="btn btn-ghost btn-sm" onclick='uiDupOk(${JSON.stringify(f.key).replace(/'/g,"&#39;")})'>✔ ${ar?'مو مكرر':'Not a duplicate'}</button>`:''}</td></tr>`).join('')}</tbody></table></div>`; })()}
     <div style="margin-top:12px;"><button class="btn btn-ghost btn-sm" onclick="closeModal()">${t('cancel')}</button></div>`);
   const mEl = document.querySelector('#overlay .modal'); if(mEl) mEl.style.width='1000px';
 }
